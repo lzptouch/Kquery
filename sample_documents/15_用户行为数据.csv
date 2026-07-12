@@ -1,0 +1,15 @@
+用户ID,时间戳,行为类型,目标页面,停留时长(秒),设备类型,来源渠道
+U10001,2026-06-01 08:23:15,page_view,/knowledge-bases,45,mobile,direct
+U10002,2026-06-01 09:12:45,page_view,/chat,120,desktop,search
+U10002,2026-06-01 09:14:50,query_submit,/chat/api,8,desktop,search
+U10004,2026-06-01 10:30:00,file_upload,/documents/upload,234,desktop,direct
+U10004,2026-06-01 10:34:20,page_view,/knowledge-graph,156,desktop,direct
+U10007,2026-06-02 09:05:33,page_view,/documents,55,mobile,search
+U10008,2026-06-02 10:30:45,query_submit,/chat/api,6,desktop,direct
+U10008,2026-06-02 10:32:18,page_view,/multimodal,92,desktop,direct
+U10010,2026-06-02 14:10:55,page_view,/chat,145,desktop,direct
+U10010,2026-06-02 14:15:30,query_submit,/chat/api,9,desktop,direct
+U10013,2026-06-03 09:20:35,page_view,/chat,34,desktop,email
+U10013,2026-06-03 09:22:18,query_submit,/chat/api,12,desktop,email
+U10004,2026-06-03 14:15:08,search,智能问答,18,desktop,direct
+U10004,2026-06-03 14:20:00,query_submit,/chat/api,10,desktop,direct

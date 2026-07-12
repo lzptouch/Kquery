@@ -1,0 +1,18 @@
+http.host: "0.0.0.0"
+http.port: 9600
+
+# Logstash 日志级别
+log.level: info
+
+# Pipeline 配置
+pipeline.workers: 2
+pipeline.batch.size: 125
+pipeline.batch.delay: 50
+
+# 自动重载配置
+config.reload.automatic: true
+config.reload.interval: 30s
+
+# 队列配置（提高可靠性）
+queue.type: memory
+queue.max_events: 4096

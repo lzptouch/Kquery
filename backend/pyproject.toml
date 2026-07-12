@@ -1,0 +1,127 @@
+[project]
+name = "kquery-pro"
+version = "2.0.0"
+description = "KQuery Pro - 多模态增强 RAG 知识库查询系统"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "KQuery Team"},
+]
+keywords = ["rag", "knowledge-base", "milvus", "neo4j", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "fastapi>=0.135.2",
+    "uvicorn>=0.42.0",
+    "pymilvus>=2.6.11",
+    "redis>=5.0.0",
+    "pymongo>=4.6.0",
+    "neo4j>=5.15.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.22",
+    "prometheus-fastapi-instrumentator>=7.1.0",
+    "tenacity>=8.2.0",
+    "tiktoken>=0.5.0",
+    "pillow>=10.0.0",
+    "pymupdf>=1.23.0",
+    "python-docx>=1.1.0",
+    "openpyxl>=3.1.0",
+    "python-pptx>=0.6.21",
+    "beautifulsoup4>=4.12.0",
+    "langchain>=1.2.13",
+    "langchain-openai>=1.1.12",
+    "dashscope>=1.14.0",
+    "celery>=5.3.0",
+    "networkx>=3.2.0",
+    "pytesseract>=0.3.10",
+    "sqlalchemy>=2.0.0",
+    "aiosqlite>=0.19.0",
+    "email-validator>=2.1.0",
+    "greenlet>=3.5.0",
+    "minio>=7.2.0"
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app"]
+
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "black>=24.0.0",
+    "isort>=5.13.0",
+    "mypy>=1.8.0",
+    "coverage>=7.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-v --tb=short"
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "slow: Slow running tests",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/__init__.py",
+    "*/tests/*",
+]
+
+[tool.black]
+line-length = 100
+target-version = ['py312']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+
+[dependency-groups]
+dev = [
+    "fastapi>=0.135.2",
+    "langchain>=1.2.13",
+    "langchain-openai>=1.1.12",
+    "prometheus-fastapi-instrumentator>=7.1.0",
+    "pymilvus>=2.6.11",
+    "python-dotenv>=1.2.2",
+    "python-multipart>=0.0.22",
+    "uvicorn>=0.42.0",
+]

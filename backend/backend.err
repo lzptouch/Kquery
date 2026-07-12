@@ -1,0 +1,34 @@
+pypdf library not available. PDF files will be read as plain text.
+INFO:     Started server process [38840]
+INFO:     Waiting for application startup.
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\core\connection_pool.py:251: PyMilvusDeprecationWarning: `connections.connect` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  connections.connect(**params)
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\core\connection_pool.py:256: PyMilvusDeprecationWarning: `utility.get_server_version` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  server_version = utility.get_server_version()
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\database\milvus_connector.py:45: PyMilvusDeprecationWarning: `connections.has_connection` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  if not connections.has_connection(self.alias):
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\database\milvus_connector.py:89: PyMilvusDeprecationWarning: `utility.list_collections` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  return utility.list_collections(using=self.alias)
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\database\milvus_connector.py:81: PyMilvusDeprecationWarning: `utility.has_collection` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  return utility.has_collection(collection_name, using=self.alias)
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\operations.py:224: PyMilvusDeprecationWarning: `Collection` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  collection = Collection(collection_name, using=connection_name)
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\operations.py:227: PyMilvusDeprecationWarning: `Collection.num_entities` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  count = collection.num_entities
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\operations.py:119: PyMilvusDeprecationWarning: `Collection` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  collection = Collection(collection_name, using=connection_name)
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\operations.py:122: PyMilvusDeprecationWarning: `Collection.load` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  collection.load()
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\repositories\operations.py:136: PyMilvusDeprecationWarning: `Collection.search` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  results = collection.search(
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\services\graph\graph_builder.py:446: RuntimeWarning: coroutine 'Neo4jConnector.initialize_schema' was never awaited
+  logger.warning(f"Schema初始化失败: {e}")
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\services\rag_service.py:603: PyMilvusDeprecationWarning: `Collection` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  collection = Collection(collection_name, using=connection_name)
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\services\rag_service.py:604: PyMilvusDeprecationWarning: `Collection.load` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  collection.load()
+C:\Users\lzpto\workspace\Kquery_pro\backend\app\services\rag_service.py:607: PyMilvusDeprecationWarning: `Collection.query` is an ORM-style PyMilvus API and will be removed in PyMilvus 3.1. Use `MilvusClient` instead.
+  results = collection.query(

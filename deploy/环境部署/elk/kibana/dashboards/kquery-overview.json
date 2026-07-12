@@ -1,0 +1,67 @@
+[
+  {
+    "id": "kquery-log-level-pie",
+    "type": "visualization",
+    "attributes": {
+      "title": "KQuery 日志级别分布",
+      "visState": "{\"type\":\"pie\",\"params\":{\"type\":\"pie\",\"addTooltip\":true,\"addLegend\":true,\"legendPosition\":\"right\",\"isDonut\":true},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"level\",\"size\":5}}]}",
+      "uiStateJSON": "{}",
+      "description": "按日志级别统计分布",
+      "version": 1
+    },
+    "references": []
+  },
+  {
+    "id": "kquery-error-timeline",
+    "type": "visualization",
+    "attributes": {
+      "title": "KQuery 错误趋势",
+      "visState": "{\"type\":\"line\",\"params\":{\"type\":\"line\",\"grid\":{\"categoryLines\":true},\"addTooltip\":true,\"addLegend\":true},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"date_histogram\",\"schema\":\"segment\",\"params\":{\"field\":\"timestamp\",\"interval\":\"auto\"}}]}",
+      "uiStateJSON": "{}",
+      "description": "ERROR/CRITICAL 日志时间趋势",
+      "version": 1
+    },
+    "references": []
+  },
+  {
+    "id": "kquery-slow-requests",
+    "type": "visualization",
+    "attributes": {
+      "title": "KQuery 慢请求排行",
+      "visState": "{\"type\":\"table\",\"params\":{\"perPage\":10,\"showPartialRows\":false},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"avg\",\"schema\":\"metric\",\"params\":{\"field\":\"duration_ms\"}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"bucket\",\"params\":{\"field\":\"url_path\",\"size\":20,\"orderAgg\":{\"id\":\"3\",\"enabled\":true,\"type\":\"avg\",\"params\":{\"field\":\"duration_ms\"}},\"order\":\"desc\"}}]}",
+      "uiStateJSON": "{}",
+      "description": "按平均响应时间排序的慢请求 URL",
+      "version": 1
+    },
+    "references": []
+  },
+  {
+    "id": "kquery-audit-events",
+    "type": "visualization",
+    "attributes": {
+      "title": "KQuery 审计事件统计",
+      "visState": "{\"type\":\"histogram\",\"params\":{\"type\":\"histogram\",\"addTooltip\":true,\"addLegend\":true},\"aggs\":[{\"id\":\"1\",\"enabled\":true,\"type\":\"count\",\"schema\":\"metric\",\"params\":{}},{\"id\":\"2\",\"enabled\":true,\"type\":\"terms\",\"schema\":\"segment\",\"params\":{\"field\":\"event_type\",\"size\":15,\"order\":\"desc\"}}]}",
+      "uiStateJSON": "{}",
+      "description": "按审计事件类型统计",
+      "version": 1
+    },
+    "references": []
+  },
+  {
+    "id": "kquery-overview-dashboard",
+    "type": "dashboard",
+    "attributes": {
+      "title": "KQuery Pro 日志总览",
+      "description": "KQuery Pro 应用日志总览仪表板",
+      "panelsJSON": "[{\"panelIndex\":\"1\",\"gridData\":{\"x\":0,\"y\":0,\"w\":24,\"h\":15},\"id\":\"kquery-log-level-pie\",\"type\":\"visualization\"},{\"panelIndex\":\"2\",\"gridData\":{\"x\":24,\"y\":0,\"w\":24,\"h\":15},\"id\":\"kquery-error-timeline\",\"type\":\"visualization\"},{\"panelIndex\":\"3\",\"gridData\":{\"x\":0,\"y\":15,\"w\":24,\"h\":15},\"id\":\"kquery-slow-requests\",\"type\":\"visualization\"},{\"panelIndex\":\"4\",\"gridData\":{\"x\":24,\"y\":15,\"w\":24,\"h\":15},\"id\":\"kquery-audit-events\",\"type\":\"visualization\"}]",
+      "optionsJSON": "{\"useMargins\":true,\"hidePanelTitles\":false}",
+      "version": 1
+    },
+    "references": [
+      {"name":"panel_0","type":"visualization","id":"kquery-log-level-pie"},
+      {"name":"panel_1","type":"visualization","id":"kquery-error-timeline"},
+      {"name":"panel_2","type":"visualization","id":"kquery-slow-requests"},
+      {"name":"panel_3","type":"visualization","id":"kquery-audit-events"}
+    ]
+  }
+]

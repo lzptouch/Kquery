@@ -509,13 +509,14 @@ async def clear_session(session_id: str) -> Dict[str, Any]:
     try:
         logger.info(f"清空会话历史 - 会话: {session_id}")
         
-        # 清空会话
-        success = get_default_agent().clear_session(session_id)
+        # 直接调用异步方法清空会话
+        from app.agents.memory import conversation_memory
+        await conversation_memory.clear_session(session_id)
         
         return {
-            "success": success,
+            "success": True,
             "session_id": session_id,
-            "message": "会话历史已清空" if success else "清空失败"
+            "message": "会话历史已清空"
         }
         
     except Exception as e:

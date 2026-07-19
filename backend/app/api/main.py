@@ -32,6 +32,18 @@ from app.api.health import router as health_router
 from app.api.chart_data import router as chart_router      # v2.0 新增：图表数据接口
 from app.api.multimodal import router as multimodal_router  # v2.0 新增：多模态内容接口
 
+# v3.0 新增：KQuery Pro 三大阶段功能路由
+from app.api.llm_router import router as llm_router              # P0-1：多模型切换
+from app.api.notes_router import router as notes_router          # P0-2：AI写作笔记
+from app.api.mindmap_router import router as mindmap_router      # P0-3：思维导图
+from app.api.web_search_router import router as web_search_router # P0-4：联网搜索
+from app.api.speech_router import router as speech_router        # P1-1：语音能力
+from app.api.memory_router import router as memory_router        # P1-2：长期记忆
+from app.api.tasks_router import router as tasks_router          # P1-3：任务式Agent
+from app.api.auth_router import router as auth_router              # P2-1：用户认证
+from app.api.knowledge_base_router import router as kb_router     # P2-1：共享知识库
+from app.api.skills_router import router as skills_router          # P2-2：Skills生态
+
 logger = get_logger(__name__)
 _elk_handler: LogstashHandler | None = None
 settings = get_settings()
@@ -39,8 +51,8 @@ settings = get_settings()
 # 创建FastAPI应用
 app = FastAPI(
     title="KQuery Pro API",
-    description="知识库查询服务 - 提供多格式文档处理、语义检索和知识图谱功能",
-    version="2.0.0",
+    description="知识库查询服务 - 提供多格式文档处理、语义检索和知识图谱功能，v3.0 增加 AI 笔记/思维导图/联网搜索/语音/记忆/任务Agent/共享知识库/Skills生态",
+    version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -78,6 +90,19 @@ app.include_router(graphrag_router, prefix="/api/v1")  # 🆕 GraphRAG增强检�
 app.include_router(config_router, prefix="/api/v1")  # v2.1 新增：配置管理接口
 app.include_router(chart_router, prefix="/api/v1")  # v2.0 新增：图表数据接口
 app.include_router(multimodal_router, prefix="/api/v1")  # v2.0 新增：多模态内容接口
+
+# v3.0 新增：KQuery Pro 三大阶段功能路由
+app.include_router(llm_router, prefix="/api/v1")          # P0-1：多模型切换
+app.include_router(notes_router, prefix="/api/v1")        # P0-2：AI写作笔记
+app.include_router(mindmap_router, prefix="/api/v1")      # P0-3：思维导图
+app.include_router(web_search_router, prefix="/api/v1")   # P0-4：联网搜索
+app.include_router(speech_router, prefix="/api/v1")        # P1-1：语音能力
+app.include_router(memory_router, prefix="/api/v1")        # P1-2：长期记忆
+app.include_router(tasks_router, prefix="/api/v1")         # P1-3：任务式Agent
+app.include_router(auth_router, prefix="/api/v1")          # P2-1：用户认证
+app.include_router(kb_router, prefix="/api/v1")            # P2-1：共享知识库
+app.include_router(skills_router, prefix="/api/v1")         # P2-2：Skills生态
+
 app.include_router(router, prefix="/api/v1")  # 业务接口
 
 
@@ -93,7 +118,7 @@ async def startup_event():
     
     logger.info("=" * 60)
     logger.info("KQuery Pro API 服务启动")
-    logger.info(f"版本: 2.0.0")
+    logger.info(f"版本: 3.0.0")
     logger.info(f"环境: {settings.environment}")
     logger.info(f"调试模式: {settings.debug}")
     
@@ -109,6 +134,17 @@ async def startup_event():
             logger.info("✓ 审计日志表初始化成功")
         except Exception as audit_err:
             logger.warning(f"⚠ 审计日志表初始化失败: {audit_err}")
+
+        # 2.1 初始化 v3.0 新增 ORM 表
+        try:
+            from app.core.database import async_engine, Base
+            from app.models.user import UserORM
+            from app.models.knowledge_base import KnowledgeBaseORM, KBMemberORM, KBInviteORM
+            async with async_engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("✓ v3.0 ORM 表初始化成功")
+        except Exception as orm_err:
+            logger.warning(f"⚠ v3.0 ORM 表初始化失败: {orm_err}")
         
         # 3. 初始化多级缓存系统
 
@@ -212,7 +248,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "KQuery Pro API",
-        "version": "2.0.0"
+        "version": "3.0.0"
     }
 
 
@@ -221,7 +257,7 @@ async def root():
     """根路径接口"""
     return {
         "message": "欢迎使用 KQuery Pro 知识库查询服务",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "docs": "/docs",
         "health": "/health"
     }

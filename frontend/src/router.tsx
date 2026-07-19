@@ -18,6 +18,10 @@ function lazyComponent(path: string) {
  */
 export const router = createBrowserRouter([
   {
+    path: '/login',
+    lazy: lazyComponent('@/pages/Login'),
+  },
+  {
     path: '/',
     element: <MainLayout />,
     children: [
@@ -56,6 +60,27 @@ export const router = createBrowserRouter([
       {
         path: 'search',
         lazy: lazyComponent('@/pages/SearchResults'),
+      },
+      // v3.0 新增页面
+      {
+        path: 'notes',
+        lazy: lazyComponent('@/pages/Notes'),
+      },
+      {
+        path: 'notes/:id',
+        lazy: lazyComponent('@/pages/NoteEditor'),
+      },
+      {
+        path: 'skills',
+        lazy: lazyComponent('@/pages/Skills'),
+      },
+      {
+        path: 'tasks',
+        lazy: lazyComponent('@/pages/Tasks'),
+      },
+      {
+        path: 'tasks/:id',
+        lazy: lazyComponent('@/pages/Tasks'),
       },
       {
         path: '*',

@@ -1,6 +1,6 @@
 # KQuery Pro — 企业级智能销售助手平台 UML 图表文档
 
-> **最后更新**: 2026-06-16  
+> **最后更新**: 2026-07-19  
 > **项目版本**: v3.0.0  
 > **架构体系**: 七层分层架构
 
@@ -22,14 +22,14 @@ graph TB
     end
 
     subgraph Layer2["② API 网关层 (FastAPI)"]
-        Auth_API["/auth/*<br/>JWT 鉴权"]
-        RateLimit_API["限流中间件<br/>令牌桶算法"]
-        Session_API["/session/*<br/>会话路由"]
-        Intent_API["/intent/*<br/>意图识别"]
-        RAG_API["/rag/*<br/>知识检索"]
-        Agent_API["/agent/*<br/>Agent 调度"]
-        CRM_API["/crm/*<br/>CRM 对接"]
-        Admin_API["/admin/*<br/>系统管理"]
+        Auth_API["/api/v1/auth/*<br/>JWT 鉴权"]
+        RateLimit_API["限流中间件<br/>Redis 滑动窗口"]
+        Session_API["/api/v1/agent/session/*<br/>会话路由"]
+        RAG_API["/api/v1/kquery/*<br/>知识检索"]
+        Agent_API["/api/v1/agent/*<br/>Agent 调度"]
+        Graph_API["/api/v1/graph/*<br/>知识图谱"]
+        GraphRAG_API["/api/v1/graphrag/*<br/>GraphRAG 检索"]
+        Ext_API["/api/v1/notes|mindmap|web-search|speech|memory|tasks|skills|knowledge-bases/*<br/>拓展能力"]
         Health["/health<br/>健康检查"]
     end
 
@@ -314,7 +314,7 @@ sequenceDiagram
 
     Sales->>Client: 发起语音/文字查询
     Client->>Client: 语音转文字(若语音输入)
-    Client->>Gateway: POST /api/v1/agent/query
+    Client->>Gateway: POST /api/v1/agent/chat
 
     Gateway->>Gateway: JWT 鉴权验证
     Gateway->>Gateway: 接口限流检查
@@ -981,6 +981,122 @@ flowchart LR
         Invalidate --> ClearL1["广播清除 L1 缓存"]
         Invalidate --> ClearL2["删除 L2 缓存键"]
     end
+```
+
+---
+
+## 10. 拓展能力图（对标腾讯 ima）
+
+展示 P0（多模型切换、AI 写作笔记、思维导图、联网搜索）、P1（语音、长期记忆、任务式 Agent）、P2（共享知识库、Skills 生态）在七层架构中的组件与时序关系，与《接口设计文档》第 12 章、《系统架构文档》第 18 章对应。
+
+### 10.1 拓展能力组件图
+
+```mermaid
+graph TB
+    subgraph Layer1["① 多端交互层"]
+        WebUI["Web/小程序<br/>对话 + 笔记 + 导图"]
+        VoiceClient["语音输入/播报"]
+    end
+
+    subgraph Layer2["② API 网关层"]
+        ExtAPI["/api/v1/models · /notes · /mindmap<br/>/web-search · /voice · /memory<br/>/tasks · /knowledge-bases · /skills"]
+        SSE["SSE 流式通道"]
+    end
+
+    subgraph Layer4["④ 业务服务层"]
+        ModelSvc["多模型调度服务<br/>Provider Registry"]
+        NoteSvc["AI 写作笔记服务"]
+        MindmapSvc["思维导图服务"]
+        WebSearchSvc["联网搜索服务<br/>三源 RRF"]
+        VoiceSvc["语音服务<br/>ASR/TTS"]
+        MemorySvc["长期记忆服务<br/>memory_records"]
+        TaskSvc["任务式 Agent 服务<br/>DAG 调度"]
+        KBShareSvc["共享知识库服务"]
+        SkillSvc["Skills 匹配服务"]
+    end
+
+    subgraph Layer6["⑥ 连接集成层"]
+        LLMProviders["LLM Providers<br/>通义/OpenAI/本地"]
+        VoiceProviders["语音 Providers<br/>Whisper/讯飞"]
+        SearchProviders["搜索 Providers<br/>Serper/Tavily"]
+    end
+
+    subgraph Layer7["⑦ 数据持久层"]
+        Milvus["Milvus<br/>向量 + memory_records"]
+        Neo4j["Neo4j<br/>知识图谱"]
+        SQLite["SQLite<br/>笔记/任务/KB 元数据"]
+    end
+
+    Layer1 --> Layer2
+    ExtAPI --> ModelSvc & NoteSvc & MindmapSvc & WebSearchSvc & VoiceSvc & MemorySvc & TaskSvc & KBShareSvc & SkillSvc
+    SSE --> NoteSvc & MindmapSvc & WebSearchSvc & VoiceSvc & TaskSvc
+    ModelSvc --> LLMProviders
+    VoiceSvc --> VoiceProviders
+    WebSearchSvc --> SearchProviders
+    MemorySvc --> Milvus
+    MindmapSvc --> Neo4j
+    KBShareSvc --> Neo4j & Milvus
+    NoteSvc --> SQLite
+    TaskSvc --> SQLite
+    SkillSvc --> SQLite
+```
+
+### 10.2 联网搜索增强时序图
+
+```mermaid
+sequenceDiagram
+    actor User as 销售员
+    participant Client as 多端交互层
+    participant GW as API 网关层
+    participant Web as 联网搜索服务
+    participant Vec as Milvus(向量)
+    participant KG as Neo4j(图谱)
+    participant Search as 搜索 Provider
+    participant LLM as LLM
+
+    User->>Client: 提问（开启联网）
+    Client->>GW: POST /api/v1/web-search/query
+    GW->>Web: 检索请求
+    par 三源并行
+        Web->>Vec: 向量 + HyDE 检索
+        Vec-->>Web: vec_results
+    and
+        Web->>KG: 子图检索
+        KG-->>Web: graph_results
+    and
+        Web->>Search: 联网检索
+        Search-->>Web: web_results
+    end
+    Web->>Web: RRF 融合 (k=60) + 重排
+    Web->>LLM: 融合结果 + 查询 (带 citation)
+    LLM-->>Web: 带引用回答
+    Web-->>GW: SSE 流式返回
+    GW-->>Client: 渲染回答 + 引用来源
+```
+
+### 10.3 任务式 Agent（DAG）时序图
+
+```mermaid
+sequenceDiagram
+    actor User as 销售员
+    participant GW as API 网关层
+    participant Task as 任务式 Agent 服务
+    participant Planner as Planner(LLM)
+    participant Worker as Celery Worker
+    participant Tools as 工具集(检索/CRM)
+
+    User->>GW: POST /api/v1/tasks
+    GW->>Task: 创建任务
+    Task->>Planner: 拆解 DAG
+    Planner-->>Task: 节点 + 依赖
+    Task->>Worker: 提交 DAG 执行
+    loop 按拓扑排序
+        Worker->>Tools: 执行节点
+        Tools-->>Worker: 节点结果
+        Worker->>Task: SSE 进度
+    end
+    Task-->>GW: 任务完成 + 结果
+    GW-->>User: 返回编排结果
 ```
 
 ---

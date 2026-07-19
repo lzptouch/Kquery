@@ -1,0 +1,204 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - link "KQuery Pro" [ref=e7] [cursor=pointer]:
+            - /url: /
+          - searchbox "搜索知识库、文档、实体..." [ref=e25]
+        - generic [ref=e26]:
+          - button "切换到暗色模式" [ref=e27] [cursor=pointer]
+          - link "系统设置" [ref=e28] [cursor=pointer]:
+            - /url: /settings
+    - generic [ref=e29]:
+      - complementary [ref=e30]:
+        - generic [ref=e31]:
+          - generic [ref=e32]: 导航菜单
+          - button "折叠侧边栏" [ref=e33] [cursor=pointer]
+        - navigation [ref=e34]:
+          - list [ref=e35]:
+            - link "首页概览" [ref=e36] [cursor=pointer]:
+              - /url: /
+            - link "知识库管理" [ref=e43] [cursor=pointer]:
+              - /url: /knowledge-bases
+            - link "文档管理" [ref=e49] [cursor=pointer]:
+              - /url: /documents
+            - link "知识图谱 v2.0" [ref=e54] [cursor=pointer]:
+              - /url: /knowledge-graph
+              - generic [ref=e60]: 知识图谱
+              - generic [ref=e61]: v2.0
+            - link "智能问答" [ref=e62] [cursor=pointer]:
+              - /url: /chat
+            - link "AI 笔记 v3.0" [ref=e66] [cursor=pointer]:
+              - /url: /notes
+              - generic [ref=e69]: AI 笔记
+              - generic [ref=e70]: v3.0
+            - link "Skills v3.0" [ref=e71] [cursor=pointer]:
+              - /url: /skills
+              - generic [ref=e74]: Skills
+              - generic [ref=e75]: v3.0
+            - link "任务 Agent v3.0" [ref=e76] [cursor=pointer]:
+              - /url: /tasks
+              - generic [ref=e80]: 任务 Agent
+              - generic [ref=e81]: v3.0
+            - link "系统设置" [ref=e82] [cursor=pointer]:
+              - /url: /settings
+        - generic [ref=e88]:
+          - generic [ref=e89]: KQuery Pro v3.0.0
+          - generic [ref=e90]: Powered by GraphRAG
+      - main [ref=e91]:
+        - generic [ref=e93]:
+          - generic [ref=e94]:
+            - generic [ref=e95]:
+              - heading "首页概览" [level=1] [ref=e96]
+              - paragraph [ref=e97]: 欢迎使用 KQuery Pro 企业级知识中台
+            - generic [ref=e98]:
+              - generic [ref=e99]: 系统运行正常
+              - button "刷新" [ref=e100] [cursor=pointer]
+          - generic [ref=e101]:
+            - generic [ref=e105]:
+              - paragraph [ref=e106]: 知识库总数
+              - paragraph [ref=e107]: "2"
+            - generic [ref=e116]:
+              - paragraph [ref=e117]: 文档总数
+              - paragraph [ref=e118]: "243"
+            - generic [ref=e126]:
+              - paragraph [ref=e127]: 图谱实体
+              - paragraph [ref=e128]: "120"
+            - generic [ref=e138]:
+              - paragraph [ref=e139]: 关系数量
+              - paragraph [ref=e140]: "254"
+          - generic [ref=e145]:
+            - heading "快捷操作" [level=2] [ref=e146]
+            - generic [ref=e147]:
+              - link [ref=e148] [cursor=pointer]:
+                - /url: /documents
+                - generic [ref=e153]:
+                  - heading "上传文档" [level=3] [ref=e154]
+                  - paragraph [ref=e155]: 添加新的知识文档
+              - link [ref=e156] [cursor=pointer]:
+                - /url: /knowledge-graph
+                - generic [ref=e163]:
+                  - heading "浏览知识图谱" [level=3] [ref=e164]
+                  - paragraph [ref=e165]: 探索实体和关系网络
+              - link [ref=e166] [cursor=pointer]:
+                - /url: /chat
+                - generic [ref=e170]:
+                  - heading "智能问答" [level=3] [ref=e171]
+                  - paragraph [ref=e172]: 使用GraphRAG对话助手
+              - link [ref=e173] [cursor=pointer]:
+                - /url: /knowledge-bases
+                - generic [ref=e179]:
+                  - heading "管理知识库" [level=3] [ref=e180]
+                  - paragraph [ref=e181]: 配置和管理知识库
+          - generic [ref=e182]:
+            - generic [ref=e183]:
+              - heading "数据可视化" [level=2] [ref=e184]
+              - link "查看全部分析" [ref=e185] [cursor=pointer]:
+                - /url: /analytics
+            - generic [ref=e188]:
+              - generic [ref=e189]:
+                - generic [ref=e190]: 文档类型分布
+                - list [ref=e211]:
+                  - listitem [ref=e212]: 技术文档
+                  - listitem [ref=e215]: 产品手册
+                  - listitem [ref=e218]: 会议记录
+                  - listitem [ref=e221]: 研究报告
+                  - listitem [ref=e224]: 其他
+              - generic [ref=e227]:
+                - generic [ref=e229]:
+                  - generic [ref=e230]: 查询与文档月度统计
+                  - combobox [ref=e234] [cursor=pointer]:
+                    - generic: 按月
+                - generic [ref=e237]: 暂无图表数据
+          - generic [ref=e239]:
+            - generic [ref=e240]:
+              - generic [ref=e242]:
+                - generic [ref=e243]: 多模态内容
+                - link "查看全部" [ref=e247] [cursor=pointer]:
+                  - /url: /multimodal
+              - generic [ref=e250]:
+                - generic [ref=e251]:
+                  - textbox "搜索多模态内容，例如：流程图、销售额..." [ref=e256]
+                  - button [disabled]
+                - generic [ref=e257]:
+                  - generic [ref=e258]:
+                    - generic [ref=e260]:
+                      - generic [ref=e261]: docs/tech_stack.xlsx
+                      - generic [ref=e266]: 95.0%
+                    - generic [ref=e267]:
+                      - paragraph [ref=e268]: "| 组件 | 技术栈 | 版本 | |------|--------|------| | 前端 | React + TypeScript | 18.2 | | 后端 | FastAPI | 0.111 | | 向量库 | Milvus | 2.4 | | 图数据库 | Neo4j | 5.0 |"
+                      - generic [ref=e269]:
+                        - generic [ref=e270]: 表格数据
+                        - generic [ref=e271]: 第 1 页
+                  - generic [ref=e272]:
+                    - generic [ref=e274]:
+                      - generic [ref=e275]: docs/tech_stack.xlsx
+                      - generic [ref=e281]: 93.0%
+                    - generic [ref=e282]:
+                      - paragraph [ref=e283]: 技术栈表格展示了系统各层采用的技术选型。前端使用 React 18.2 + TypeScript，提供类型安全和高性能组件渲染；后端基于 FastAPI 0.111，支持异步处理和自动 OpenAPI 文档生成；向量存储使用 Milvus 2.4 实现高效的语义检索；图数据库 Neo4j 5.0 用于存储实体关系网络。
+                      - generic [ref=e284]:
+                        - generic [ref=e285]: 表格洞察
+                        - generic [ref=e286]: 第 1 页
+                  - generic [ref=e287]:
+                    - generic [ref=e289]:
+                      - generic [ref=e290]: docs/architecture.png
+                      - generic [ref=e297]: 92.0%
+                    - generic [ref=e298]:
+                      - paragraph [ref=e299]: 系统架构图：包含前端 React 应用、后端 FastAPI 服务、Milvus 向量数据库和 Neo4j 知识图谱四个主要组件，通过 RESTful API 和 WebSocket 进行通信。
+                      - generic [ref=e300]:
+                        - generic [ref=e301]: 图片描述
+                        - generic [ref=e302]: 第 1 页
+                  - generic [ref=e303]:
+                    - generic [ref=e305]:
+                      - generic [ref=e306]: docs/performance_report.xlsx
+                      - generic [ref=e312]: 91.0%
+                    - generic [ref=e313]:
+                      - paragraph [ref=e314]: 性能对比表格揭示了不同检索模式的延迟与准确率权衡。语义检索延迟最低（120ms）但准确率相对偏低（85.5%）；图谱检索准确率较高（92.3%）但延迟增加（200ms）；混合检索在两者间取得平衡，以 180ms 延迟实现 94.1% 的准确率，是生产环境推荐方案。
+                      - generic [ref=e315]:
+                        - generic [ref=e316]: 表格洞察
+                        - generic [ref=e317]: 第 2 页
+                  - generic [ref=e318]:
+                    - generic [ref=e320]:
+                      - generic [ref=e321]: docs/performance_report.xlsx
+                      - generic [ref=e326]: 90.0%
+                    - generic [ref=e327]:
+                      - paragraph [ref=e328]: "| 查询类型 | 平均延迟(ms) | 准确率(%) | |----------|-------------|----------| | 语义检索 | 120 | 85.5 | | 图谱检索 | 200 | 92.3 | | 混合检索 | 180 | 94.1 |"
+                      - generic [ref=e329]:
+                        - generic [ref=e330]: 表格数据
+                        - generic [ref=e331]: 第 2 页
+                  - generic [ref=e332]:
+                    - generic [ref=e334]:
+                      - generic [ref=e335]: docs/data_flow.png
+                      - generic [ref=e342]: 88.0%
+                    - generic [ref=e343]:
+                      - paragraph [ref=e344]: 数据流图：文档从上传开始，经过解析、分块、嵌入、存储到 Milvus，同时提取实体关系写入 Neo4j。
+                      - generic [ref=e345]:
+                        - generic [ref=e346]: 图片描述
+                        - generic [ref=e347]: 第 2 页
+            - generic [ref=e348]:
+              - generic [ref=e349]: 系统信息
+              - generic [ref=e354]:
+                - generic [ref=e355]:
+                  - generic [ref=e356]: 版本
+                  - generic [ref=e357]: v2.0.0
+                - generic [ref=e358]:
+                  - generic [ref=e359]: Milvus
+                  - generic [ref=e360]: 已连接
+                - generic [ref=e361]:
+                  - generic [ref=e362]: Neo4j
+                  - generic [ref=e363]: 已连接
+                - generic [ref=e364]:
+                  - generic [ref=e365]: 知识库
+                  - generic [ref=e366]: 2 个
+                - generic [ref=e367]:
+                  - generic [ref=e368]: 文档总数
+                  - generic [ref=e369]: 243 个
+                - generic [ref=e370]:
+                  - generic [ref=e371]: 图谱实体
+                  - generic [ref=e372]: 120 个
+                - generic [ref=e373]:
+                  - generic [ref=e374]: 关系数量
+                  - generic [ref=e375]: 254 条
+  - region "Notifications (F8)":
+    - list

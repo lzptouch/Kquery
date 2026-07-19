@@ -104,14 +104,19 @@ export function KnowledgeBases() {
     <div className="space-y-6 animate-fade-in">
       {/* 页面标题和操作栏 */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">知识库管理</h1>
-          <p className="text-muted-foreground mt-1">
-            管理和组织您的企业知识资产
-          </p>
+        <div className="flex items-center gap-3">
+          <div className="p-2 rounded-xl bg-gradient-to-br from-orange-500/10 to-amber-500/10">
+            <Database className="h-5 w-5 text-orange-600 dark:text-orange-400" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">知识库管理</h1>
+            <p className="text-muted-foreground mt-1 text-sm">
+              管理和组织您的企业知识资产
+            </p>
+          </div>
         </div>
 
-        <Button onClick={() => setShowCreateDialog(true)}>
+        <Button onClick={() => setShowCreateDialog(true)} className="rounded-xl shadow-sm">
           <Plus className="mr-2 h-4 w-4" />
           创建知识库
         </Button>
@@ -143,14 +148,24 @@ export function KnowledgeBases() {
       {/* 知识库卡片列表 */}
       {isLoading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <Card key={i} className="animate-pulse">
+          {[1, 2, 3].map((i) => (
+            <Card key={i} className="animate-pulse border-0 shadow-md overflow-hidden">
+              <div className="h-1 bg-gradient-to-r from-blue-500/30 to-purple-500/30" />
               <CardContent className="pt-6">
-                <div className="h-5 bg-muted rounded w-1/2 mb-3" />
-                <div className="h-3 bg-muted rounded w-full mb-6" />
-                <div className="flex justify-between">
-                  <div className="h-8 bg-muted rounded w-20" />
-                  <div className="h-8 bg-muted rounded w-8" />
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="h-10 w-10 bg-muted rounded-xl" />
+                  <div className="flex-1">
+                    <div className="h-5 bg-muted rounded w-1/2 mb-2" />
+                    <div className="h-3 bg-muted rounded w-3/4" />
+                  </div>
+                </div>
+                <div className="flex gap-3 mb-4">
+                  <div className="h-7 bg-muted rounded-lg w-20" />
+                  <div className="h-7 bg-muted rounded-lg w-20" />
+                </div>
+                <div className="border-t pt-4 flex gap-2">
+                  <div className="h-9 bg-muted rounded-lg flex-1" />
+                  <div className="h-9 bg-muted rounded-lg flex-1" />
                 </div>
               </CardContent>
             </Card>
@@ -159,20 +174,27 @@ export function KnowledgeBases() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredKbs.map((kb) => (
-            <Card key={kb.id} className="hover:shadow-lg transition-all group">
-              <CardHeader>
+            <Card key={kb.id} className="relative overflow-hidden border-0 shadow-md hover:shadow-xl transition-all duration-300 group">
+              {/* 顶部彩色条 */}
+              <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500" />
+              <CardHeader className="pb-2">
                 <div className="flex items-start justify-between">
-                  <div className="space-y-1 flex-1 min-w-0">
-                    <CardTitle className="text-lg truncate">{kb.name}</CardTitle>
-                    <CardDescription className="line-clamp-2 h-10">
-                      {kb.description || '暂无描述'}
-                    </CardDescription>
+                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                    <div className="p-2.5 rounded-xl bg-gradient-to-br from-blue-500/10 to-purple-500/10 ring-1 ring-black/5 dark:ring-white/5">
+                      <Database className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+                    </div>
+                    <div className="space-y-1 flex-1 min-w-0">
+                      <CardTitle className="text-base truncate">{kb.name}</CardTitle>
+                      <CardDescription className="line-clamp-1">
+                        {kb.description || '暂无描述'}
+                      </CardDescription>
+                    </div>
                   </div>
 
                   {/* 操作菜单 */}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Button variant="ghost" size="icon" className="opacity-0 group-hover:opacity-100 transition-opacity rounded-lg">
                         <MoreVertical className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -194,31 +216,36 @@ export function KnowledgeBases() {
               <CardContent>
                 {/* 统计信息 */}
                 <div className="flex items-center gap-4 text-sm text-muted-foreground mb-4">
-                  <span className="flex items-center gap-1">
-                    <FileText className="h-4 w-4" />
-                    {kb.document_count || 0} 文档
+                  <span className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-900/20">
+                    <FileText className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                    <span className="font-medium text-foreground">{kb.document_count || 0}</span>
+                    <span className="text-xs">文档</span>
                   </span>
-                  <span className="flex items-center gap-1">
-                    <Database className="h-4 w-4" />
-                    {kb.chunk_count || 0} 块
+                  <span className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-purple-50 dark:bg-purple-900/20">
+                    <Database className="h-3.5 w-3.5 text-purple-600 dark:text-purple-400" />
+                    <span className="font-medium text-foreground">{kb.chunk_count || 0}</span>
+                    <span className="text-xs">块</span>
                   </span>
                 </div>
 
                 {/* 状态标签 */}
-                <Badge
-                  variant={
-                    kb.status === 'active' ? 'success' : 'secondary'
-                  }
-                >
-                  {kb.status === 'active' ? '正常' : '空'}
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${
+                    kb.status === 'active'
+                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                      : 'bg-muted text-muted-foreground'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${kb.status === 'active' ? 'bg-emerald-500' : 'bg-gray-400'}`} />
+                    {kb.status === 'active' ? '正常' : '空'}
+                  </span>
+                </div>
 
                 {/* 快速操作按钮 */}
                 <div className="mt-4 pt-4 border-t flex gap-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    className="flex-1"
+                    className="flex-1 rounded-lg"
                     onClick={() => {
                       setCurrentKbId(kb.id)
                       window.location.href = `/documents`
@@ -227,9 +254,8 @@ export function KnowledgeBases() {
                     管理文档
                   </Button>
                   <Button
-                    variant="outline"
                     size="sm"
-                    className="flex-1"
+                    className="flex-1 rounded-lg shadow-sm"
                     onClick={() => handleChatWithKb(kb.name)}
                   >
                     开始对话
@@ -241,12 +267,18 @@ export function KnowledgeBases() {
 
           {/* 空状态 */}
           {filteredKbs.length === 0 && (
-            <div className="col-span-full py-12 text-center">
-              <Database className="mx-auto h-12 w-12 text-muted-foreground/50 mb-4" />
-              <h3 className="text-lg font-medium">暂无知识库</h3>
-              <p className="text-sm text-muted-foreground mt-1">
+            <div className="col-span-full flex flex-col items-center justify-center py-20 text-center">
+              <div className="p-5 rounded-2xl bg-gradient-to-br from-orange-500/10 to-amber-500/10 ring-1 ring-orange-500/10 mb-5">
+                <Database className="h-12 w-12 text-orange-400" />
+              </div>
+              <h3 className="text-lg font-semibold">暂无知识库</h3>
+              <p className="text-sm text-muted-foreground mt-1 mb-4">
                 点击上方按钮创建第一个知识库
               </p>
+              <Button onClick={() => setShowCreateDialog(true)} className="rounded-xl shadow-sm">
+                <Plus className="mr-2 h-4 w-4" />
+                创建知识库
+              </Button>
             </div>
           )}
         </div>

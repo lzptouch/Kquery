@@ -506,9 +506,20 @@ class QAAgent:
             是否成功
         """
         try:
-            asyncio.get_event_loop().run_until_complete(
-                conversation_memory.clear_session(session_id)
-            )
+            import threading
+            def _run():
+                asyncio.get_event_loop().run_until_complete(
+                    conversation_memory.clear_session(session_id)
+                )
+            try:
+                asyncio.get_running_loop()
+                # 有运行中的事件循环，在新线程中执行
+                t = threading.Thread(target=_run)
+                t.start()
+                t.join(timeout=5)
+            except RuntimeError:
+                # 没有运行中的事件循环，直接执行
+                _run()
             return True
         except Exception as e:
             logger.error(f"清空会话失败: {e}")

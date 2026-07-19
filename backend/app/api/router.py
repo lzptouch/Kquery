@@ -20,7 +20,7 @@ from app.core.logger import get_logger
 from app.core.settings import get_settings
 from app.core.security import validate_upload_file, UPLOAD_ALLOWED_EXTENSIONS, UPLOAD_MAX_FILE_SIZE
 from app.core.rate_limiter import get_rate_limit_dependency
-from app.core.audit_logger import audit_logger, AuditEventType
+from app.core.audit_logger import audit_logger, AuditEvent, AuditEventType
 from app.core.audit_storage import audit_log_storage
 
 

@@ -57,14 +57,14 @@ export function MainLayout() {
         {/* 主内容区域 */}
         <main 
           className={cn(
-            "flex-1 min-h-[calc(100vh-4rem)] transition-all duration-300 ease-in-out",
+            "flex-1 min-h-[calc(100vh-4rem)] transition-all duration-300 ease-in-out bg-gradient-to-b from-transparent to-muted/20",
             // 桌面端：根据侧边栏状态调整左边距，避免遮挡
             sidebarCollapsed ? "lg:ml-16" : "lg:ml-64",
             // 移动端：全宽
             "w-full"
           )}
         >
-          <div className="container-app py-6 animate-fade-in">
+          <div className="container-app py-6">
             {/* 子路由出口 */}
             <Outlet />
           </div>

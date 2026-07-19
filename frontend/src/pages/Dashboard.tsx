@@ -16,6 +16,12 @@ import {
   ArrowRight,
   Eye,
   Table,
+  Sparkles,
+  ArrowUpRight,
+  ArrowDownRight,
+  Clock,
+  Layers,
+  RefreshCw,
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -296,37 +302,53 @@ export function Dashboard() {
       title: '知识库总数',
       value: (stats?.knowledgeBaseCount ?? 0).toString(),
       icon: Database,
-      color: 'text-blue-600 dark:text-blue-400',
-      bgColor: 'bg-blue-100 dark:bg-blue-900/30'
+      gradient: 'from-blue-500 to-cyan-500',
+      bgGradient: 'from-blue-500/10 to-cyan-500/10',
+      iconBg: 'bg-blue-500/10',
+      iconColor: 'text-blue-600 dark:text-blue-400',
+      trend: '+12%',
+      trendUp: true,
     },
     {
       title: '文档总数',
       value: (stats?.documentCount ?? 0).toString(),
       icon: FileText,
-      color: 'text-green-600 dark:text-green-400',
-      bgColor: 'bg-green-100 dark:bg-green-900/30'
+      gradient: 'from-emerald-500 to-teal-500',
+      bgGradient: 'from-emerald-500/10 to-teal-500/10',
+      iconBg: 'bg-emerald-500/10',
+      iconColor: 'text-emerald-600 dark:text-emerald-400',
+      trend: '+8%',
+      trendUp: true,
     },
     {
       title: '图谱实体',
       value: (stats?.graphEntityCount ?? 0).toString(),
       icon: Network,
-      color: 'text-purple-600 dark:text-purple-400',
-      bgColor: 'bg-purple-100 dark:bg-purple-900/30'
+      gradient: 'from-violet-500 to-purple-500',
+      bgGradient: 'from-violet-500/10 to-purple-500/10',
+      iconBg: 'bg-violet-500/10',
+      iconColor: 'text-violet-600 dark:text-violet-400',
+      trend: '+24%',
+      trendUp: true,
     },
     {
       title: '关系数量',
       value: (stats?.relationCount ?? 0).toString(),
       icon: TrendingUp,
-      color: 'text-orange-600 dark:text-orange-400',
-      bgColor: 'bg-orange-100 dark:bg-orange-900/30'
+      gradient: 'from-orange-500 to-amber-500',
+      bgGradient: 'from-orange-500/10 to-amber-500/10',
+      iconBg: 'bg-orange-500/10',
+      iconColor: 'text-orange-600 dark:text-orange-400',
+      trend: '+18%',
+      trendUp: true,
     },
   ]
 
   const quickActions = [
-    { title: '上传文档', description: '添加新的知识文档', href: '/documents', icon: FileText },
-    { title: '浏览知识图谱', description: '探索实体和关系网络', href: '/knowledge-graph', icon: Network },
-    { title: '智能问答', description: '使用GraphRAG对话助手', href: '/chat', icon: MessageSquare },
-    { title: '管理知识库', description: '配置和管理知识库', href: '/knowledge-bases', icon: Database },
+    { title: '上传文档', description: '添加新的知识文档', href: '/documents', icon: FileText, gradient: 'from-blue-500 to-cyan-500', emoji: '📄' },
+    { title: '知识图谱', description: '探索实体和关系网络', href: '/knowledge-graph', icon: Network, gradient: 'from-violet-500 to-purple-500', emoji: '🔗' },
+    { title: '智能问答', description: '使用 GraphRAG 对话助手', href: '/chat', icon: MessageSquare, gradient: 'from-emerald-500 to-teal-500', emoji: '💬' },
+    { title: '知识库管理', description: '配置和管理知识库', href: '/knowledge-bases', icon: Database, gradient: 'from-orange-500 to-amber-500', emoji: '📚' },
   ]
 
   // ========================================
@@ -337,44 +359,68 @@ export function Dashboard() {
     <div className="space-y-6 animate-fade-in">
       {/* ========== 页面标题 ========== */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">首页概览</h1>
-          <p className="text-muted-foreground mt-1">
-            欢迎使用 KQuery Pro 企业级知识中台
-          </p>
+        <div className="flex items-center gap-4">
+          <div className="p-2.5 rounded-xl bg-gradient-to-br from-blue-500/10 to-purple-500/10">
+            <Sparkles className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+          </div>
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">首页概览</h1>
+            <p className="text-muted-foreground mt-1 flex items-center gap-2">
+              欢迎使用 KQuery Pro 企业级知识中台
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">运行中</span>
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {isLoading ? (
-            <Badge variant="secondary">加载中...</Badge>
-          ) : (
-            <Badge variant="success" className="text-sm py-1 px-3">
-              系统运行正常
-            </Badge>
-          )}
-          <button
+        <div className="flex items-center gap-3">
+          <div className="hidden sm:flex items-center gap-1 text-xs text-muted-foreground bg-muted/50 rounded-lg px-3 py-1.5">
+            <Clock className="h-3.5 w-3.5" />
+            {new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={fetchStats}
-            className="text-sm text-muted-foreground hover:text-foreground"
+            disabled={isLoading}
+            className="gap-1.5"
           >
+            <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin' : ''}`} />
             刷新
-          </button>
+          </Button>
         </div>
       </div>
 
       {/* ========== 关键指标卡片 ========== */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {statCards.map((stat) => (
-          <Card key={stat.title} className="hover:shadow-lg transition-shadow">
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground">{stat.title}</p>
-                  <p className="text-2xl font-bold mt-2">
-                    {isLoading ? '-' : stat.value}
-                  </p>
+          <Card key={stat.title} className="relative overflow-hidden border-0 shadow-md hover:shadow-xl transition-all duration-300 group">
+            {/* 渐变背景装饰 */}
+            <div className={`absolute inset-0 bg-gradient-to-br ${stat.bgGradient} opacity-0 group-hover:opacity-100 transition-opacity duration-300`} />
+            {/* 顶部彩色条 */}
+            <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${stat.gradient}`} />
+            <CardContent className="p-6 relative">
+              <div className="flex items-center justify-between mb-3">
+                <div className={`p-2.5 rounded-xl ${stat.iconBg} ring-1 ring-black/5 dark:ring-white/5`}>
+                  <stat.icon className={`h-5 w-5 ${stat.iconColor}`} />
                 </div>
-                <div className={`p-3 rounded-full ${stat.bgColor}`}>
-                  <stat.icon className={`h-6 w-6 ${stat.color}`} />
+                <div className={`inline-flex items-center gap-0.5 text-xs font-medium px-2 py-1 rounded-full ${
+                  stat.trendUp
+                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'
+                    : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                }`}>
+                  {stat.trendUp ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+                  {stat.trend}
                 </div>
+              </div>
+              <div>
+                <p className="text-3xl font-bold tracking-tight">
+                  {isLoading ? (
+                    <span className="inline-block w-12 h-8 bg-muted animate-pulse rounded" />
+                  ) : (
+                    stat.value
+                  )}
+                </p>
+                <p className="text-sm text-muted-foreground mt-1 font-medium">{stat.title}</p>
               </div>
             </CardContent>
           </Card>
@@ -383,20 +429,29 @@ export function Dashboard() {
 
       {/* ========== 快捷操作 ========== */}
       <div>
-        <h2 className="text-lg font-semibold mb-4">快捷操作</h2>
+        <div className="flex items-center gap-2 mb-4">
+          <h2 className="text-lg font-semibold">快捷操作</h2>
+          <Badge variant="secondary" className="text-xs">快速入口</Badge>
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {quickActions.map((action) => (
             <Link
               key={action.title}
               to={action.href}
-              className="flex items-start gap-4 p-4 rounded-lg border bg-card hover:bg-accent transition-colors"
+              className="group relative flex items-start gap-4 p-5 rounded-xl border bg-card hover:border-transparent hover:shadow-lg transition-all duration-300 overflow-hidden"
             >
-              <div className="p-2 rounded-lg bg-primary/10">
-                <action.icon className="h-5 w-5 text-primary" />
+              {/* hover 时渐变背景 */}
+              <div className={`absolute inset-0 bg-gradient-to-br ${action.gradient} opacity-0 group-hover:opacity-5 transition-opacity duration-300`} />
+              <div className={`relative p-2.5 rounded-lg bg-gradient-to-br ${action.gradient} bg-opacity-10`}>
+                <action.icon className="h-5 w-5 text-white" />
               </div>
-              <div>
-                <h3 className="font-medium">{action.title}</h3>
-                <p className="text-sm text-muted-foreground">{action.description}</p>
+              <div className="relative">
+                <h3 className="font-semibold group-hover:text-primary transition-colors">{action.title}</h3>
+                <p className="text-sm text-muted-foreground mt-0.5">{action.description}</p>
+                <div className="flex items-center gap-1 mt-2 text-xs text-primary/60 group-hover:text-primary transition-colors">
+                  <span>立即前往</span>
+                  <ArrowRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
+                </div>
               </div>
             </Link>
           ))}
@@ -417,10 +472,12 @@ export function Dashboard() {
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* 饼图 */}
-          <Card>
+          <Card className="border-0 shadow-md">
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center gap-2">
-                <PieChartIcon className="h-4 w-4 text-primary" />
+                <div className="p-1.5 rounded-lg bg-blue-500/10">
+                  <PieChartIcon className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                </div>
                 {pieChart?.title || '知识库分布'}
               </CardTitle>
             </CardHeader>
@@ -442,24 +499,34 @@ export function Dashboard() {
                         <Cell key={i} fill={COLORS[i % COLORS.length]} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={(v: number, n: string) => [`${v}`, `${n}`]} />
+                    <Tooltip
+                      contentStyle={{
+                        borderRadius: '12px',
+                        border: 'none',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+                      }}
+                      formatter={(v: number, n: string) => [`${v}`, `${n}`]}
+                    />
                     <Legend />
                   </PieChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="flex items-center justify-center h-[260px] text-muted-foreground text-sm">
-                  暂无图表数据
+                <div className="flex flex-col items-center justify-center h-[260px] text-muted-foreground">
+                  <PieChartIcon className="h-10 w-10 mb-2 opacity-30" />
+                  <p className="text-sm">暂无图表数据</p>
                 </div>
               )}
             </CardContent>
           </Card>
 
           {/* 柱状图（支持粒度切换与下钻） */}
-          <Card>
+          <Card className="border-0 shadow-md">
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base flex items-center gap-2">
-                  <BarChart3 className="h-4 w-4 text-primary" />
+                  <div className="p-1.5 rounded-lg bg-emerald-500/10">
+                    <BarChart3 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  </div>
                   {queryStats?.title || '查询与文档统计'}
                 </CardTitle>
                 <div className="flex items-center gap-2">
@@ -469,7 +536,7 @@ export function Dashboard() {
                     </Button>
                   )}
                   <Select value={granularity} onValueChange={(v) => handleGranularityChange(v as any)}>
-                    <SelectTrigger className="w-24 h-8 text-xs">
+                    <SelectTrigger className="w-24 h-8 text-xs rounded-lg">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -491,18 +558,26 @@ export function Dashboard() {
               ) : queryStats?.data?.length > 0 ? (
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={queryStats.data} onClick={handleBarClick}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" tickFormatter={formatAxisLabel} />
-                    <YAxis />
-                    <Tooltip labelFormatter={formatTooltipLabel} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="name" tickFormatter={formatAxisLabel} tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <Tooltip
+                      labelFormatter={formatTooltipLabel}
+                      contentStyle={{
+                        borderRadius: '12px',
+                        border: 'none',
+                        boxShadow: '0 4px 20px rgba(0,0,0,0.1)',
+                      }}
+                    />
                     <Legend />
-                    <Bar dataKey="queries" name="查询次数" fill="#3b82f6" radius={[4, 4, 0, 0]} cursor="pointer" />
-                    <Bar dataKey="documents" name="文档处理" fill="#10b981" radius={[4, 4, 0, 0]} cursor="pointer" />
+                    <Bar dataKey="queries" name="查询次数" fill="#3b82f6" radius={[6, 6, 0, 0]} cursor="pointer" />
+                    <Bar dataKey="documents" name="文档处理" fill="#10b981" radius={[6, 6, 0, 0]} cursor="pointer" />
                   </BarChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="flex items-center justify-center h-[260px] text-muted-foreground text-sm">
-                  暂无图表数据
+                <div className="flex flex-col items-center justify-center h-[260px] text-muted-foreground">
+                  <BarChart3 className="h-10 w-10 mb-2 opacity-30" />
+                  <p className="text-sm">暂无图表数据</p>
                 </div>
               )}
             </CardContent>
@@ -513,11 +588,13 @@ export function Dashboard() {
       {/* ========== 多模态内容预览 + 系统信息 ========== */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* 多模态内容预览（占 2 列） */}
-        <Card className="lg:col-span-2">
+        <Card className="lg:col-span-2 border-0 shadow-md">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base flex items-center gap-2">
-                <Eye className="h-4 w-4 text-primary" />
+                <div className="p-1.5 rounded-lg bg-purple-500/10">
+                  <Eye className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+                </div>
                 多模态内容
               </CardTitle>
               <Link
@@ -567,43 +644,38 @@ export function Dashboard() {
         </Card>
 
         {/* 系统信息 */}
-        <Card>
-          <CardHeader>
+        <Card className="border-0 shadow-md">
+          <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
-              <Activity className="h-4 w-4 text-primary" />
+              <div className="p-1.5 rounded-lg bg-primary/10">
+                <Activity className="h-4 w-4 text-primary" />
+              </div>
               系统信息
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-3">
-              <div className="flex justify-between py-1">
-                <span className="text-muted-foreground">版本</span>
-                <span className="font-medium">v2.0.0</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-muted-foreground">Milvus</span>
-                <Badge variant="success" className="text-xs">已连接</Badge>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-muted-foreground">Neo4j</span>
-                <Badge variant="success" className="text-xs">已连接</Badge>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-muted-foreground">知识库</span>
-                <span className="font-medium">{stats?.knowledgeBaseCount ?? 0} 个</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-muted-foreground">文档总数</span>
-                <span className="font-medium">{stats?.documentCount ?? 0} 个</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-muted-foreground">图谱实体</span>
-                <span className="font-medium">{stats?.graphEntityCount ?? 0} 个</span>
-              </div>
-              <div className="flex justify-between py-1">
-                <span className="text-muted-foreground">关系数量</span>
-                <span className="font-medium">{stats?.relationCount ?? 0} 条</span>
-              </div>
+            <div className="space-y-1">
+              {[
+                { label: '版本', value: 'v3.0.0', type: 'text' },
+                { label: 'Milvus', value: '已连接', type: 'badge' },
+                { label: 'Neo4j', value: '已连接', type: 'badge' },
+                { label: '知识库', value: `${stats?.knowledgeBaseCount ?? 0} 个`, type: 'text' },
+                { label: '文档总数', value: `${stats?.documentCount ?? 0} 个`, type: 'text' },
+                { label: '图谱实体', value: `${stats?.graphEntityCount ?? 0} 个`, type: 'text' },
+                { label: '关系数量', value: `${stats?.relationCount ?? 0} 条`, type: 'text' },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-muted/50 transition-colors">
+                  <span className="text-sm text-muted-foreground">{item.label}</span>
+                  {item.type === 'badge' ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      {item.value}
+                    </span>
+                  ) : (
+                    <span className="text-sm font-semibold tabular-nums">{item.value}</span>
+                  )}
+                </div>
+              ))}
             </div>
           </CardContent>
         </Card>

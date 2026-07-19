@@ -238,6 +238,24 @@ class ELKSettings(BaseSettings):
     flush_interval: float = Field(default=2.0, description="异步刷新间隔(秒)")
 
 
+class FeatureFlagsSettings(BaseSettings):
+    """v3.0 功能开关配置。
+
+    用于灰度发布和快速回滚，每个新功能默认关闭，
+    可在环境变量或 .env 中按需开启。
+    """
+    model_config = SettingsConfigDict(env_prefix="FEATURE_", env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    web_search_enabled: bool = Field(default=False, description="P0-4 联网搜索功能")
+    speech_enabled: bool = Field(default=False, description="P1-1 语音功能")
+    memory_enabled: bool = Field(default=False, description="P1-2 长期记忆功能")
+    task_agent_enabled: bool = Field(default=False, description="P1-3 任务式Agent功能")
+    skill_market_enabled: bool = Field(default=False, description="P2-2 Skills生态功能")
+    shared_kb_enabled: bool = Field(default=False, description="P2-1 共享知识库功能")
+    user_auth_enabled: bool = Field(default=False, description="用户认证功能")
+    mindmap_export_enabled: bool = Field(default=False, description="P0-3 思维导图导出功能")
+
+
 # ========== 主配置类 ==========
 
 class Settings(BaseSettings):
@@ -268,6 +286,7 @@ class Settings(BaseSettings):
     image: ImageSettings = Field(default_factory=ImageSettings)
     aliyun: AliyunSettings = Field(default_factory=AliyunSettings)
     elk: ELKSettings = Field(default_factory=ELKSettings)
+    features: FeatureFlagsSettings = Field(default_factory=FeatureFlagsSettings)
     
     # ========== 向后兼容属性（直接映射常用字段）==========
     @property
@@ -633,6 +652,39 @@ class Settings(BaseSettings):
         """向后兼容：Logstash 端口。"""
         return self.elk.logstash_port
     
+    # ========== 功能开关 向后兼容 ==========
+    @property
+    def web_search_enabled(self) -> bool:
+        return self.features.web_search_enabled
+
+    @property
+    def speech_enabled(self) -> bool:
+        return self.features.speech_enabled
+
+    @property
+    def memory_enabled(self) -> bool:
+        return self.features.memory_enabled
+
+    @property
+    def task_agent_enabled(self) -> bool:
+        return self.features.task_agent_enabled
+
+    @property
+    def skill_market_enabled(self) -> bool:
+        return self.features.skill_market_enabled
+
+    @property
+    def shared_kb_enabled(self) -> bool:
+        return self.features.shared_kb_enabled
+
+    @property
+    def user_auth_enabled(self) -> bool:
+        return self.features.user_auth_enabled
+
+    @property
+    def mindmap_export_enabled(self) -> bool:
+        return self.features.mindmap_export_enabled
+    
     # ========== 向后兼容：扁平属性代理 ==========
     # 通过 __getattr__ 实现，见下方
     
@@ -752,7 +804,7 @@ class Settings(BaseSettings):
         groups = [
             self.app, self.database, self.llm, self.rag,
             self.security, self.storage, self.performance,
-            self.image, self.aliyun, self.elk,
+            self.image, self.aliyun, self.elk, self.features,
         ]
         
         # 精确匹配
@@ -826,4 +878,5 @@ __all__ = [
     "ImageSettings",
     "AliyunSettings",
     "ELKSettings",
+    "FeatureFlagsSettings",
 ]

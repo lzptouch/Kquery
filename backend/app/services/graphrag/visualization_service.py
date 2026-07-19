@@ -570,8 +570,7 @@ class VisualizationService:
             subgraph = await self.query_service.get_subgraph(
                 center_entity_ids=center_ids,
                 radius=radius,
-                limit=max_nodes,
-                kb_id=kb_id,
+                max_nodes=max_nodes,
             )
             
             # Step 2: 转换为可视化节点和边

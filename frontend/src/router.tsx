@@ -82,6 +82,11 @@ export const router = createBrowserRouter([
         path: 'tasks/:id',
         lazy: lazyComponent('@/pages/Tasks'),
       },
+      // 运维可观测性中心（新增）
+      {
+        path: 'ops',
+        lazy: lazyComponent('@/pages/OpsCenter'),
+      },
       {
         path: '*',
         element: <Navigate to="/" replace />,

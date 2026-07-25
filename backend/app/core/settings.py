@@ -238,6 +238,38 @@ class ELKSettings(BaseSettings):
     flush_interval: float = Field(default=2.0, description="异步刷新间隔(秒)")
 
 
+class OpsSettings(BaseSettings):
+    """运维(可观测性)能力配置。
+
+    对应《运维能力缺失功能实现方案》中提出的：
+    指标采集、告警、日志聚合、故障诊断、健康巡检、SLO追踪、运维智能体。
+    """
+
+    model_config = SettingsConfigDict(env_prefix="OPS_", env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    enabled: bool = Field(default=True, description="是否启用运维能力模块")
+    metrics_enabled: bool = Field(default=True, description="是否采集/暴露 Prometheus 指标")
+    metrics_namespace: str = Field(default="kquery", description="指标命名空间前缀")
+
+    elasticsearch_enabled: bool = Field(default=False, description="是否对接 Elasticsearch 做日志聚合")
+    elasticsearch_url: str = Field(default="http://localhost:9200", description="Elasticsearch 地址")
+    elasticsearch_index: str = Field(default="kquery-ops-logs", description="Elasticsearch 索引名")
+
+    prometheus_enabled: bool = Field(default=False, description="是否对接独立 Prometheus 服务")
+    prometheus_url: str = Field(default="http://localhost:9090", description="Prometheus 地址")
+    grafana_enabled: bool = Field(default=False, description="是否启用 Grafana")
+    grafana_url: str = Field(default="http://localhost:3000", description="Grafana 地址")
+
+    slo_default_objective: float = Field(default=99.9, description="默认 SLO 目标百分比")
+    slo_window_days: int = Field(default=28, description="SLO 统计窗口(天)")
+    alert_default_cooldown_seconds: int = Field(default=300, description="告警默认静默冷却(秒)")
+    health_check_timeout_seconds: float = Field(default=5.0, description="健康巡检超时(秒)")
+
+    incident_auto_diagnose: bool = Field(default=True, description="故障创建后是否自动执行根因诊断")
+    incident_use_llm: bool = Field(default=True, description="根因诊断是否使用 LLM")
+    retention_days: int = Field(default=30, description="运维数据默认保留天数")
+
+
 class FeatureFlagsSettings(BaseSettings):
     """v3.0 功能开关配置。
 
@@ -287,6 +319,7 @@ class Settings(BaseSettings):
     aliyun: AliyunSettings = Field(default_factory=AliyunSettings)
     elk: ELKSettings = Field(default_factory=ELKSettings)
     features: FeatureFlagsSettings = Field(default_factory=FeatureFlagsSettings)
+    ops: OpsSettings = Field(default_factory=OpsSettings)
     
     # ========== 向后兼容属性（直接映射常用字段）==========
     @property
@@ -804,7 +837,7 @@ class Settings(BaseSettings):
         groups = [
             self.app, self.database, self.llm, self.rag,
             self.security, self.storage, self.performance,
-            self.image, self.aliyun, self.elk, self.features,
+            self.image, self.aliyun, self.elk, self.features, self.ops,
         ]
         
         # 精确匹配
@@ -879,4 +912,5 @@ __all__ = [
     "AliyunSettings",
     "ELKSettings",
     "FeatureFlagsSettings",
+    "OpsSettings",
 ]

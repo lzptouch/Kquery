@@ -1,12 +1,12 @@
 # KQuery Pro — 企业级知识中台
 
-[![Python 3.13](https://img.shields.io/badge/Python-3.13-blue)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688)](https://fastapi.tiangolo.com/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.135+-009688)](https://fastapi.tiangolo.com/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.7+-3178C6)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9+-3178C6)](https://www.typescriptlang.org/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind-3.4+-06B6D4)](https://tailwindcss.com/)
-[![Milvus](https://img.shields.io/badge/Milvus-2.5+-00A4E4)](https://milvus.io/)
-[![Neo4j](https://img.shields.io/badge/Neo4j-5.x-008CC1)](https://neo4j.com/)
+[![Milvus](https://img.shields.io/badge/Milvus-2.6+-00A4E4)](https://milvus.io/)
+[![Neo4j](https://img.shields.io/badge/Neo4j-5.15+-008CC1)](https://neo4j.com/)
 
 KQuery Pro 是下一代企业级知识检索与问答系统，基于 **GraphRAG**（知识图谱增强的检索增强生成）架构，融合向量语义检索与知识图谱推理，提供高精度、可解释的智能问答体验。
 
@@ -56,10 +56,10 @@ KQuery Pro 是下一代企业级知识检索与问答系统，基于 **GraphRAG*
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                           客户端层                                    │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────────┐   │
-│  │ Gradio UI       │  │ React 前端      │  │ 直接 API 调用       │   │
-│  │ (Python)        │  │ (Vite+TS)       │  │ (HTTP Client)      │   │
-│  └─────────────────┘  └─────────────────┘  └────────────────────┘   │
+│  ┌─────────────────────────┐  ┌────────────────────┐              │
+│  │ React 前端               │  │ 直接 API 调用       │              │
+│  │ (Vite + TypeScript)      │  │ (HTTP Client)      │              │
+│  └─────────────────────────┘  └────────────────────┘              │
 └──────────────────────────────────────────────────────────────────────┘
            │                   │                      │
            ▼                   ▼                      ▼
@@ -120,79 +120,104 @@ KQuery Pro 是下一代企业级知识检索与问答系统，基于 **GraphRAG*
 Kquery/
 ├── backend/                    # Python 后端服务
 │   ├── app/
-│   │   ├── api/               # REST API 路由层
+│   │   ├── api/               # REST API 路由层（按业务域拆分）
 │   │   │   ├── main.py        # FastAPI 应用入口
-│   │   │   ├── router.py      # RAG 核心 API（文档处理/查询/集合管理）
-│   │   │   ├── agent_router.py # Agent 智能问答 API
-│   │   │   ├── auth.py        # JWT 认证 API（注册/登录/刷新/登出）
-│   │   │   ├── knowledge_graph.py # 知识图谱 RESTful API
-│   │   │   ├── graphrag.py    # GraphRAG 混合检索 API
-│   │   │   ├── health.py      # 健康检查（4 端点）
-│   │   │   └── rbac.py        # RBAC 权限管理 API
+│   │   │   ├── router.py      # 文本 RAG 核心 API（/api/v1/kquery）
+│   │   │   ├── agent_router.py # Agent 智能问答 API（/api/v1/agent）
+│   │   │   ├── auth_router.py # 认证 API（/api/v1/auth）
+│   │   │   ├── rbac.py        # RBAC 权限管理 API（/api/v1/rbac）
+│   │   │   ├── knowledge_graph.py # 知识图谱 RESTful API（/api/v1/graph）
+│   │   │   ├── graphrag.py    # GraphRAG 混合检索 API（/api/v1/graphrag）
+│   │   │   ├── knowledge_base_router.py # 共享知识库 API（/api/v1/knowledge-bases）
+│   │   │   ├── notes_router.py # AI 笔记/写作 API（/api/v1/notes）
+│   │   │   ├── mindmap_router.py # 思维导图 API（/api/v1/mindmap）
+│   │   │   ├── tasks_router.py # 任务式 Agent API（/api/v1/tasks）
+│   │   │   ├── skills_router.py # 技能生态 API（/api/v1/skills）
+│   │   │   ├── llm_router.py  # LLM 模型切换/对话 API（/api/v1/llm）
+│   │   │   ├── multimodal.py  # 多模态检索 API（/multimodal）
+│   │   │   ├── chart_data.py  # 图表数据生成 API（/api/v1/chart-data）
+│   │   │   ├── config_router.py # 运行时配置 API（/api/v1/config）
+│   │   │   ├── ops_router.py  # 可观测性/运维 API（/api/v1/ops）
+│   │   │   ├── memory_router.py # 长期记忆 API（/api/v1/memory）
+│   │   │   ├── web_search_router.py # 联网搜索 API（/api/v1/web-search）
+│   │   │   ├── speech_router.py # 语音识别/合成 API（/api/v1/speech）
+│   │   │   ├── health.py      # 健康检查（/health）
+│   │   │   ├── ws_manager.py  # WebSocket 会话管理
+│   │   │   └── exception_handlers.py # 全局异常处理
 │   │   ├── core/              # 核心基础设施层
-│   │   │   ├── exceptions.py  # 统一异常体系（12 异常类 + 错误码枚举）
-│   │   │   ├── settings.py    # Pydantic Settings（100+ 配置项）
+│   │   │   ├── exceptions.py  # 统一异常体系
+│   │   │   ├── settings.py    # Pydantic Settings 配置项
 │   │   │   ├── logger.py      # JSON 结构化日志 + 敏感数据脱敏
-│   │   │   ├── middleware.py  # 请求日志中间件
+│   │   │   ├── middleware.py  # 请求日志/审计中间件
 │   │   │   ├── security.py    # 输入验证 + 安全响应头
 │   │   │   ├── rate_limiter.py # Redis 滑动窗口限流
-│   │   │   ├── audit_logger.py # 安全审计日志（22 种事件）
+│   │   │   ├── audit_logger.py # 安全审计日志
+│   │   │   ├── audit_storage.py # 审计日志存储
 │   │   │   ├── cache.py       # L1 内存 + L2 Redis 多级缓存
-│   │   │   ├── rbac.py        # RBAC 权限控制装饰器
+│   │   │   ├── cache_warmer.py # 缓存预热
+│   │   │   ├── rbac.py        # RBAC 权限控制
+│   │   │   ├── auth.py        # JWT 认证依赖
 │   │   │   ├── connection_pool.py # 多连接池管理
-│   │   │   └── db_optimizer.py # 查询优化 + N+1 检测
-│   │   ├── models/            # 数据模型层
-│   │   │   ├── document.py    # 文档处理模型
-│   │   │   ├── query.py       # 查询请求/响应模型
-│   │   │   └── user.py        # 用户/角色/权限模型
+│   │   │   ├── db_optimizer.py # 查询优化 + N+1 检测
+│   │   │   ├── database.py    # 数据库会话/引擎
+│   │   │   ├── i18n.py        # 国际化
+│   │   │   ├── kb_isolation.py # 知识库隔离
+│   │   │   ├── tenant.py      # 租户隔离
+│   │   │   ├── tracing.py     # 链路追踪
+│   │   │   └── llm_client.py  # LLM 客户端封装
+│   │   ├── models/            # 数据模型层（Pydantic）
+│   │   │   ├── chat.py  common.py  document.py  graph.py
+│   │   │   ├── graphrag.py  knowledge_base.py  lineage.py
+│   │   │   ├── note.py  query.py  skill.py  user.py
 │   │   ├── services/          # 业务逻辑层
-│   │   │   ├── rag_service.py      # RAG 核心服务
-│   │   │   ├── retriever.py        # 检索引擎（向量 + RRF + 重排）
-│   │   │   ├── embedding.py        # 文本嵌入服务
-│   │   │   ├── chunking.py         # 文本切分
-│   │   │   ├── hyde_generator.py   # HyDE 假设性文档生成
-│   │   │   ├── bm25_index_manager.py # BM25 索引管理
-│   │   │   ├── bm25_retriever.py   # BM25 检索器
-│   │   │   ├── image_understanding.py # 图像理解（阿里云 VL）
-│   │   │   ├── table_understanding.py # 表格理解服务
-│   │   │   ├── auth_service.py     # JWT 认证服务
-│   │   │   ├── graph/              # 知识图谱服务
-│   │   │   │   ├── entity_extraction.py    # 实体抽取
-│   │   │   │   ├── relation_extraction.py  # 关系抽取
-│   │   │   │   ├── graph_builder.py        # 图谱构建
-│   │   │   │   ├── graph_query.py          # 图谱查询
-│   │   │   │   ├── community_engine.py     # 社区发现
-│   │   │   │   └── llm_graph_agent.py      # LLM 图谱 Agent
-│   │   │   ├── graphrag/           # GraphRAG 引擎
-│   │   │   │   ├── graphrag_engine.py      # 混合检索引擎
-│   │   │   │   ├── qa_service.py           # 智能问答
-│   │   │   │   └── visualization_service.py # 可视化数据转换
-│   │   │   └── file_loaders/       # 文件加载器插件体系
-│   │   │       ├── base.py
-│   │   │       ├── pdf_loader.py
-│   │   │       ├── word_loader.py
-│   │   │       ├── excel_loader.py
-│   │   │       ├── powerpoint_loader.py
-│   │   │       ├── markdown_loader.py
-│   │   │       ├── html_loader.py
-│   │   │       ├── text_loader.py
-│   │   │       ├── json_loader.py
-│   │   │       ├── xml_loader.py
-│   │   │       └── image_loader.py
+│   │   │   ├── rag_service.py  retriever.py  embedding.py
+│   │   │   ├── chunking.py  hyde_generator.py
+│   │   │   ├── bm25_index_manager.py  bm25_retriever.py
+│   │   │   ├── image_understanding.py  table_understanding.py
+│   │   │   ├── document_classifier.py  document_models.py
+│   │   │   ├── knowledge_base_service.py  storage_service.py
+│   │   │   ├── lineage_service.py  long_term_memory_service.py
+│   │   │   ├── skill_registry.py  task_service.py
+│   │   │   ├── web_fetcher.py  web_search.py
+│   │   │   ├── writing_prompts.py  writing_service.py
+│   │   │   ├── graph/         # 知识图谱服务
+│   │   │   │   ├── entity_extraction.py  relation_extraction.py
+│   │   │   │   ├── graph_builder.py  graph_query.py
+│   │   │   │   ├── community_engine.py  llm_graph_agent.py
+│   │   │   │   ├── structured_extractor.py  table_mapper.py
+│   │   │   ├── graphrag/       # GraphRAG 引擎
+│   │   │   │   ├── graphrag_engine.py  qa_service.py
+│   │   │   │   └── visualization_service.py
+│   │   │   ├── file_loaders/   # 文件加载器插件体系
+│   │   │   │   ├── base.py  pdf_loader.py  word_loader.py
+│   │   │   │   ├── excel_loader.py  powerpoint_loader.py
+│   │   │   │   ├── markdown_loader.py  html_loader.py  text_loader.py
+│   │   │   │   ├── json_loader.py  xml_loader.py  image_loader.py
+│   │   │   │   └── loader_config.py
+│   │   │   ├── speech/         # 语音服务（ASR/TTS）
+│   │   │   │   ├── asr_service.py  tts_service.py
+│   │   │   ├── ops/            # 可观测性服务
+│   │   │   │   ├── metrics_collector.py  log_collector.py
+│   │   │   │   ├── health_checker.py  alert_manager.py
+│   │   │   │   ├── incident_manager.py  slo_tracker.py
+│   │   │   │   ├── ops_agent.py  _store.py
+│   │   │   └── integration/    # 外部系统集成
+│   │   │       ├── base.py  registry.py  crm_adapter.py
+│   │   │       ├── order_sdk.py  wecom_integration.py
 │   │   ├── repositories/      # 数据访问层
-│   │   │   ├── database/
-│   │   │   │   └── milvus_connector.py
-│   │   │   └── graph/
-│   │   │       ├── neo4j_connector.py
-│   │   │       └── schema.py
+│   │   │   ├── base.py  connector.py  operations.py
+│   │   │   └── graph/         # 图数据访问
+│   │   │       ├── neo4j_connector.py  schema.py
 │   │   ├── agents/            # Agent 系统
 │   │   │   ├── qa_agent.py    # 问答 Agent
 │   │   │   ├── rag_tool.py    # RAG 工具
-│   │   │   └── memory.py      # Agent 记忆管理
+│   │   │   ├── memory.py      # Agent 记忆管理
+│   │   │   ├── orchestrator.py # 任务编排
+│   │   │   ├── rule_engine.py # 规则引擎
+│   │   │   └── decision_evaluator.py # 决策评估
 │   │   ├── config.py          # 全局配置管理
 │   │   └── celery_config.py   # Celery 异步任务配置
-│   ├── main.py                # 主入口（启动 FastAPI 和 Gradio）
-│   ├── start_ui.py            # 独立 Gradio UI 启动脚本
+│   ├── main.py                # 主入口（启动 FastAPI）
 │   ├── pyproject.toml         # uv 项目配置
 │   ├── .env.example           # 环境变量示例
 │   └── tests/                 # 测试目录
@@ -223,8 +248,14 @@ Kquery/
 │   │   │   ├── Documents.tsx       # 文档管理
 │   │   │   ├── KnowledgeGraph.tsx  # 知识图谱可视化
 │   │   │   ├── SearchResults.tsx   # 全局搜索结果
+│   │   │   ├── Analytics.tsx       # 分析与运维仪表盘
+│   │   │   ├── MultimodalViewer.tsx # 多模态检索浏览
+│   │   │   ├── Notes.tsx           # AI 笔记列表
+│   │   │   ├── NoteEditor.tsx      # 笔记编辑器
+│   │   │   ├── Skills.tsx          # 技能中心
+│   │   │   ├── Tasks.tsx           # 任务式 Agent
+│   │   │   ├── OpsCenter.tsx       # 运维中心
 │   │   │   ├── Settings.tsx        # 系统设置
-│   │   │   ├── Profile.tsx         # 个人资料
 │   │   │   └── Login.tsx           # 登录页
 │   │   ├── stores/            # Zustand 状态管理
 │   │   │   ├── useAuthStore.ts     # 认证状态
@@ -270,11 +301,11 @@ Kquery/
 
 ### 环境要求
 
-- Python 3.13+
+- Python 3.12+
 - Node.js 20+
 - Milvus 2.5+
 - Redis 7+
-- Neo4j 5.x（可选，知识图谱功能）
+- Neo4j 5.15+（可选，知识图谱功能）
 
 ### 1. 克隆项目
 
@@ -333,9 +364,7 @@ npm run dev
 | POST | `/auth/register` | 用户注册 |
 | POST | `/auth/login` | 用户登录（返回 JWT Token） |
 | POST | `/auth/refresh` | 刷新 Token |
-| POST | `/auth/logout` | 用户登出 |
 | GET | `/auth/me` | 获取当前用户信息 |
-| PUT | `/auth/me/password` | 修改密码 |
 
 ### RAG 核心（`/api/v1/kquery`）
 
@@ -391,6 +420,144 @@ npm run dev
 | GET | `/graphrag/statistics` | 使用统计 |
 | GET | `/graphrag/health` | 健康检查 |
 
+### 共享知识库（`/api/v1/knowledge-bases`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/knowledge-bases` | 创建知识库 |
+| GET | `/knowledge-bases` | 列出当前用户可见知识库 |
+| GET | `/knowledge-bases/{kb_id}` | 获取知识库详情 |
+| DELETE | `/knowledge-bases/{kb_id}` | 删除知识库 |
+| GET | `/knowledge-bases/{kb_id}/members` | 列出成员 |
+| POST | `/knowledge-bases/{kb_id}/members` | 添加成员 |
+| DELETE | `/knowledge-bases/{kb_id}/members/{target_user_id}` | 移除成员 |
+| PUT | `/knowledge-bases/{kb_id}/members/{member_id}/role` | 更新成员角色 |
+| POST | `/knowledge-bases/{kb_id}/invites` | 生成邀请链接 |
+| POST | `/knowledge-bases/join` | 通过邀请加入知识库 |
+
+### AI 笔记与写作（`/api/v1/notes`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/notes` | 列出笔记 |
+| POST | `/notes` | 创建笔记 |
+| GET | `/notes/{id}` | 获取笔记详情 |
+| PUT | `/notes/{id}` | 更新笔记 |
+| DELETE | `/notes/{id}` | 删除笔记 |
+| POST | `/notes/{id}/generate` | AI 生成/润色内容 |
+| GET | `/notes/{id}/versions` | 查看历史版本 |
+| POST | `/notes/versions/{version_id}/restore` | 恢复指定版本 |
+| GET | `/notes/stats/overview` | 笔记统计概览 |
+| GET | `/notes/tags/list` | 标签列表 |
+
+### 思维导图（`/api/v1/mindmap`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/mindmap/generate` | 由文本/笔记生成思维导图 |
+| GET | `/mindmap/templates/list` | 模板列表 |
+| POST | `/mindmap/templates` | 创建模板 |
+| DELETE | `/mindmap/templates/{id}` | 删除模板 |
+| GET | `/mindmap/health` | 健康检查 |
+
+### 技能生态（`/api/v1/skills`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/skills` | 技能列表 |
+| GET | `/skills/categories` | 技能分类 |
+| GET | `/skills/{skill_id}` | 技能详情 |
+| POST | `/skills/{skill_id}/execute` | 执行技能 |
+| GET | `/skills/health` | 健康检查 |
+
+### 任务式 Agent（`/api/v1/tasks`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/tasks` | 任务列表 |
+| POST | `/tasks` | 创建并执行任务 |
+| GET | `/tasks/{task_id}` | 任务详情 |
+| DELETE | `/tasks/{task_id}` | 删除任务 |
+| POST | `/tasks/{task_id}/cancel` | 取消任务 |
+| GET | `/tasks/{task_id}/log` | 任务日志 |
+| POST | `/tasks/{task_id}/retry` | 重试任务 |
+| GET | `/tasks/stats/overview` | 任务统计 |
+| GET | `/tasks/health` | 健康检查 |
+
+### LLM 模型（`/api/v1/llm`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/llm/models` | 可用模型列表 |
+| GET | `/llm/status` | 模型服务状态 |
+| POST | `/llm/chat/completions` | 模型对话补全 |
+| GET | `/llm/health` | 健康检查 |
+
+### 多模态检索（`/multimodal`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/multimodal/types` | 支持的多模态类型 |
+| POST | `/multimodal/search` | 多模态内容检索 |
+| GET | `/multimodal/content` | 多模态内容列表 |
+
+### 图表数据（`/api/v1/chart-data`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/chart-data/generate` | 生成图表数据 |
+| GET | `/chart-data/supported-types` | 支持的图表类型 |
+| GET | `/chart-data/health` | 健康检查 |
+
+### 运行时配置（`/api/v1/config`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/config/reload` | 重新加载配置 |
+| GET | `/config/current` | 查看当前配置 |
+
+### 可观测性/运维（`/api/v1/ops`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/ops/health/detailed` | 详细健康报告 |
+| POST | `/ops/health/check` | 触发健康检查 |
+| GET | `/ops/metrics/prometheus` | Prometheus 指标 |
+| GET | `/ops/alerts` | 告警列表 |
+| POST | `/ops/alerts/acknowledge` | 确认告警 |
+| GET | `/ops/incidents` | 事件列表 |
+| POST | `/ops/incidents` | 创建事件 |
+| GET | `/ops/logs` | 日志查询 |
+| GET | `/ops/dashboard` | 运维仪表盘数据 |
+| GET | `/ops/slo` | SLO 列表 |
+| POST | `/ops/slo` | 创建/更新 SLO |
+| GET | `/ops/traces` | 链路追踪列表 |
+| GET | `/ops/health` | 健康检查 |
+
+### 长期记忆（`/api/v1/memory`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/memory` | 列出记忆事实 |
+| DELETE | `/memory/{fact_id}` | 删除记忆 |
+| DELETE | `/memory` | 清空记忆 |
+| POST | `/memory/extract` | 从文本抽取记忆 |
+
+### 联网搜索（`/api/v1/web-search`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/web-search` | 联网搜索 |
+| POST | `/web-search/classify` | 查询分类 |
+| GET | `/web-search/test` | 搜索服务连通性测试 |
+
+### 语音（`/api/v1/speech`）
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| POST | `/speech/asr` | 语音识别（语音转文字） |
+| POST | `/speech/tts` | 语音合成（文字转语音） |
+
 ### 健康检查（`/health`）
 
 | 方法 | 端点 | 说明 |
@@ -410,12 +577,17 @@ npm run dev
 |------|------|------|
 | `/` | Dashboard | 首页概览，展示关键指标和快捷操作 |
 | `/chat` | 智能问答 | GraphRAG 对话界面，支持知识库选择和多轮对话 |
-| `/knowledge-bases` | 知识库管理 | 创建、配置和管理知识库集合 |
+| `/knowledge-bases` | 知识库管理 | 创建、配置和管理共享知识库集合 |
 | `/documents` | 文档管理 | 上传、查看和管理文档 |
 | `/knowledge-graph` | 知识图谱 | 图谱可视化浏览和探索 |
 | `/search` | 全局搜索 | 搜索结果页面 |
+| `/analytics` | 分析仪表盘 | 使用统计与运维指标可视化 |
+| `/multimodal` | 多模态检索 | 图文多模态检索与浏览 |
+| `/notes` `/notes/:id` | 笔记/写作 | AI 笔记协作与文档生成 |
+| `/skills` | 技能中心 | 技能生态浏览与执行 |
+| `/tasks` `/tasks/:id` | 任务 | 任务式 Agent 执行与监控 |
+| `/ops` | 运维中心 | 可观测性、告警、SLO 与链路追踪 |
 | `/settings` | 系统设置 | 系统配置和参数调整 |
-| `/profile` | 个人资料 | 用户信息和偏好设置 |
 | `/login` | 登录 | 用户登录页面 |
 
 ---
@@ -528,15 +700,18 @@ docker-compose -f 项目部署/docker-compose.yml up -d
 
 | 技术 | 版本 | 用途 |
 |------|------|------|
-| Python | 3.13+ | 编程语言 |
-| FastAPI | 0.115+ | API 框架 |
-| Uvicorn | - | ASGI 服务器 |
-| Pydantic | 2.x | 数据验证 |
+| Python | 3.12+ | 编程语言 |
+| FastAPI | 0.135+ | API 框架 |
+| Uvicorn | 0.42+ | ASGI 服务器 |
+| Pydantic | 2.5+ | 数据验证 |
 | SQLAlchemy | 2.x | ORM |
-| pymilvus | 2.5.x | Milvus 客户端 |
-| Redis | 7+ | 缓存 |
-| Neo4j | 5.x | 图数据库 |
-| Celery | - | 异步任务队列 |
+| pymilvus | 2.6+ | Milvus 客户端 |
+| Redis | 5+ | 缓存 |
+| Neo4j | 5.15+ | 图数据库 |
+| Celery | 5.3+ | 异步任务队列 |
+| LangChain | 1.2+ | Agent / LLM 编排 |
+| DashScope | 1.14+ | 阿里云通义模型 SDK |
+| MinIO | 7.2+ | 对象存储 |
 | Prometheus | - | 监控 |
 | uv | - | Python 包管理 |
 
@@ -544,17 +719,21 @@ docker-compose -f 项目部署/docker-compose.yml up -d
 
 | 技术 | 版本 | 用途 |
 |------|------|------|
-| React | 19 | UI 框架 |
-| TypeScript | 5.7+ | 类型系统 |
-| Vite | 6+ | 构建工具 |
+| React | 19.2+ | UI 框架 |
+| TypeScript | 5.9+ | 类型系统 |
+| Vite | 8+ | 构建工具 |
 | Tailwind CSS | 3.4+ | CSS 框架 |
 | shadcn/ui | - | UI 组件库 |
 | Radix UI | - | 底层组件 |
-| Zustand | - | 状态管理 |
-| React Router | v6 | 路由 |
-| React Query | v5 | 服务端状态 |
-| Axios | - | HTTP 客户端 |
-| Lucide React | - | 图标库 |
+| Zustand | 5+ | 状态管理 |
+| React Router | 6.28+ | 路由 |
+| React Query | 5.60+ | 服务端状态 |
+| Axios | 1.7+ | HTTP 客户端 |
+| Lucide React | 0.460+ | 图标库 |
+| Cytoscape / @antv/g6 / react-force-graph-2d | - | 图谱与关系可视化 |
+| Recharts | 2.13+ | 图表 |
+| React Markdown / remark-gfm | 9 / 4 | Markdown 渲染 |
+| Zod / React Hook Form | 3 / 7 | 表单与校验 |
 
 ---
 
@@ -606,12 +785,20 @@ npm run lint
 
 | 文档 | 路径 | 说明 |
 |------|------|------|
-| 架构文档 | `doc/ARCHITECTURE.md` | 详细技术架构和模块说明 |
-| 知识图谱架构 | `doc/KNOWLEDGE_GRAPH_ARCHITECTURE.md` | 知识图谱详细设计 |
-| 代码规范 | `doc/CODE_STANDARDS.md` | 项目代码规范 |
+| 系统架构文档 | `doc/系统设计/系统架构文档.md` | 详细技术架构和模块说明 |
+| 知识图谱架构设计 | `doc/系统设计/知识图谱架构设计.md` | 知识图谱详细设计 |
+| 代码规范文档 | `doc/详细设计/代码规范文档.md` | 项目代码规范 |
+| 技术分析报告 | `doc/详细设计/技术分析报告.md` | 技术选型与实现分析 |
+| 模块执行流程与数据流 | `doc/详细设计/模块执行流程与数据流文档.md` | 模块调用与数据流说明 |
+| 知识图谱开发指南 | `doc/详细设计/知识图谱开发指南.md` | 知识图谱开发实践 |
+| 接口设计文档 | `doc/接口设计/接口设计文档.md` | 完整 API 接口设计 |
+| 全功能测试计划 | `doc/测试计划/全功能测试计划.md` | 功能测试规划 |
+| 功能与接口对照 | `doc/测试计划/功能与接口对照详细文档.md` | 功能点与接口映射 |
+| UML 图表设计 | `doc/UML图示/UML图表设计.md` | UML 类图/时序图 |
 | 后端 README | `backend/README.md` | 后端详细文档 |
 | 前端 README | `frontend/README.md` | 前端详细文档 |
-| API 变更摘要 | `CODE_CHANGES_SUMMARY.md` | 最近 API 变更记录 |
+| API 文档 | `backend/API_DOCUMENTATION.md` | 后端 API 详细说明 |
+| 更新日志 | `backend/CHANGELOG.md` | 版本变更记录 |
 
 ---
 

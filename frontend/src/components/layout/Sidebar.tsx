@@ -14,6 +14,7 @@ import {
   PenLine,
   Zap,
   ListTodo,
+  Activity,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -112,6 +113,18 @@ const navigationGroups: NavGroup[] = [
         href: '/settings',
         icon: Settings,
         description: '用户权限和系统配置',
+      },
+    ],
+  },
+  {
+    label: '运维中心',
+    items: [
+      {
+        title: '运维可观测性',
+        href: '/ops',
+        icon: Activity,
+        badge: 'NEW',
+        description: '健康巡检、指标、告警、日志、故障诊断、SLO 与运维智能体',
       },
     ],
   },

@@ -43,6 +43,7 @@ from app.api.tasks_router import router as tasks_router          # P1-3：任务
 from app.api.auth_router import router as auth_router              # P2-1：用户认证
 from app.api.knowledge_base_router import router as kb_router     # P2-1：共享知识库
 from app.api.skills_router import router as skills_router          # P2-2：Skills生态
+from app.api.ops_router import router as ops_router                  # 运维能力接口（可观测性）
 
 logger = get_logger(__name__)
 _elk_handler: LogstashHandler | None = None
@@ -102,6 +103,7 @@ app.include_router(tasks_router, prefix="/api/v1")         # P1-3：任务式Age
 app.include_router(auth_router, prefix="/api/v1")          # P2-1：用户认证
 app.include_router(kb_router, prefix="/api/v1")            # P2-1：共享知识库
 app.include_router(skills_router, prefix="/api/v1")         # P2-2：Skills生态
+app.include_router(ops_router, prefix="/api/v1")             # 运维能力接口（可观测性）
 
 app.include_router(router, prefix="/api/v1")  # 业务接口
 

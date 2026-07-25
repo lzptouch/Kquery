@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KQuery 运维可观测性控制台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+         background: #0f172a; color: #e2e8f0; }
+  header { padding: 16px 24px; background: linear-gradient(90deg,#1e3a8a,#0f172a);
+           display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { font-size: 12px; color: #94a3b8; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 24px; background: #111c33; }
+  nav button { background: #1e293b; color: #cbd5e1; border: 1px solid #334155;
+               padding: 8px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  nav button:hover { background: #334155; }
+  nav button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+  main { padding: 20px 24px; }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .toolbar { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .btn { background: #2563eb; color: #fff; border: none; padding: 8px 14px;
+         border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .btn:hover { background: #1d4ed8; }
+  .btn.secondary { background: #475569; }
+  input, textarea, select { background: #0b1426; color: #e2e8f0; border: 1px solid #334155;
+         border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px,1fr)); gap: 12px; }
+  .card { background: #111c33; border: 1px solid #1e293b; border-radius: 10px; padding: 12px; }
+  .card .title { font-size: 13px; color: #94a3b8; }
+  .card .val { font-size: 20px; font-weight: 600; margin-top: 4px; }
+  .up { color: #22c55e; } .down { color: #ef4444; } .warn { color: #f59e0b; }
+  pre { background: #0b1426; border: 1px solid #1e293b; border-radius: 8px; padding: 12px;
+        overflow: auto; max-height: 420px; font-size: 12px; line-height: 1.5; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 10px; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px;
+          background: #1e293b; margin: 2px; }
+  .alert-row, .log-row, .inc-row, .slo-row { background: #0b1426; border: 1px solid #1e293b;
+          border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+  .msg { color: #f87171; font-size: 12px; margin: 6px 0; }
+  .ok { color: #22c55e; }
+  #chatlog { background: #0b1426; border: 1px solid #1e293b; border-radius: 8px;
+             padding: 12px; height: 280px; overflow: auto; margin-bottom: 8px; }
+  .bubble { margin: 6px 0; padding: 8px 10px; border-radius: 8px; max-width: 80%; }
+  .user { background: #1d4ed8; margin-left: auto; }
+  .bot { background: #1e293b; }
+  h3 { margin: 4px 0 10px; font-size: 15px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>KQuery 运维可观测性控制台</h1>
+  <div class="meta">后端: <span id="apiBase">http://localhost:8080</span></div>
+</header>
+<nav id="nav">
+  <button data-tab="dashboard" class="active">总览</button>
+  <button data-tab="health">健康巡检</button>
+  <button data-tab="metrics">指标</button>
+  <button data-tab="alerts">告警</button>
+  <button data-tab="logs">日志</button>
+  <button data-tab="incidents">故障诊断</button>
+  <button data-tab="slo">SLO</button>
+  <button data-tab="agent">运维智能体</button>
+</nav>
+<main>
+  <section id="dashboard" class="panel active">
+    <div class="toolbar"><button class="btn" onclick="loadDashboard()">刷新总览</button><span id="dashMsg"></span></div>
+    <div id="dashCards" class="grid"></div>
+    <pre id="dashRaw"></pre>
+  </section>
+
+  <section id="health" class="panel">
+    <div class="toolbar"><button class="btn" onclick="runHealth()">运行健康巡检</button><span id="healthMsg"></span></div>
+    <div id="healthCards" class="grid"></div>
+  </section>
+
+  <section id="metrics" class="panel">
+    <h3>指标采集</h3>
+    <div class="row">
+      <input id="mName" placeholder="指标名(如 error_rate)" value="error_rate" />
+      <input id="mVal" placeholder="数值" value="0.05" style="width:90px" />
+      <button class="btn" onclick="recordMetric()">记录指标</button>
+      <button class="btn secondary" onclick="loadMetrics()">导出 Prometheus 指标</button>
+    </div>
+    <pre id="metricsOut"></pre>
+  </section>
+
+  <section id="alerts" class="panel">
+    <h3>告警能力</h3>
+    <div class="row">
+      <input id="ruleName" placeholder="规则名" value="高错误率" style="width:120px"/>
+      <input id="ruleMetric" placeholder="指标" value="error_rate" style="width:110px"/>
+      <select id="ruleOp"><option value=">">&gt;</option><option value="<">&lt;</option><option value=">=">&ge;</option><option value="<=">&le;</option><option value="==">==</option></select>
+      <input id="ruleTh" placeholder="阈值" value="0.1" style="width:70px"/>
+      <button class="btn" onclick="createRule()">创建规则</button>
+    </div>
+    <div class="row">
+      <input id="evErr" placeholder="模拟错误率" value="0.5" style="width:110px"/>
+      <button class="btn" onclick="evaluateRules()">评估规则</button>
+      <button class="btn secondary" onclick="loadAlerts()">刷新告警列表</button>
+      <span id="alertMsg"></span>
+    </div>
+    <div id="alertList"></div>
+  </section>
+
+  <section id="logs" class="panel">
+    <h3>日志采集与聚合</h3>
+    <div class="row">
+      <input id="logSrc" placeholder="来源" value="api" style="width:100px"/>
+      <select id="logLevel"><option>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select>
+      <input id="logMsg" placeholder="日志内容" value="数据库连接超时" style="width:240px"/>
+      <button class="btn" onclick="collectLog()">采集日志</button>
+      <button class="btn secondary" onclick="loadLogs()">刷新日志</button>
+      <button class="btn secondary" onclick="loadLogStats()">统计</button>
+    </div>
+    <div id="logList"></div>
+    <pre id="logStats"></pre>
+  </section>
+
+  <section id="incidents" class="panel">
+    <h3>故障诊断与根因分析</h3>
+    <div class="row">
+      <input id="incSym" placeholder="故障症状" value="生产环境 API 服务不可用" style="width:280px"/>
+      <input id="incSvc" placeholder="影响服务(逗号分隔)" value="api" style="width:160px"/>
+      <label><input type="checkbox" id="incLlm"/> 使用 LLM</label>
+      <button class="btn" onclick="createIncident()">创建并诊断</button>
+      <button class="btn secondary" onclick="loadIncidents()">刷新列表</button>
+      <span id="incMsg"></span>
+    </div>
+    <div id="incList"></div>
+  </section>
+
+  <section id="slo" class="panel">
+    <h3>SLO 追踪与错误预算</h3>
+    <div class="row">
+      <input id="sloName" placeholder="SLO 名称" value="API 可用性" style="width:160px"/>
+      <input id="sloObj" placeholder="目标%" value="99.9" style="width:80px"/>
+      <button class="btn" onclick="createSlo()">创建 SLO</button>
+      <button class="btn secondary" onclick="loadSlos()">刷新</button>
+    </div>
+    <div class="row">
+      <input id="sloEvalRate" placeholder="评估错误率" value="0.0002" style="width:120px"/>
+      <button class="btn" onclick="evaluateFirstSlo()">评估首个 SLO</button>
+    </div>
+    <div id="sloList"></div>
+  </section>
+
+  <section id="agent" class="panel">
+    <h3>运维智能体 (AIOps)</h3>
+    <div id="chatlog"></div>
+    <div class="row">
+      <input id="chatInput" placeholder="例如：系统健康状态如何？有哪些活跃告警？" style="flex:1;min-width:260px"/>
+      <button class="btn" onclick="sendChat()">发送</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const BASE = "http://localhost:8080";
+const api = async (method, path, body) => {
+  const opt = { method, headers: { "Content-Type": "application/json" } };
+  if (body !== undefined) opt.body = JSON.stringify(body);
+  const r = await fetch(BASE + path, opt);
+  const txt = await r.text();
+  let data; try { data = txt ? JSON.parse(txt) : {}; } catch { data = txt; }
+  return { status: r.status, data };
+};
+const esc = (s) => String(s ?? "").replace(/[&<>]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;" }[c]));
+const statusClass = (s) => s === "up" ? "up" : (s === "down" ? "down" : "warn");
+
+// tabs
+document.querySelectorAll("#nav button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("#nav button").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".panel").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    document.getElementById(b.dataset.tab).classList.add("active");
+  };
+});
+
+async function loadDashboard() {
+  const { status, data } = await api("GET", "/api/v1/ops/dashboard");
+  const m = document.getElementById("dashMsg");
+  if (status !== 200) { m.textContent = "失败 " + status; m.className = "msg"; return; }
+  m.textContent = "已加载"; m.className = "ok";
+  const h = data.health || {};
+  const cards = [
+    ["错误率", data.error_rate],
+    ["健康组件", (h.healthy ?? "-") + "/" + (h.total ?? "-")],
+    ["活跃告警", data.alerts?.active_count ?? 0],
+    ["故障总数", data.incidents?.total ?? 0],
+    ["未闭环故障", data.incidents?.open_count ?? 0],
+    ["SLO 数", (data.slos ?? []).length],
+  ];
+  document.getElementById("dashCards").innerHTML = cards.map(([t, v]) =>
+    `<div class="card"><div class="title">${t}</div><div class="val">${esc(v)}</div></div>`).join("");
+  document.getElementById("dashRaw").textContent = JSON.stringify(data, null, 2);
+}
+
+async function runHealth() {
+  const { status, data } = await api("POST", "/api/v1/ops/health/check");
+  const m = document.getElementById("healthMsg");
+  if (status !== 200) { m.textContent = "失败 " + status; m.className = "msg"; return; }
+  m.textContent = "完成"; m.className = "ok";
+  const comps = data.components || {};
+  document.getElementById("healthCards").innerHTML = Object.entries(comps).map(([k, v]) => {
+    const sc = statusClass(v.status);
+    const detail = v.latency_ms != null ? v.latency_ms + "ms" : (v.detail || "");
+    return `<div class="card"><div class="title">${esc(k)}</div>
+      <div class="val ${sc}">${esc(v.status)}</div>
+      <div style="font-size:11px;color:#94a3b8">${esc(detail)}</div></div>`;
+  }).join("");
+}
+
+async function recordMetric() {
+  const name = document.getElementById("mName").value;
+  const value = parseFloat(document.getElementById("mVal").value);
+  const { status } = await api("POST", "/api/v1/ops/metrics/record", { name, value });
+  document.getElementById("metricsOut").textContent = status === 200 ? "已记录: " + name + " = " + value : "失败 " + status;
+}
+async function loadMetrics() {
+  const r = await fetch(BASE + "/api/v1/ops/metrics");
+  document.getElementById("metricsOut").textContent = await r.text();
+}
+
+async function createRule() {
+  const body = {
+    name: document.getElementById("ruleName").value,
+    metric: document.getElementById("ruleMetric").value,
+    operator: document.getElementById("ruleOp").value,
+    threshold: parseFloat(document.getElementById("ruleTh").value),
+    severity: "critical"
+  };
+  const { status, data } = await api("POST", "/api/v1/ops/alert-rules", body);
+  document.getElementById("alertMsg").textContent = status === 201 ? "规则已建:" + data.id : "失败 " + status;
+  document.getElementById("alertMsg").className = status === 201 ? "ok" : "msg";
+}
+async function evaluateRules() {
+  const er = parseFloat(document.getElementById("evErr").value);
+  const { status, data } = await api("POST", "/api/v1/ops/alert-rules/evaluate", { metrics: { error_rate: er } });
+  document.getElementById("alertMsg").textContent = `评估触发 ${data.triggered?.length || 0} 条告警`;
+  document.getElementById("alertMsg").className = "ok";
+  renderAlerts();
+}
+async function loadAlerts() { renderAlerts(); }
+async function renderAlerts() {
+  const { status, data } = await api("GET", "/api/v1/ops/alerts?limit=50");
+  if (status !== 200) { document.getElementById("alertList").innerHTML = "失败"; return; }
+  document.getElementById("alertList").innerHTML = data.map(a => {
+    const canResolve = a.status === "active";
+    return `<div class="alert-row">
+      <span class="pill ${a.severity==='critical'?'down':'warn'}">${esc(a.severity)}</span>
+      <b>${esc(a.title)}</b> <span style="color:#94a3b8">@${esc(a.component)}</span>
+      <span class="pill">${esc(a.status)}</span>
+      <div style="font-size:12px;color:#94a3b8">${esc(a.message)}</div>
+      ${canResolve ? `<button class="btn secondary" style="margin-top:6px" onclick="resolveAlert('${a.id}')">解决</button>` : ""}
+    </div>`;
+  }).join("") || "<i>暂无告警</i>";
+}
+async function resolveAlert(id) {
+  await api("POST", `/api/v1/ops/alerts/${id}/resolve`, { resolution: "前端一键解决" });
+  renderAlerts();
+}
+
+async function collectLog() {
+  const body = {
+    source: document.getElementById("logSrc").value,
+    level: document.getElementById("logLevel").value,
+    message: document.getElementById("logMsg").value
+  };
+  const { status } = await api("POST", "/api/v1/ops/logs", body);
+  document.getElementById("logList").innerHTML = status === 201 ? '<span class="ok">已采集</span>' : "失败 " + status;
+  loadLogs();
+}
+async function loadLogs() {
+  const { status, data } = await api("GET", "/api/v1/ops/logs?limit=30");
+  if (status !== 200) { document.getElementById("logList").innerHTML = "失败"; return; }
+  document.getElementById("logList").innerHTML = data.map(l =>
+    `<div class="log-row"><span class="pill ${l.level==='ERROR'?'down':(l.level==='WARNING'?'warn':'up')}">${esc(l.level)}</span>
+     <b>${esc(l.source)}</b>: ${esc(l.message)}</div>`).join("") || "<i>暂无日志</i>";
+}
+async function loadLogStats() {
+  const { status, data } = await api("GET", "/api/v1/ops/logs/stats");
+  document.getElementById("logStats").textContent = status === 200 ? JSON.stringify(data, null, 2) : "失败";
+}
+
+async function createIncident() {
+  const body = {
+    symptom: document.getElementById("incSym").value,
+    affected_services: document.getElementById("incSvc").value.split(",").map(s => s.trim()).filter(Boolean),
+    use_llm: document.getElementById("incLlm").checked
+  };
+  const m = document.getElementById("incMsg");
+  m.textContent = "诊断中..."; m.className = "";
+  const { status, data } = await api("POST", "/api/v1/ops/incidents", body);
+  if (status !== 201) { m.textContent = "失败 " + status; m.className = "msg"; return; }
+  m.textContent = "诊断完成，置信度 " + (data.confidence ?? "-"); m.className = "ok";
+  renderIncidents();
+}
+async function loadIncidents() { renderIncidents(); }
+async function renderIncidents() {
+  const { status, data } = await api("GET", "/api/v1/ops/incidents?limit=30");
+  if (status !== 200) { document.getElementById("incList").innerHTML = "失败"; return; }
+  document.getElementById("incList").innerHTML = data.map(i =>
+    `<div class="inc-row">
+      <span class="pill ${i.severity==='critical'?'down':'warn'}">${esc(i.severity)}</span>
+      <span class="pill">${esc(i.status)}</span> <b>${esc(i.symptom)}</b>
+      <div style="font-size:12px;margin-top:4px"><b>根因:</b> ${esc(i.root_cause)}</div>
+      <div style="font-size:12px;color:#94a3b8">${esc(i.diagnosis)}</div>
+      <div style="font-size:12px;margin-top:4px">${esc((i.recommendations||[]).join("；"))}</div>
+    </div>`).join("") || "<i>暂无故障</i>";
+}
+
+async function createSlo() {
+  const body = { name: document.getElementById("sloName").value, objective: parseFloat(document.getElementById("sloObj").value) };
+  const { status } = await api("POST", "/api/v1/ops/slos", body);
+  loadSlos();
+}
+async function loadSlos() {
+  const { status, data } = await api("GET", "/api/v1/ops/slos");
+  if (status !== 200) { document.getElementById("sloList").innerHTML = "失败"; return; }
+  document.getElementById("sloList").innerHTML = data.map(s =>
+    `<div class="slo-row"><b>${esc(s.name)}</b> 目标 ${s.objective}% · 窗口 ${s.window_days}天
+     <span class="pill">${esc(s.enabled ? '启用' : '停用')}</span>
+     <span class="pill">${esc(s.id)}</span></div>`).join("") || "<i>暂无 SLO</i>";
+  window.__firstSlo = data[0]?.id;
+}
+async function evaluateFirstSlo() {
+  if (!window.__firstSlo) { await loadSlos(); }
+  const id = window.__firstSlo;
+  if (!id) { document.getElementById("sloList").innerHTML = "请先创建 SLO"; return; }
+  const rate = parseFloat(document.getElementById("sloEvalRate").value);
+  const { status, data } = await api("POST", `/api/v1/ops/slos/${id}/evaluate`, { error_rate: rate });
+  document.getElementById("sloList").insertAdjacentHTML("afterbegin",
+    `<div class="slo-row"><b>评估结果</b>: status=<span class="${statusClass(data.status)}">${esc(data.status)}</span>,
+     错误率=${data.error_rate}, 剩余预算=${data.budget_remaining_ratio}, 消耗率=${data.burn_rate}</div>`);
+}
+
+async function sendChat() {
+  const input = document.getElementById("chatInput");
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = "";
+  const log = document.getElementById("chatlog");
+  log.insertAdjacentHTML("beforeend", `<div class="bubble user">${esc(msg)}</div>`);
+  log.scrollTop = log.scrollHeight;
+  const { status, data } = await api("POST", "/api/v1/ops/agent/chat", { message: msg });
+  const reply = status === 200 ? data.reply : "调用失败 " + status;
+  log.insertAdjacentHTML("beforeend", `<div class="bubble bot">${esc(reply).replace(/\n/g,'<br>')}</div>`);
+  log.scrollTop = log.scrollHeight;
+}
+
+// init
+loadDashboard();
+</script>
+</body>
+</html>

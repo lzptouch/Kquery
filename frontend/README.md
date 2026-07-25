@@ -6,17 +6,21 @@ KQuery Pro 前端是基于 **React 19 + TypeScript + Vite** 构建的现代化�
 
 | 技术 | 版本 | 用途 |
 |------|------|------|
-| React | 19 | UI 框架 |
-| TypeScript | 5.7+ | 类型系统 |
-| Vite | 6+ | 构建工具与开发服务器 |
+| React | 19.2+ | UI 框架 |
+| TypeScript | 5.9+ | 类型系统 |
+| Vite | 8+ | 构建工具与开发服务器 |
 | Tailwind CSS | 3.4+ | 实用优先的 CSS 框架 |
 | shadcn/ui | - | 基于 Radix UI 的高质量组件库 |
 | Radix UI | - | 底层无障碍组件原语 |
-| Zustand | - | 轻量级状态管理 |
-| React Router | v6 | 客户端路由 |
-| React Query (TanStack) | v5 | 服务端状态缓存与同步 |
-| Axios | - | HTTP 客户端 |
-| Lucide React | - | 图标库 |
+| Zustand | 5+ | 轻量级状态管理 |
+| React Router | 6.28+ | 客户端路由 |
+| React Query (TanStack) | 5.60+ | 服务端状态缓存与同步 |
+| Axios | 1.7+ | HTTP 客户端 |
+| Lucide React | 0.460+ | 图标库 |
+| Cytoscape / @antv/g6 / react-force-graph-2d | - | 图谱与关系可视化 |
+| Recharts | 2.13+ | 图表绘制 |
+| React Markdown / remark-gfm | 9 / 4 | Markdown 渲染 |
+| Zod / React Hook Form | 3 / 7 | 表单与数据校验 |
 
 ## 项目结构
 
@@ -63,13 +67,21 @@ frontend/
 │   │   ├── Documents.tsx       # 文档管理（上传/查看/处理文档）
 │   │   ├── KnowledgeGraph.tsx  # 知识图谱可视化（实体浏览/关系探索）
 │   │   ├── SearchResults.tsx   # 全局搜索结果页
+│   │   ├── Analytics.tsx       # 分析与运维仪表盘
+│   │   ├── MultimodalViewer.tsx # 多模态检索浏览
+│   │   ├── Notes.tsx           # AI 笔记列表
+│   │   ├── NoteEditor.tsx      # 笔记编辑器
+│   │   ├── Skills.tsx          # 技能中心
+│   │   ├── Tasks.tsx           # 任务式 Agent
+│   │   ├── OpsCenter.tsx       # 运维中心
 │   │   └── Settings.tsx        # 系统设置（参数配置）
 │   │
-│   ├── stores/                 # Zustand 状态管理
+│   ├── stores/                 # Zustand 状态管理（按业务域划分）
 │   │   ├── useChatStore.ts     # 聊天状态（消息/会话/知识库选择）
 │   │   ├── useDocumentStore.ts # 文档状态（文档列表/上传进度）
 │   │   ├── useGraphStore.ts    # 图谱状态（实体/关系/可视化配置）
-│   │   └── useKbStore.ts       # 知识库状态（集合列表/统计）
+│   │   ├── useKbStore.ts       # 知识库状态（集合列表/统计）
+│   │   └── ...                 # 笔记/任务/技能/运维等新增业务状态 Store
 │   │
 │   └── assets/                 # 静态资源（图片/字体等）
 │
@@ -95,6 +107,13 @@ frontend/
 | `/documents` | `Documents` | `MainLayout` | 文档管理，上传/查看/处理文档 |
 | `/knowledge-graph` | `KnowledgeGraph` | `MainLayout` | 知识图谱可视化浏览和实体关系探索 |
 | `/search` | `SearchResults` | `MainLayout` | 全局搜索结果展示 |
+| `/analytics` | `Analytics` | `MainLayout` | 分析与运维仪表盘 |
+| `/multimodal` | `MultimodalViewer` | `MainLayout` | 多模态检索浏览 |
+| `/notes` | `Notes` | `MainLayout` | AI 笔记列表 |
+| `/notes/:id` | `NoteEditor` | `MainLayout` | 笔记编辑器 |
+| `/skills` | `Skills` | `MainLayout` | 技能中心 |
+| `/tasks` | `Tasks` | `MainLayout` | 任务式 Agent |
+| `/ops` | `OpsCenter` | `MainLayout` | 运维中心 |
 | `/settings` | `Settings` | `MainLayout` | 系统设置和参数配置 |
 | `*` | - | `MainLayout` | 404 重定向到首页 |
 
@@ -113,6 +132,13 @@ export const router = createBrowserRouter([
       { path: 'chat', lazy: lazyComponent('@/pages/Chat') },
       { path: 'settings', lazy: lazyComponent('@/pages/Settings') },
       { path: 'search', lazy: lazyComponent('@/pages/SearchResults') },
+      { path: 'analytics', lazy: lazyComponent('@/pages/Analytics') },
+      { path: 'multimodal', lazy: lazyComponent('@/pages/MultimodalViewer') },
+      { path: 'notes', lazy: lazyComponent('@/pages/Notes') },
+      { path: 'notes/:id', lazy: lazyComponent('@/pages/NoteEditor') },
+      { path: 'skills', lazy: lazyComponent('@/pages/Skills') },
+      { path: 'tasks', lazy: lazyComponent('@/pages/Tasks') },
+      { path: 'ops', lazy: lazyComponent('@/pages/OpsCenter') },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },
@@ -137,7 +163,7 @@ export const router = createBrowserRouter([
 - 系统状态指示器
 
 #### `Sidebar.tsx`
-- 主导航菜单（Dashboard / Chat / Knowledge Bases / Documents / Knowledge Graph）
+- 主导航菜单（Dashboard / Chat / Knowledge Bases / Documents / Knowledge Graph / Analytics / Multimodal / Notes / Skills / Tasks / Ops）
 - 当前路由高亮
 - 可折叠的二级菜单
 
@@ -467,7 +493,8 @@ server {
 
 ## 待办事项
 
-- [ ] 实现 SSE 流式输出（Chat 页面）
-- [ ] 知识图谱 D3.js/G6 可视化组件
-- [ ] 文档上传进度实时显示
+- [x] 实现 SSE 流式输出（Chat 页面）
+- [x] 知识图谱可视化组件（基于 @antv/g6 / cytoscape / react-force-graph-2d）
+- [x] 文档上传进度实时显示
 - [ ] 移动端适配优化
+- [x] 新增多模态检索、AI 笔记、技能中心、任务 Agent、运维中心等模块

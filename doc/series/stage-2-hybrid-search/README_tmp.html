@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>README.md</title>
+    <meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+    
+<style>
+/* https://github.com/microsoft/vscode/blob/master/extensions/markdown-language-features/media/markdown.css */
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+body {
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+	padding: 0 26px;
+	line-height: var(--vscode-markdown-line-height, 22px);
+	word-wrap: break-word;
+}
+
+html,footer,header{
+	font-family: var(--vscode-markdown-font-family, -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif);
+	font-size: var(--vscode-markdown-font-size, 14px);
+}
+
+#code-csp-warning {
+	position: fixed;
+	top: 0;
+	right: 0;
+	color: white;
+	margin: 16px;
+	text-align: center;
+	font-size: 12px;
+	font-family: sans-serif;
+	background-color:#444444;
+	cursor: pointer;
+	padding: 6px;
+	box-shadow: 1px 1px 1px rgba(0,0,0,.25);
+}
+
+#code-csp-warning:hover {
+	text-decoration: none;
+	background-color:#007acc;
+	box-shadow: 2px 2px 2px rgba(0,0,0,.25);
+}
+
+body.scrollBeyondLastLine {
+	margin-bottom: calc(100vh - 22px);
+}
+
+body.showEditorSelection .code-line {
+	position: relative;
+}
+
+body.showEditorSelection .code-active-line:before,
+body.showEditorSelection .code-line:hover:before {
+	content: "";
+	display: block;
+	position: absolute;
+	top: 0;
+	left: -12px;
+	height: 100%;
+}
+
+body.showEditorSelection li.code-active-line:before,
+body.showEditorSelection li.code-line:hover:before {
+	left: -30px;
+}
+
+.vscode-light.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.15);
+}
+
+.vscode-light.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(0, 0, 0, 0.40);
+}
+
+.vscode-light.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-dark.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.4);
+}
+
+.vscode-dark.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 255, 255, 0.60);
+}
+
+.vscode-dark.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+.vscode-high-contrast.showEditorSelection .code-active-line:before {
+	border-left: 3px solid rgba(255, 160, 0, 0.7);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line:hover:before {
+	border-left: 3px solid rgba(255, 160, 0, 1);
+}
+
+.vscode-high-contrast.showEditorSelection .code-line .code-line:hover:before {
+	border-left: none;
+}
+
+img {
+	max-width: 100%;
+	max-height: 100%;
+}
+
+a {
+	text-decoration: none;
+}
+
+a:hover {
+	text-decoration: underline;
+}
+
+a:focus,
+input:focus,
+select:focus,
+textarea:focus {
+	outline: 1px solid -webkit-focus-ring-color;
+	outline-offset: -1px;
+}
+
+hr {
+	border: 0;
+	height: 2px;
+	border-bottom: 2px solid;
+}
+
+h1 {
+	padding-bottom: 0.3em;
+	line-height: 1.2;
+	border-bottom-width: 1px;
+	border-bottom-style: solid;
+}
+
+h1, h2, h3 {
+	font-weight: normal;
+}
+
+table {
+	border-collapse: collapse;
+}
+
+table > thead > tr > th {
+	text-align: left;
+	border-bottom: 1px solid;
+}
+
+table > thead > tr > th,
+table > thead > tr > td,
+table > tbody > tr > th,
+table > tbody > tr > td {
+	padding: 5px 10px;
+}
+
+table > tbody > tr + tr > td {
+	border-top: 1px solid;
+}
+
+blockquote {
+	margin: 0 7px 0 5px;
+	padding: 0 16px 0 10px;
+	border-left-width: 5px;
+	border-left-style: solid;
+}
+
+code {
+	font-family: Menlo, Monaco, Consolas, "Droid Sans Mono", "Courier New", monospace, "Droid Sans Fallback";
+	font-size: 1em;
+	line-height: 1.357em;
+}
+
+body.wordWrap pre {
+	white-space: pre-wrap;
+}
+
+pre:not(.hljs),
+pre.hljs code > div {
+	padding: 16px;
+	border-radius: 3px;
+	overflow: auto;
+}
+
+pre code {
+	color: var(--vscode-editor-foreground);
+	tab-size: 4;
+}
+
+/** Theming */
+
+.vscode-light pre {
+	background-color: rgba(220, 220, 220, 0.4);
+}
+
+.vscode-dark pre {
+	background-color: rgba(10, 10, 10, 0.4);
+}
+
+.vscode-high-contrast pre {
+	background-color: rgb(0, 0, 0);
+}
+
+.vscode-high-contrast h1 {
+	border-color: rgb(0, 0, 0);
+}
+
+.vscode-light table > thead > tr > th {
+	border-color: rgba(0, 0, 0, 0.69);
+}
+
+.vscode-dark table > thead > tr > th {
+	border-color: rgba(255, 255, 255, 0.69);
+}
+
+.vscode-light h1,
+.vscode-light hr,
+.vscode-light table > tbody > tr + tr > td {
+	border-color: rgba(0, 0, 0, 0.18);
+}
+
+.vscode-dark h1,
+.vscode-dark hr,
+.vscode-dark table > tbody > tr + tr > td {
+	border-color: rgba(255, 255, 255, 0.18);
+}
+
+</style>
+
+<style>
+/* Tomorrow Theme */
+/* http://jmblog.github.com/color-themes-for-google-code-highlightjs */
+/* Original theme - https://github.com/chriskempson/tomorrow-theme */
+
+/* Tomorrow Comment */
+.hljs-comment,
+.hljs-quote {
+	color: #8e908c;
+}
+
+/* Tomorrow Red */
+.hljs-variable,
+.hljs-template-variable,
+.hljs-tag,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-deletion {
+	color: #c82829;
+}
+
+/* Tomorrow Orange */
+.hljs-number,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-literal,
+.hljs-type,
+.hljs-params,
+.hljs-meta,
+.hljs-link {
+	color: #f5871f;
+}
+
+/* Tomorrow Yellow */
+.hljs-attribute {
+	color: #eab700;
+}
+
+/* Tomorrow Green */
+.hljs-string,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+	color: #718c00;
+}
+
+/* Tomorrow Blue */
+.hljs-title,
+.hljs-section {
+	color: #4271ae;
+}
+
+/* Tomorrow Purple */
+.hljs-keyword,
+.hljs-selector-tag {
+	color: #8959a8;
+}
+
+.hljs {
+	display: block;
+	overflow-x: auto;
+	color: #4d4d4c;
+	padding: 0.5em;
+}
+
+.hljs-emphasis {
+	font-style: italic;
+}
+
+.hljs-strong {
+	font-weight: bold;
+}
+</style>
+
+<style>
+/*
+ * Custom MD PDF CSS
+ */
+html,footer,header{
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+
+ }
+body {
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe WPC", "Segoe UI", "Ubuntu", "Droid Sans", sans-serif, "Meiryo";
+	padding: 0 12px;
+}
+
+pre {
+	background-color: #f8f8f8;
+	border: 1px solid #cccccc;
+	border-radius: 3px;
+	overflow-x: auto;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+}
+
+pre:not(.hljs) {
+	padding: 23px;
+	line-height: 19px;
+}
+
+blockquote {
+	background: rgba(127, 127, 127, 0.1);
+	border-color: rgba(0, 122, 204, 0.5);
+}
+
+.emoji {
+	height: 1.4em;
+}
+
+code {
+	font-size: 14px;
+	line-height: 19px;
+}
+
+/* for inline code */
+:not(pre):not(.hljs) > code {
+	color: #C9AE75; /* Change the old color so it seems less like an error */
+	font-size: inherit;
+}
+
+/* Page Break : use <div class="page"/> to insert page break
+-------------------------------------------------------- */
+.page {
+	page-break-after: always;
+}
+
+</style>
+<link rel="stylesheet" href="file:///Users/lizhipeng/workspace/R%3A%5C2.Travail%5C1.Enseignement%5CCours%5C_1.Outils%5C2.Developpement%5C1.SCSS%5Cmain.css" type="text/css"><link rel="stylesheet" href="file:///Users/lizhipeng/workspace/D%3A%5Crdaros%5CCours%5C_1.Outils%5C2.Developpement%5C1.SCSS%5Cmain.css" type="text/css">
+</head>
+
+<body>
+    <h1 id="%E9%98%B6%E6%AE%B5-2%E5%B7%A5%E7%A8%8B%E5%8C%96-rag-%E4%B8%8E%E6%B7%B7%E5%90%88%E6%A3%80%E7%B4%A2%E5%AE%9E%E7%8E%B0%E7%BB%86%E8%8A%82">阶段 2：工程化 RAG 与混合检索（实现细节）</h1>
+<blockquote>
+<p>本阶段在阶段 1 的 Naive RAG 之上，把&quot;单路向量检索&quot;升级为 <strong>BM25 + 向量 + RRF 融合 + 神经网络重排</strong>四段式混合检索；同时补齐 <strong>缓存、限流、Prometheus 指标</strong> 三大工程基础设施。</p>
+</blockquote>
+<hr>
+<h2 id="%E4%B8%80%E9%98%B6%E6%AE%B5%E5%AE%9A%E4%BD%8D%E4%B8%8E%E8%BE%B9%E7%95%8C">一、阶段定位与边界</h2>
+<h3 id="11-%E4%B8%9A%E5%8A%A1%E8%83%BD%E5%8A%9B%E8%8C%83%E5%9B%B4">1.1 业务能力范围</h3>
+<pre class="hljs"><code><div>flowchart TB
+    Q[&quot;用户查询&quot;] --&gt; S1[&quot;BM25 关键词检索&quot;]
+    Q --&gt; S2[&quot;向量语义检索&quot;]
+    S1 --&gt; F[&quot;RRF 融合&quot;]
+    S2 --&gt; F
+    F --&gt; R[&quot;Cross-Encoder 重排&quot;]
+    R --&gt; P[&quot;LLM 生成&quot;]
+    Q -.-&gt; C{&quot;缓存命中?&quot;}
+    C -- yes --&gt; OUT[&quot;直接返回&quot;]
+    P --&gt; API[&quot;限流 / 指标&quot;]
+</div></code></pre>
+<h3 id="12-%E8%A7%A3%E5%86%B3%E7%9A%84%E6%A0%B8%E5%BF%83%E9%97%AE%E9%A2%98">1.2 解决的核心问题</h3>
+<table>
+<thead>
+<tr>
+<th>旧问题</th>
+<th>新解法</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>编号 / 型号召回不稳</td>
+<td>BM25 关键词精确匹配</td>
+</tr>
+<tr>
+<td>Top-K 顺序噪声</td>
+<td>Cross-Encoder 重排精排</td>
+</tr>
+<tr>
+<td>重复 query 反复扣 LLM 费用</td>
+<td>语义级缓存</td>
+</tr>
+<tr>
+<td>突发流量压垮服务</td>
+<td>令牌桶限流</td>
+</tr>
+<tr>
+<td>上线后无法观测指标</td>
+<td>Prometheus 指标 + Grafana 看板</td>
+</tr>
+</tbody>
+</table>
+<h3 id="13-%E9%AA%8C%E6%94%B6%E6%A0%87%E5%87%86">1.3 验收标准</h3>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>目标值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Recall@10</td>
+<td>≥ 0.70（人工评测集）</td>
+</tr>
+<tr>
+<td>P95 端到端延迟</td>
+<td>≤ 2s（不含 LLM）</td>
+</tr>
+<tr>
+<td>缓存命中率（高频 query）</td>
+<td>≥ 30%</td>
+</tr>
+<tr>
+<td>限流生效</td>
+<td>超额请求 100% 429</td>
+</tr>
+<tr>
+<td>指标可观测</td>
+<td><code>/metrics</code> 端点暴露 ≥ 5 个核心指标</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="%E4%BA%8C%E6%9E%B6%E6%9E%84%E8%AE%BE%E8%AE%A1">二、架构设计</h2>
+<h3 id="21-%E5%9B%9B%E6%AE%B5%E5%BC%8F%E6%A3%80%E7%B4%A2%E9%93%BE%E8%B7%AF%E7%9A%84%E5%8F%96%E8%88%8D">2.1 四段式检索链路的取舍</h3>
+<pre class="hljs"><code><div>flowchart LR
+    Q[&quot;原始查询&quot;] --&gt; M[&quot;BM25 关键词检索&lt;br/&gt;取前 20&quot;]
+    Q --&gt; N[&quot;向量语义检索&lt;br/&gt;取前 20&quot;]
+    M --&gt; F[&quot;RRF 融合&lt;br/&gt;按排名合并为 20 条&quot;]
+    N --&gt; F
+    F --&gt; R[&quot;Cross-Encoder 精排&lt;br/&gt;截取前 5&quot;]
+    R --&gt; G[&quot;送入生成上下文&quot;]
+</div></code></pre>
+<p><strong>为什么 BM25 与向量都要先多召</strong>（Top-20 而不是 Top-5）？</p>
+<p>如果两路分别只召 Top-5 后再融合，会损失召回率——某个文档在某路正好排第 6 被截掉。<strong>多召是为了给 RRF 与 Rerank 留候选空间</strong>。但每路多召多少不能拍脑袋：太少损失召回，太多影响性能，经验值是最终 Top-K 的 3~5 倍。</p>
+<p><strong>为什么 RRF 而不是分数归一化</strong>？</p>
+<p>BM25 的分数范围是 0~∞，向量的 cosine 范围是 0~1，<strong>两者的分数分布完全不同</strong>。强行线性归一化再加权会出现&quot;BM25 0.5 与向量 0.5 实际意义不同&quot;的校准难题。</p>
+<p><strong>RRF 只用排名不用分数</strong>，把&quot;某路第 1 名&quot;统一视为贡献度，不做分数校准——天然支持异构检索器融合。</p>
+<p><strong>为什么 Rerank 只能精排</strong>？</p>
+<p>Cross-Encoder 把&quot;query + doc&quot;拼在一起喂给 BERT，逐对计算相关度——比向量检索的双塔模型精细得多，<strong>但代价是 O(n) 次 LLM 推理</strong>，不能在百万候选上跑。</p>
+<p><strong>所以链路必须分层</strong>：先用 BM25 + 向量粗排（毫秒级），再用 Cross-Encoder 精排（百毫秒级），最后只把 Top-K 喂给生成 LLM。</p>
+<h3 id="22-%E7%BC%93%E5%AD%98%E7%9A%84%E8%AE%BE%E8%AE%A1">2.2 缓存的设计</h3>
+<p><strong>为什么是语义级缓存而不是文档级缓存</strong>？</p>
+<p>文档级缓存（同一文档返回同一答案）粒度过粗——同一问题换一个文档答案就变。<strong>语义级缓存的 key 是 query + model + 配置版本</strong>，只要 query 与模型版本不变就命中。</p>
+<p><strong>为什么缓存里只存答案而不存证据</strong>？</p>
+<p>证据往往在不同 query 之间会有微调（Top-K 不同），缓存全量证据反而增加存储。<strong>只缓存最终字符串答案</strong>，下一次同 query 直接复用。</p>
+<p><strong>缓存键必须包含模型版本与配置版本</strong>：</p>
+<p>缓存键由三部分摘要而成——<strong>用户问题原文、生成所用模型的版本标识、检索与生成的配置摘要</strong>。三者任一变化，键即变化。</p>
+<p>否则换模型后仍会命中旧模型产出的答案，造成&quot;升级了模型但用户体验没变&quot;的质量倒挂。<strong>这是工程上的细节，但很多团队第一版缓存设计就漏掉</strong>，上线后表现为&quot;灰度切了模型，指标毫无变化&quot;。</p>
+<h3 id="23-%E9%99%90%E6%B5%81%E7%9A%84%E8%AE%BE%E8%AE%A1">2.3 限流的设计</h3>
+<p><strong>令牌桶 vs 滑动窗口</strong>：</p>
+<ul>
+<li>令牌桶允许<strong>突发流量</strong>在桶未空时被吃掉，适合&quot;偶尔长尾但总体平稳&quot;的 RAG；</li>
+<li>滑动窗口<strong>严格按时间窗口计数</strong>，不会漏记但实现稍复杂。</li>
+</ul>
+<p>本阶段选令牌桶：实现简单且 RAG 业务很少有&quot;瞬时大量并发&quot;的场景。</p>
+<p><strong>限流粒度</strong>：</p>
+<p>按 <strong>租户 ID</strong> 限流（不是按用户）。原因：RAG 业务通常&quot;一个租户多个用户共用一个 KB&quot;，按租户限流更符合业务场景；按用户限流容易被共享账号绕过。</p>
+<h3 id="24-%E6%8C%87%E6%A0%87%E7%9A%84%E8%AE%BE%E8%AE%A1">2.4 指标的设计</h3>
+<p><strong>核心指标</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>含义</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rag_requests_total{status}</code></td>
+<td>请求总数（按状态分组）</td>
+<td>错误率告警</td>
+</tr>
+<tr>
+<td><code>rag_latency_seconds_bucket{tenant}</code></td>
+<td>端到端延迟直方图</td>
+<td>P95 告警</td>
+</tr>
+<tr>
+<td><code>rag_cache_total{result}</code></td>
+<td>缓存命中/未命中</td>
+<td>命中率看板</td>
+</tr>
+<tr>
+<td><code>rag_retrieval_top_score_bucket</code></td>
+<td>Top-1 融合分数分布</td>
+<td>评估 query 难度</td>
+</tr>
+<tr>
+<td><code>rag_llm_calls_total</code></td>
+<td>LLM 调用次数</td>
+<td>成本核算</td>
+</tr>
+</tbody>
+</table>
+<p><strong>指标分 label 的考量</strong>：</p>
+<p><code>tenant</code> 与 <code>status</code> 都是<strong>高基数/低基数区分</strong>：tenant 高基数（按租户切片），status 低基数（ok/error）。<strong>不要把 request 内容当作 label</strong>——会爆炸。</p>
+<hr>
+<h2 id="%E4%B8%89%E5%AE%9E%E7%8E%B0%E7%BB%86%E8%8A%82">三、实现细节</h2>
+<h3 id="31-bm25-%E7%9A%84%E5%AE%9E%E7%8E%B0%E8%80%83%E9%87%8F">3.1 BM25 的实现考量</h3>
+<p><strong>中文分词</strong>：</p>
+<p>BM25 假设&quot;词&quot;是基本单位，需要先分词。中文场景必须用 jieba 或 pkuseg（不能按字分），否则&quot;电池&quot;与&quot;电池电压&quot;无法匹配。</p>
+<p><strong>分词粒度</strong>：</p>
+<ul>
+<li>粗切：要精准，过滤停用词</li>
+<li>细切：保留 NER 实体，便于&quot;XB-2024 电池&quot;这种专有名词匹配</li>
+</ul>
+<p><strong>BM25 参数调优</strong>：</p>
+<p>BM25 的 <code>k1</code>、<code>b</code> 参数控制词频饱和与文档长度归一化。<strong>默认值 k1=1.5, b=0.75 对大多数场景够用</strong>。追求极致时可以基于自有语料调优。</p>
+<p><strong>BM25 的零分文档</strong>：</p>
+<p>BM25 对无关文档给 0 分。<strong>测试和实现都应过滤掉 0 分文档</strong>，否则融合时它们会进入 RRF 排名计算但永远在最末位，污染链路。</p>
+<h3 id="32-%E5%90%91%E9%87%8F%E6%A3%80%E7%B4%A2%E7%9A%84%E5%AE%9E%E7%8E%B0%E8%80%83%E9%87%8F">3.2 向量检索的实现考量</h3>
+<p>复用阶段 1 的向量检索实现，但<strong>接口必须抽象</strong>。</p>
+<p><strong>检索器抽象应具备的三项能力</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>说明</th>
+<th>为什么必需</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>统一的检索入口</td>
+<td>传入查询与返回条数，返回「文档 + 分数」列表</td>
+<td>让融合层不关心是哪一路检索</td>
+</tr>
+<tr>
+<td>自带名称标识</td>
+<td>每个检索器有唯一名字</td>
+<td>融合时能标注证据来自哪一路，便于前端展示与排障</td>
+</tr>
+<tr>
+<td>支持多实现并存</td>
+<td>同一抽象下可注册任意数量的实现</td>
+<td>阶段 3 新增图检索、阶段 7 新增跨模态检索时无需改动融合层</td>
+</tr>
+</tbody>
+</table>
+<p><strong>注意</strong>：不同检索器返回的分数<strong>语义不同</strong>（BM25 是 0~∞ 的无界分，向量是 -1~1 的余弦分），所以抽象层只承诺&quot;分数越大越相关&quot;这一条弱契约，<strong>不允许上层直接跨路比较分数</strong>，跨路比较统一交给 RRF。</p>
+<p><strong>向量归一化的重要性</strong>：</p>
+<p>BGE 系列在编码时应做归一化，使余弦相似度等价于内积。<strong>如果不归一化，不同向量的模长差异会直接污染分数</strong>——长文档的向量模长通常更大，会把无关的长文本推到前面。这是向量检索最高频的隐性错误。</p>
+<h3 id="33-rrf-%E8%9E%8D%E5%90%88%E7%9A%84%E6%95%B0%E5%AD%A6%E5%8E%9F%E7%90%86">3.3 RRF 融合的数学原理</h3>
+<p><strong>公式</strong>：</p>
+<pre class="hljs"><code><div>score(d) = Σ 1 / (k + rank_i + 1)
+</div></code></pre>
+<p>其中 <code>rank_i</code> 是文档 d 在第 i 路检索结果中的排名（从 0 开始）。</p>
+<p><strong>关键参数 <code>k</code></strong>：</p>
+<ul>
+<li><code>k=60</code> 是论文默认值，适合大多数场景；</li>
+<li><code>k</code> 越大，高排名的贡献越小（更平滑），越能容忍某路个别错位；</li>
+<li><code>k</code> 越小，高排名贡献越大（更激进），适合某路特别可靠的情况。</li>
+</ul>
+<p><strong>必须做的数值自检</strong>：</p>
+<p>RRF 公式极易写错（排名从 0 还是 1 开始、是否漏加常数、是否重复计同路）。上线前必须用可手工验算的算例核对：</p>
+<ul>
+<li>某文档只在 A 路排第 1 → 得分应为 1/(60+0+1) ≈ 0.0164；</li>
+<li>同一文档在 A、B 两路都排第 1 → 得分应为 2 × 0.0164 ≈ 0.0328，<strong>必须大于只在单路排第 1 的文档</strong>；</li>
+<li>某文档在 A 路排第 3、B 路排第 1，应超过在 A 路排第 1、B 路排第 3 的文档（<strong>两路同时靠前胜过单路极靠前</strong>）。</li>
+</ul>
+<p><strong>这三种排序关系是 RRF 的语义内核</strong>，任何一条不成立都说明公式实现有误。</p>
+<h3 id="34-rerank-%E7%9A%84%E5%AE%9E%E7%8E%B0%E8%80%83%E9%87%8F">3.4 Rerank 的实现考量</h3>
+<p><strong>Cross-Encoder 选型</strong>：</p>
+<ul>
+<li>中文场景：<code>BAAI/bge-reranker-base</code> 或 <code>bge-reranker-large</code>；</li>
+<li>英文场景：同上，但要注意英文模型对中文输入的衰减；</li>
+<li>多语言：<code>cohere-rerank-3</code> 或 <code>Jina Reranker</code>。</li>
+</ul>
+<p><strong>重排粒度</strong>：</p>
+<p>候选数（Top-50）越小越快，<strong>但太少会失去精排意义</strong>。经验值：候选数 = 最终 Top-K × 5~10。本阶段选 Top-50 → Top-5。</p>
+<p><strong>重排模型的开销</strong>：</p>
+<p>CPU 上 50 个候选 ≈ 100ms，<strong>单次问答只能承受一次重排</strong>。如果想给 LLM 多个上下文块分别重排，时间不可接受。</p>
+<h3 id="35-%E7%BC%93%E5%AD%98%E7%9A%84%E5%A4%B1%E6%95%88%E7%AD%96%E7%95%A5">3.5 缓存的失效策略</h3>
+<p><strong>TTL 设为 1 小时</strong>：</p>
+<p>过短：缓存命中率低，长期价值膨胀。<br>
+过长：陈旧答案堆积，模型升级后还使用旧结果。</p>
+<p><strong>模型升级时的失效机制</strong>：</p>
+<p>不采用&quot;手动清缓存&quot;这种易遗忘的方式，而是<strong>把模型版本与配置摘要编入缓存键</strong>——键变了，旧条目自然不再被命中，TTL 到期后被回收。这样生产升级模型无需任何额外运维动作，也不会出现&quot;切了模型但答案没变&quot;的假升级。</p>
+<p><strong>同时要防止的两种误判</strong>：</p>
+<ul>
+<li><strong>假失效</strong>：键里混入了时间戳、请求 ID 等易变字段 → 缓存永不命中，等于没做缓存；</li>
+<li><strong>假命中</strong>：键里漏掉了租户、知识库、模型版本 → 跨租户或跨版本串答案，属于严重的数据越权。<strong>租户标识必须进键</strong>。</li>
+</ul>
+<h3 id="36-%E9%99%90%E6%B5%81%E7%9A%84%E5%AE%9E%E6%96%BD%E7%BB%86%E8%8A%82">3.6 限流的实施细节</h3>
+<p><strong>令牌桶的三个要素</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>要素</th>
+<th>含义</th>
+<th>取值依据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>桶容量</td>
+<td>允许瞬间消费的最大令牌数</td>
+<td>按业务允许的突发峰值设定；本阶段取 60</td>
+</tr>
+<tr>
+<td>补充速率</td>
+<td>单位时间恢复的令牌数</td>
+<td>按常态承载能力设定；本阶段取每分钟 60</td>
+</tr>
+<tr>
+<td>粒度</td>
+<td>每个桶服务的对象</td>
+<td><strong>按租户独立成桶</strong>，避免单租户拖垮全局</td>
+</tr>
+</tbody>
+</table>
+<p><strong>运行语义</strong>：</p>
+<ol>
+<li>请求到达时先查桶内可用令牌数；</li>
+<li>有令牌则扣除一枚并放行；无令牌则拒绝；</li>
+<li>令牌按&quot;距上次补充的时间 × 补充速率&quot;累加，<strong>且不得超过桶容量</strong>（否则长时间空闲后会积累出无限额度，失去限流意义）；</li>
+<li>桶状态需在进程间共享（多副本部署时），否则每个副本各算一份，实际放行量是配置值的 N 倍——<strong>这是限流最常见的失效原因</strong>。</li>
+</ol>
+<p><strong>拒绝的细节</strong>：</p>
+<p>拒绝必须返回标准的&quot;请求过多&quot;状态码，并<strong>显式携带 Retry-After 字段</strong>告知下次可重试的秒数。<strong>前端要解析该字段并显示倒计时</strong>，倒计时归零后自动重试一次。若不带该字段，客户端只能盲目重试，反而放大流量。</p>
+<hr>
+<h2 id="%E5%9B%9B%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B%E8%AE%BE%E8%AE%A1">四、数据模型设计</h2>
+<p>本阶段在阶段 1 的四个实体之外，新增<strong>缓存条目、限流桶状态、指标时序</strong>三类运行期数据，并<strong>扩展证据与检索统计的字段</strong>。</p>
+<h3 id="41-%E6%96%B0%E5%A2%9E%E5%AE%9E%E4%BD%93%E4%B8%8E%E5%AD%98%E6%94%BE%E4%BD%8D%E7%BD%AE">4.1 新增实体与存放位置</h3>
+<table>
+<thead>
+<tr>
+<th>实体</th>
+<th>作用</th>
+<th>存放位置</th>
+<th>生命周期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>缓存条目</td>
+<td>命中即免去检索与生成</td>
+<td>键值存储（生产）/ 进程内存（开发）</td>
+<td>1 小时自动过期</td>
+</tr>
+<tr>
+<td>限流桶状态</td>
+<td>记录某租户的可用令牌</td>
+<td>键值存储（<strong>必须跨副本共享</strong>）</td>
+<td>持续存在并随时间回填</td>
+</tr>
+<tr>
+<td>指标时序</td>
+<td>运营观测</td>
+<td>指标系统（Prometheus 等）</td>
+<td>按保留策略滚动</td>
+</tr>
+<tr>
+<td>检索统计（响应内嵌）</td>
+<td>让用户与运营看清&quot;慢在哪&quot;</td>
+<td>不持久化，随响应返回</td>
+<td>请求级</td>
+</tr>
+</tbody>
+</table>
+<p><strong>运行期数据与业务数据必须分开存放</strong>：缓存与限流状态属于&quot;丢了可以重建、且不应进备份&quot;的数据，<strong>绝不能和知识库数据放在同一个持久卷里</strong>——否则一次缓存故障会连带影响业务数据的可用性。</p>
+<h3 id="42-%E5%AE%9E%E4%BD%93%E5%85%B3%E7%B3%BB">4.2 实体关系</h3>
+<pre class="hljs"><code><div>erDiagram
+    DOCUMENT ||--o{ CHUNK : &quot;切分为&quot;
+    CHUNK ||--o{ EVIDENCE : &quot;被多路召回&quot;
+    EVIDENCE }o--|| ANSWER : &quot;支撑&quot;
+    CACHE_ENTRY ||--o| ANSWER : &quot;缓存整份响应&quot;
+    TENANT ||--|| RATE_LIMIT_BUCKET : &quot;持有令牌桶&quot;
+    ANSWER ||--|| RETRIEVAL_STATS : &quot;携带检索统计&quot;
+    CACHE_ENTRY {
+        string cache_key &quot;问题 + 模型版本 + 配置摘要 的联合摘要&quot;
+        string answer_payload &quot;完整响应体副本&quot;
+        float created_at &quot;写入时间&quot;
+        float ttl_seconds &quot;存活时长&quot;
+        int hit_count &quot;命中次数，用于观察缓存收益&quot;
+    }
+    RATE_LIMIT_BUCKET {
+        string tenant_id &quot;限流主体&quot;
+        float tokens &quot;剩余令牌，可为小数&quot;
+        float last_refill_at &quot;上次回填时刻，用于按时间差补令牌&quot;
+        float capacity &quot;桶容量上限&quot;
+    }
+    EVIDENCE {
+        int rank &quot;编号，两路召回后重新编号&quot;
+        string chunk_id &quot;溯源到块&quot;
+        float score &quot;**重排后**的相关度分&quot;
+        string source_route &quot;来源路径：关键词 / 语义 / 融合命中&quot;
+    }
+    RETRIEVAL_STATS {
+        int keyword_candidates &quot;关键词路召回数&quot;
+        int vector_candidates &quot;语义路召回数&quot;
+        int fused_count &quot;融合后条数&quot;
+        int reranked_count &quot;重排后条数&quot;
+        int into_context_count &quot;最终进入上下文的条数&quot;
+        int keyword_ms &quot;关键词路耗时&quot;
+        int vector_ms &quot;语义路耗时&quot;
+        int fusion_ms &quot;融合耗时&quot;
+        int rerank_ms &quot;重排耗时&quot;
+    }
+</div></code></pre>
+<h3 id="43-%E5%85%B3%E9%94%AE%E5%AD%97%E6%AE%B5%E7%9A%84%E7%BA%A6%E6%9D%9F">4.3 关键字段的约束</h3>
+<p><strong>缓存条目</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>约束</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>缓存键</td>
+<td>由<strong>问题原文 + 生成模型版本 + 检索与生成配置摘要</strong>三部分联合摘要</td>
+<td>三者任一变化即换键——<strong>这是&quot;换模型不会命中旧答案&quot;的唯一保证</strong></td>
+</tr>
+<tr>
+<td>响应副本</td>
+<td><strong>必须缓存完整响应结构</strong></td>
+<td>只缓存答案是错的：证据与统计也要一并返回，否则命中缓存时前端会拿到残缺数据</td>
+</tr>
+<tr>
+<td>过期时长</td>
+<td>1 小时</td>
+<td>与知识库更新频率匹配；过长会返回过期知识</td>
+</tr>
+<tr>
+<td>命中计数</td>
+<td>单调递增</td>
+<td>用于评估缓存收益，<strong>也是判断&quot;知识库是否稳定&quot;的信号</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>限流桶状态</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>约束</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>剩余令牌</td>
+<td><strong>可为小数</strong></td>
+<td>若强制取整会引入额外误差，导致长期限流偏严</td>
+</tr>
+<tr>
+<td>上次回填时刻</td>
+<td>必须记录</td>
+<td>令牌按&quot;距上次回填的时间 × 速率&quot;补足，<strong>不记录时刻就无法正确回填</strong></td>
+</tr>
+<tr>
+<td>桶容量</td>
+<td>上限约束</td>
+<td>补充后的令牌数<strong>不得超过容量</strong>，否则长时间空闲会积累出无限额度</td>
+</tr>
+</tbody>
+</table>
+<p><strong>证据（扩展字段）</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>新增字段</th>
+<th>类型</th>
+<th>语义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>相关度分</td>
+<td>浮点</td>
+<td><strong>由重排模型给出</strong>，与阶段 1 的相似度分<strong>不是同一口径</strong>——两者不可比较，不可混用</td>
+</tr>
+<tr>
+<td>来源路径</td>
+<td>枚举</td>
+<td>关键词召回 / 语义召回 / 两者融合后命中；前端据此标注证据出处，运营据此判断哪一路更有效</td>
+</tr>
+</tbody>
+</table>
+<h3 id="44-%E6%A3%80%E7%B4%A2%E7%BB%9F%E8%AE%A1%E7%9A%84%E5%9B%9B%E4%B8%AA%E8%AE%A1%E6%95%B0%E4%B8%8E%E5%9B%9B%E6%AE%B5%E8%80%97%E6%97%B6">4.4 检索统计的四个计数与四段耗时</h3>
+<p><strong>排查&quot;召回率下降&quot;这类问题，靠的就是这八个值</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>观察</th>
+<th>含义</th>
+<th>结论方向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>关键词候选数骤降</td>
+<td>关键词路出问题</td>
+<td>检查分词、索引是否被重建</td>
+</tr>
+<tr>
+<td>语义候选数正常但融合后条数骤降</td>
+<td>融合环节异常</td>
+<td>检查融合算法与去重逻辑</td>
+</tr>
+<tr>
+<td>重排后条数远小于入参</td>
+<td>重排阈值过严</td>
+<td>考虑放宽阈值</td>
+</tr>
+<tr>
+<td>进入上下文数被截断</td>
+<td>上下文预算不足</td>
+<td>调整截断策略而非检索参数</td>
+</tr>
+</tbody>
+</table>
+<p><strong>四段耗时必须分开上报</strong>：只上报总耗时会让排查无从下手；分开后可以立刻回答&quot;是召回慢、融合慢还是重排慢&quot;——<strong>这是本阶段最重要的可观测性设计</strong>。</p>
+<h3 id="45-%E6%95%B0%E6%8D%AE%E4%BF%9D%E7%95%99%E4%B8%8E%E6%B8%85%E7%90%86">4.5 数据保留与清理</h3>
+<table>
+<thead>
+<tr>
+<th>数据</th>
+<th>保留策略</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>缓存条目</td>
+<td>自动过期，<strong>不做手动清理</strong></td>
+<td>键中含模型与配置版本，升级后自然失效，无需运维介入</td>
+</tr>
+<tr>
+<td>限流桶状态</td>
+<td>长期存在，随时间回填</td>
+<td>桶状态可重建（默认为满桶），丢失只影响一次限流精度</td>
+</tr>
+<tr>
+<td>指标时序</td>
+<td>按保留策略滚动</td>
+<td>长期留存成本高，按排查需求定窗口</td>
+</tr>
+</tbody>
+</table>
+<p><strong>&quot;缓存不做手动清理&quot;是一条重要的运维约定</strong>：任何依赖人工清理的机制都会在某次上线时被遗忘。把失效逻辑编进键的设计里，才是可持续的做法。</p>
+<hr>
+<h2 id="%E4%BA%94%E5%85%B3%E9%94%AE%E5%86%B3%E7%AD%96%E8%AE%B0%E5%BD%95">五、关键决策记录</h2>
+<h3 id="51-%E4%B8%BA%E4%BB%80%E4%B9%88-rrf-%E8%80%8C%E4%B8%8D%E6%98%AF-condorcet-fusion-%E6%88%96-borda-count">5.1 为什么 RRF 而不是 Condorcet fusion 或 Borda count？</h3>
+<p><strong>RRF 的优势</strong>：</p>
+<ul>
+<li>公式简单，O(N·M) 计算（N=候选数, M=路数）；</li>
+<li>异构分数天然适配；</li>
+<li>实验上与复杂模型融合效果相当。</li>
+</ul>
+<p><strong>Condorcet / Borda</strong>：</p>
+<ul>
+<li>都需要打分而非排名；</li>
+<li>优势是理论上的&quot;社会选择&quot;公平性，但 RAG 场景不需要。</li>
+</ul>
+<h3 id="52-%E4%B8%BA%E4%BB%80%E4%B9%88-rerank-%E4%B8%80%E5%AE%9A%E8%A6%81%E5%9C%A8%E8%9E%8D%E5%90%88%E5%90%8E">5.2 为什么 Rerank 一定要在融合后？</h3>
+<p>如果对 BM25 与向量分别重排再融合，会<strong>让重排模型误判过它们中间的差异</strong>——而 Cross-Encoder 不在乎是 BM25 还是向量给出的候选。<strong>先融合后重排</strong>让 Cross-Encoder 面对同一份统一候选集做精排。</p>
+<h3 id="53-%E4%B8%BA%E4%BB%80%E4%B9%88%E7%BC%93%E5%AD%98%E4%B8%8D%E5%8C%85%E5%90%AB%E8%AF%81%E6%8D%AE">5.3 为什么缓存不包含证据？</h3>
+<p>证据是&quot;这次检索的结果&quot;，缓存 evidence 等于缓存&quot;这次检索过程&quot;。<strong>缓存只有&quot;答案字符串&quot;</strong>——下次重检索可能换了证据，但答案（语义上）应该一致。</p>
+<h3 id="54-%E4%B8%BA%E4%BB%80%E4%B9%88%E6%8C%87%E6%A0%87%E4%B8%8D%E6%9A%B4%E9%9C%B2%E5%88%B0-ask-%E5%93%8D%E5%BA%94%E9%87%8C">5.4 为什么指标不暴露到 /ask 响应里？</h3>
+<p>指标是&quot;服务侧的运营数据&quot;，不应该进用户的请求响应。<strong>延迟或超限错误通过专门的状态码（如 429）反映</strong>，而不是把内部指标塞给前端。</p>
+<hr>
+<h2 id="%E5%85%AD%E5%85%B3%E9%94%AE%E6%B5%81%E7%A8%8B%E5%9B%BE">六、关键流程图</h2>
+<h3 id="61-%E6%B7%B7%E5%90%88%E6%A3%80%E7%B4%A2%E5%AE%8C%E6%95%B4%E9%93%BE%E8%B7%AF">6.1 混合检索完整链路</h3>
+<pre class="hljs"><code><div>sequenceDiagram
+    participant U as 用户
+    participant API as API 网关
+    participant L as 限流器
+    participant C as 缓存层
+    participant H as 混合检索
+    participant B as BM25
+    participant V as 向量检索
+    participant F as RRF
+    participant R as 重排器
+    participant LLM as LLM
+    U-&gt;&gt;API: POST /ask
+    API-&gt;&gt;L: 检查配额
+    L-&gt;&gt;C: 检查缓存
+    alt 命中
+        C--&gt;&gt;API: 命中结果
+    else 未命中
+        API-&gt;&gt;H: search(query)
+        H-&gt;&gt;B: search(query, top-20)
+        H-&gt;&gt;V: search(query, top-20)
+        B--&gt;&gt;H: 20 条候选
+        V--&gt;&gt;H: 20 条候选
+        H-&gt;&gt;F: 融合 → top-20
+        F--&gt;&gt;H: 融合结果
+        H-&gt;&gt;R: rerank → top-5
+        R--&gt;&gt;H: 精排结果
+        H--&gt;&gt;API: 5 条 evidence
+        API-&gt;&gt;LLM: invoke(prompt)
+        LLM--&gt;&gt;API: 答案
+        API-&gt;&gt;C: 缓存答案
+    end
+    API--&gt;&gt;U: 响应
+</div></code></pre>
+<h3 id="62-rrf-%E8%9E%8D%E5%90%88%E7%A4%BA%E6%84%8F">6.2 RRF 融合示意</h3>
+<pre class="hljs"><code><div>flowchart LR
+    subgraph BM25[&quot;BM25 排序&quot;]
+        M1[&quot;D-A&quot;]
+        M2[&quot;D-B&quot;]
+        M3[&quot;D-C&quot;]
+    end
+    subgraph V[&quot;向量排序&quot;]
+        N1[&quot;D-B&quot;]
+        N2[&quot;D-C&quot;]
+        N3[&quot;D-D&quot;]
+    end
+    M1 &amp; M2 &amp; M3 --&gt; F[&quot;RRF 加权&quot;]
+    N1 &amp; N2 &amp; N3 --&gt; F
+    F --&gt; R[&quot;D-B: 1/61+1/62=0.0325&quot;]
+    R --&gt; R2[&quot;D-C: 1/63+1/62=0.0317&quot;]
+    R2 --&gt; R3[&quot;D-A: 1/61=0.0164&quot;]
+    R3 --&gt; TopK[&quot;Top-K&quot;]
+</div></code></pre>
+<hr>
+<h2 id="%E4%B8%83%E6%B7%B7%E5%90%88%E6%A3%80%E7%B4%A2%E7%9A%84%E8%B0%83%E5%8F%82%E4%B8%8E%E8%AF%84%E4%BC%B0%E6%96%B9%E6%B3%95">七、混合检索的调参与评估方法</h2>
+<p>混合检索引入了 6 个可调参数，<strong>不能靠直觉调</strong>。下表给出每个参数的作用、默认值、调优方向与观察指标。</p>
+<table>
+<thead>
+<tr>
+<th>参数</th>
+<th>作用</th>
+<th>默认值</th>
+<th>调大 / 调小的后果</th>
+<th>观察指标</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单路召回条数</td>
+<td>每路进入融合的候选数</td>
+<td>20</td>
+<td>调小则融合前就丢召回；调大则融合开销上升</td>
+<td>Recall@20</td>
+</tr>
+<tr>
+<td>融合后候选数</td>
+<td>进入重排的候选数</td>
+<td>20</td>
+<td>调小则重排无从选择；调大则重排时延上升</td>
+<td>重排后 Recall@5</td>
+</tr>
+<tr>
+<td>最终 Top-K</td>
+<td>进入生成上下文的条数</td>
+<td>4</td>
+<td>调小则答案不全；调大则提示变长、注意力分散</td>
+<td>答案完整率 / 提示长度</td>
+</tr>
+<tr>
+<td>RRF 平滑常数 k</td>
+<td>排名贡献的衰减速度</td>
+<td>60</td>
+<td>调大更平滑（容忍某路错位）；调小更激进</td>
+<td>融合后排序的稳定性</td>
+</tr>
+<tr>
+<td>BM25 词频饱和 k1</td>
+<td>词频的边际贡献</td>
+<td>1.5</td>
+<td>调大则重复词权重更高；调小则更看重词的有无</td>
+<td>编号型查询召回</td>
+</tr>
+<tr>
+<td>BM25 长度归一 b</td>
+<td>文档长度的影响</td>
+<td>0.75</td>
+<td>调大则偏爱短文档；调小则长度影响减弱</td>
+<td>长短文档的排序公平性</td>
+</tr>
+</tbody>
+</table>
+<p><strong>调参顺序（一次只动一个）</strong>：</p>
+<pre class="hljs"><code><div>flowchart LR
+    A[&quot;固定其他参数&lt;br/&gt;先调单路召回条数&quot;] --&gt; B[&quot;观察 Recall@20&lt;br/&gt;是否已触顶&quot;]
+    B --&gt; C[&quot;调 RRF 平滑常数 k&lt;br/&gt;观察排序稳定性&quot;]
+    C --&gt; D[&quot;调融合后候选数&lt;br/&gt;直到重排时延逼近预算&quot;]
+    D --&gt; E[&quot;调最终 Top-K&lt;br/&gt;观察答案完整率&quot;]
+    E --&gt; F[&quot;最后微调 BM25 参数&lt;br/&gt;针对性提升编号类查询&quot;]
+</div></code></pre>
+<p><strong>评估方法</strong>：</p>
+<ol>
+<li><strong>固定评测集</strong>：准备 50~100 条&quot;问题 → 正确证据&quot;样本，覆盖事实、编号、跨段三类；</li>
+<li><strong>单变量对比</strong>：每轮只改一个参数，记录 Recall@K 与 P95 时延；</li>
+<li><strong>埋点对照</strong>：线上同时记录&quot;融合前 Top-1 命中率&quot;与&quot;重排后 Top-1 命中率&quot;，两者的差值即重排的实际增益；</li>
+<li><strong>回归红线</strong>：任何参数调整若使 Recall@10 下降超过 2%，必须回退。</li>
+</ol>
+<p><strong>常见的伪提升</strong>：只测&quot;答案是否通顺&quot;而不测&quot;证据是否命中&quot;。检索指标（Recall@K）与生成指标（Faithfulness）必须分开度量，<strong>否则会把检索问题误判为生成问题</strong>。</p>
+<hr>
+<h2 id="%E5%85%AB%E4%B8%8E%E4%B8%8A%E4%B8%80%E9%98%B6%E6%AE%B5%E5%B7%AE%E5%BC%82">八、与上一阶段差异</h2>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>阶段 1</th>
+<th>阶段 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>检索</td>
+<td>单路 FAISS</td>
+<td>BM25 + 向量 + RRF + Rerank</td>
+</tr>
+<tr>
+<td>响应</td>
+<td>字符串</td>
+<td>answer + evidence + score + from_cache</td>
+</tr>
+<tr>
+<td>缓存</td>
+<td>无</td>
+<td>语义级缓存</td>
+</tr>
+<tr>
+<td>限流</td>
+<td>无</td>
+<td>令牌桶 429</td>
+</tr>
+<tr>
+<td>监控</td>
+<td>仅日志</td>
+<td>Prometheus 指标 + 日志</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="%E4%B9%9D%E6%9C%AC%E9%98%B6%E6%AE%B5%E9%81%97%E7%95%99%E9%97%AE%E9%A2%98-%E2%86%92-%E4%B8%8B%E4%B8%80%E9%98%B6%E6%AE%B5%E9%A2%84%E5%91%8A">九、本阶段遗留问题 → 下一阶段预告</h2>
+<table>
+<thead>
+<tr>
+<th>现象</th>
+<th>根因</th>
+<th>下一阶段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>表格 / 扫描件入不了库</td>
+<td>仅文本切块</td>
+<td>阶段 3 多模态解析</td>
+</tr>
+<tr>
+<td>长文档语义断裂</td>
+<td>固定窗口切块</td>
+<td>阶段 3 语义 / 父子 / RAPTOR</td>
+</tr>
+<tr>
+<td>口语化 query 召回差</td>
+<td>query 未改写</td>
+<td>阶段 4 HyDE / Fusion</td>
+</tr>
+</tbody>
+</table>
+<p>→ 下一阶段：<a href="../stage-3-smart-chunking/README.md"><code>../stage-3-smart-chunking/README.md</code></a></p>
+
+</body>
+
+</html>

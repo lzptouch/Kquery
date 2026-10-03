@@ -1,0 +1,54 @@
+- generic [ref=f8e3]:
+  - banner [ref=f8e4]:
+    - generic [ref=f8e5]: Kquery
+    - generic [ref=f8e6]: 智能知识库问答 · 阶段 9
+  - generic [ref=f8e7]:
+    - navigation "主导航" [ref=f8e8]:
+      - generic [ref=f8e9]: 主功能
+      - link "对话" [ref=f8e10] [cursor=pointer]:
+        - /url: /
+      - link "知识库" [ref=f8e11] [cursor=pointer]:
+        - /url: /knowledge
+      - link "图谱" [ref=f8e12] [cursor=pointer]:
+        - /url: /graph
+      - link "报告中心" [ref=f8e13] [cursor=pointer]:
+        - /url: /reports
+      - generic [ref=f8e14]: 管理区
+      - link "监控大盘" [ref=f8e15] [cursor=pointer]:
+        - /url: /admin/monitor
+      - link "检索配置" [ref=f8e16] [cursor=pointer]:
+        - /url: /admin/retrieval-config
+      - generic [ref=f8e17]: 安全治理
+      - link "用户权限" [ref=f8e18] [cursor=pointer]:
+        - /url: /admin/users
+      - link "文档 ACL" [ref=f8e19] [cursor=pointer]:
+        - /url: /admin/acl
+      - link "审计日志" [ref=f8e20] [cursor=pointer]:
+        - /url: /admin/audit
+      - link "配额管理" [ref=f8e21] [cursor=pointer]:
+        - /url: /admin/quota
+      - link "敏感词" [ref=f8e22] [cursor=pointer]:
+        - /url: /admin/sensitive
+      - link "评测平台" [ref=f8e23] [cursor=pointer]:
+        - /url: /admin/eval
+    - main [ref=f8e24]:
+      - generic [ref=f8e25]:
+        - complementary "会话列表" [ref=f8e26]:
+          - button "＋ 新对话" [ref=f8e27] [cursor=pointer]
+          - generic [ref=f8e28]: 暂无会话，点击"新对话"开始
+        - generic [ref=f8e30]:
+          - generic [ref=f8e33]:
+            - heading "你好，我是 Kquery 知识库助手" [level=2] [ref=f8e34]
+            - paragraph [ref=f8e35]: 基于知识库中的经济学教材回答，并给出引用来源。可以先试试：
+            - generic [ref=f8e36]:
+              - button "什么是机会成本？请举例说明" [ref=f8e37] [cursor=pointer]
+              - button "货币市场工具主要有哪些类型？" [ref=f8e38] [cursor=pointer]
+              - button "价格在资源配置中起什么作用？" [ref=f8e39] [cursor=pointer]
+          - generic [ref=f8e40]:
+            - link "📊 需要深度报告？前往报告中心 →" [ref=f8e42] [cursor=pointer]:
+              - /url: /reports
+            - generic [ref=f8e43]:
+              - button "附件（暂未开放）" [disabled] [ref=f8e44] [cursor=pointer]: 📎
+              - textbox "问题输入框" [ref=f8e45]:
+                - /placeholder: 输入你的问题…
+              - button "发送" [disabled] [ref=f8e46]

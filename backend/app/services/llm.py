@@ -1,0 +1,280 @@
+"""LLM 抽象（依赖注入 / 模型统一走千问平台）。
+
+- 生产实现：千问平台 qwen-plus（temperature=0，流式增量输出）；
+- 测试实现：MockLLM，基于证据编号生成确定性的带引用答案。
+
+云端三类失败模式：限流（退避重试）/ 超时（请求级超时，不返回半截答案）/
+配额不足（直接失败，属运维事件）。
+"""
+import json
+import logging
+import re
+import time
+from typing import Iterator, Protocol
+
+from app.core.envelope import ErrCode
+
+logger = logging.getLogger(__name__)
+
+
+class LLMError(Exception):
+    """LLM 调用失败，携带错误码供上层映射统一信封。"""
+
+    def __init__(self, code: ErrCode, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+class LLM(Protocol):
+    def generate(self, prompt: str) -> str: ...
+
+    def stream(self, prompt: str) -> Iterator[str]: ...
+
+
+class QwenLLM:
+    """千问平台生成模型。切换档位（qwen-plus/qwen-max/qwen-turbo）只改模型名。"""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "qwen-plus",
+        temperature: float = 0.0,
+        max_retries: int = 3,
+        timeout_s: float = 60.0,
+    ):
+        self._api_key = api_key
+        self.model = model
+        self.temperature = temperature
+        self._max_retries = max_retries
+        self._timeout_s = timeout_s
+
+    def _call_stream(self, prompt: str) -> Iterator[str]:
+        import dashscope
+        from dashscope import Generation
+
+        from app.services.security.platform_quota import get_monitor
+
+        last_error: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                get_monitor().record_call(self.model)
+                responses = Generation.call(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.temperature,
+                    result_format="message",
+                    stream=True,
+                    incremental_output=True,
+                    api_key=self._api_key,
+                    timeout=self._timeout_s,
+                )
+                for resp in responses:
+                    if resp.status_code != 200:
+                        self._raise_for(resp.status_code, resp.message)
+                    chunk = resp.output.choices[0].message.content
+                    if chunk:
+                        yield chunk
+                return
+            except LLMError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 网络类异常走重试
+                last_error = exc
+                if attempt == self._max_retries - 1:
+                    break
+                wait = 2**attempt
+                logger.warning("LLM 调用失败，%ds 后重试（%d/%d）: %s", wait, attempt + 1, self._max_retries, exc)
+                time.sleep(wait)
+        raise LLMError(ErrCode.GENERATION_FAILED, f"生成失败: {last_error}")
+
+    @staticmethod
+    def _raise_for(status_code: int, message: str) -> None:
+        from app.services.security.platform_quota import get_monitor
+
+        text = str(message)
+        if status_code == 429 or "Throttl" in text:
+            get_monitor().record_platform_error("rate_limited")
+            raise LLMError(ErrCode.RATE_LIMITED, "平台限流，请稍后重试")
+        if "quota" in text.lower() or "Allocation" in text:
+            get_monitor().record_platform_error("quota")
+            raise LLMError(ErrCode.QUOTA_EXCEEDED, "平台配额不足，请联系管理员")
+        if "timeout" in text.lower():
+            get_monitor().record_platform_error("timeout")
+            raise LLMError(ErrCode.GENERATION_TIMEOUT, "生成超时，请重试")
+        get_monitor().record_platform_error("other")
+        raise LLMError(ErrCode.GENERATION_FAILED, f"生成失败: {message}")
+
+    def generate(self, prompt: str) -> str:
+        return "".join(self._call_stream(prompt))
+
+    def stream(self, prompt: str) -> Iterator[str]:
+        return self._call_stream(prompt)
+
+
+class MockLLM:
+    """确定性假模型：从 prompt 中解析证据编号，生成带引用的可预期答案。"""
+
+    _NO_INFO = "知识库无相关内容"
+
+    @staticmethod
+    def _parse(prompt: str) -> tuple[str, list[tuple[str, str]]]:
+        question = ""
+        m = re.search(r"用户问题：(.+?)(?:\n|$)", prompt)
+        if m:
+            question = m.group(1).strip()
+        evidence = re.findall(r"\[#(\d)\]（来源：(.+?)）\n(.*?)(?=\n\[#|\n---|\Z)", prompt, re.S)
+        return question, [(num, body.strip()) for num, _src, body in evidence]
+
+    # 问句中不参与匹配的虚词
+    _STOPWORDS = {
+        "的", "是", "吗", "呢", "了", "请", "问", "告诉", "我", "你",
+        "什么", "怎么", "怎样", "如何", "哪些", "哪个", "多少", "几", "是否",
+    }
+
+    def _question_keywords(self, question: str) -> set[str]:
+        """问句关键词：长度 ≥2 的词/二元组与英文数字词，去掉虚词。"""
+        from app.services.embeddings import _tokenize
+
+        tokens = _tokenize(question)
+        return {
+            t
+            for t in tokens
+            if (len(t) >= 2 or t.isascii()) and t not in self._STOPWORDS and t.isalnum()
+        }
+
+    # ---- 阶段 4：Query 预处理类提示词的确定性应答 ----
+
+    _GREETINGS = ("你好", "您好", "在吗", "你是谁", "谢谢", "再见", "hi", "hello")
+
+    def _mock_intent(self, prompt: str) -> str:
+        m = re.search(r"用户问题：(.+?)(?:\n|$)", prompt)
+        q = (m.group(1).strip() if m else "").lower()
+        if any(g in q for g in self._GREETINGS) and len(q) < 20:
+            payload = {"intent": "chitchat", "needs_retrieval": False, "confidence": 0.95, "reasoning": "mock 规则：命中闲聊问候模式"}
+        elif any(k in q for k in ("对比", "哪个好", "区别", "差异")):
+            payload = {"intent": "compare", "needs_retrieval": True, "confidence": 0.9, "reasoning": "mock 规则：含对比关键词"}
+        elif any(k in q for k in ("总结", "讲了什么", "概括", "综述")):
+            payload = {"intent": "summarize", "needs_retrieval": True, "confidence": 0.9, "reasoning": "mock 规则：含总结关键词"}
+        elif any(k in q for k in ("平均", "统计", "总数", "占比")):
+            payload = {"intent": "calc", "needs_retrieval": True, "confidence": 0.85, "reasoning": "mock 规则：含统计关键词"}
+        else:
+            payload = {"intent": "fact_qa", "needs_retrieval": True, "confidence": 0.9, "reasoning": "mock 规则：默认事实问答"}
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _mock_fusion(self, prompt: str) -> str:
+        m = re.search(r"用户问题：(.+?)(?:\n|$)", prompt)
+        q = m.group(1).strip() if m else "查询"
+        return json.dumps([q, f"请问{q}", f"关于{q}的详细说明"], ensure_ascii=False)
+
+    def _mock_hyde(self, prompt: str) -> str:
+        m = re.search(r"问题：(.+?)(?:\n|$)", prompt)
+        q = m.group(1).strip() if m else "该主题"
+        return f"关于{q}，相关知识库文档通常说明：{q}的标准定义、关键参数与使用注意事项。本文档给出权威解答。"
+
+    def _mock_stepback(self, prompt: str) -> str:
+        m = re.search(r"具体问题：(.+?)(?:\n|$)", prompt)
+        q = m.group(1).strip() if m else ""
+        abstract = re.sub(r"[A-Z]{1,4}[-_]?\d{3,}", "该类产品", q)
+        return abstract or "该类产品的通用原则是什么？"
+
+    def _mock_decompose(self, prompt: str) -> str:
+        m = re.search(r"复合问题：(.+?)(?:\n|$)", prompt)
+        q = m.group(1).strip() if m else ""
+        parts = [p for p in re.split(r"和|与|以及|，|、", q) if p.strip()]
+        items = [{"text": p.strip(), "expected_source": "vector"} for p in parts[:4]] or [
+            {"text": q, "expected_source": "vector"}
+        ]
+        return json.dumps(items, ensure_ascii=False)
+
+    def _answer(self, prompt: str) -> str:
+        from app.services.embeddings import _tokenize
+
+        # 预处理类提示词优先按类型分发
+        if "你是意图分类器" in prompt:
+            return self._mock_intent(prompt)
+        if "你是事实校验器" in prompt:
+            return json.dumps(
+                {"is_hallucination": False, "unsupported_claims": [], "reasoning": "mock 校验：声明均有据"},
+                ensure_ascii=False,
+            )
+        if "精炼检索查询" in prompt:
+            m = re.search(r"原始问题：(.+?)(?:\n|$)", prompt)
+            q = m.group(1).strip() if m else "查询"
+            return f"{q}（规范术语与通用原则）"
+        if "概括以下内容" in prompt:
+            # RAPTOR 摘要：抽取式概要（首个完整句 + 主题标记）
+            body = prompt.split("概括以下内容", 1)[-1].strip(" ：:\n")
+            first = re.split(r"(?<=[。！？!?；;\n])", body.strip())
+            head = next((s.strip() for s in first if len(s.strip()) >= 6), body[:80])
+            return f"本节要点：{head[:80]}"
+        if "语义等价但措辞不同" in prompt:
+            return self._mock_fusion(prompt)
+        if "假设性回答" in prompt:
+            return self._mock_hyde(prompt)
+        if "抽象成一个更通用" in prompt:
+            return self._mock_stepback(prompt)
+        if "拆解为 2~4 个可独立检索" in prompt:
+            return self._mock_decompose(prompt)
+
+        question, evidence = self._parse(prompt)
+        if not evidence:
+            return self._NO_INFO
+
+        keywords = self._question_keywords(question)
+        # 按"与问句的关键词重合度"给证据中的每个句子打分，抽出最相关的句子
+        scored: list[tuple[int, str, str]] = []  # (score, num, sentence)
+        for num, body in evidence:
+            for sentence in re.split(r"(?<=[。！？!?；;\n])", body):
+                sentence = sentence.strip()
+                if len(sentence) < 6 or sentence.startswith(("#", "问：")):
+                    continue
+                s_tokens = {t for t in _tokenize(sentence) if len(t) >= 2 or t.isascii()}
+                score = len(keywords & s_tokens)
+                if score > 0:
+                    scored.append((score, num, sentence))
+        scored.sort(key=lambda x: -x[0])
+
+        picked: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for score, num, sentence in scored:
+            if sentence[:30] in seen:
+                continue
+            seen.add(sentence[:30])
+            picked.append((num, sentence))
+            if len(picked) >= 3:
+                break
+        if not picked:
+            # 兜底：取第一条证据的首个完整句
+            num, body = evidence[0]
+            first = re.split(r"(?<=[。！？!?；;\n])", body.strip())[0].strip()
+            picked = [(num, first[:120])]
+
+        # 合成直接答案：结论句在前，引用编号紧随其后
+        answer_lines = [f"{sentence}[#{num}]" for num, sentence in picked]
+        cited_nums = list(dict.fromkeys(num for num, _ in picked))
+        answer_lines.append("")
+        answer_lines.append("引用片段编号：" + "、".join(f"[#{n}]" for n in cited_nums))
+        return "\n".join(answer_lines)
+
+    def generate(self, prompt: str) -> str:
+        return self._answer(prompt)
+
+    def stream(self, prompt: str) -> Iterator[str]:
+        text = self._answer(prompt)
+        # 按小片段吐出，模拟流式
+        step = 12
+        for i in range(0, len(text), step):
+            yield text[i : i + step]
+
+
+def build_llm(provider: str, api_key: str, model: str, temperature: float, max_retries: int, timeout_s: float) -> LLM:
+    if provider == "dashscope":
+        return QwenLLM(
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            max_retries=max_retries,
+            timeout_s=timeout_s,
+        )
+    logger.info("使用 MockLLM（未配置千问 Key 或显式指定 mock）")
+    return MockLLM()

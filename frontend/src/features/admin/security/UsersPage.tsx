@@ -1,0 +1,108 @@
+/** 用户与权限（阶段 9 前端规范 §二）：列表 + 行内编辑角色/组/状态。 */
+import { useCallback, useEffect, useState } from "react";
+import { editUser, fetchUsers } from "../../../lib/api-client";
+import type { UserRecord } from "../../../types";
+
+export function UsersPage() {
+  const [users, setUsers] = useState<UserRecord[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [draft, setDraft] = useState<{ roles: string; groups: string; enabled: boolean }>({ roles: "", groups: "", enabled: true });
+
+  const load = useCallback(async () => {
+    const envelope = await fetchUsers();
+    if (envelope.data) setUsers(envelope.data);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="page">
+      <div className="page-inner">
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>用户与权限</h3>
+          <table className="files-table">
+            <thead>
+              <tr><th>用户</th><th>租户</th><th>角色</th><th>组</th><th>状态</th><th>操作</th></tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <tr key={u.user_id}>
+                  <td className="mono">{u.user_id}</td>
+                  <td>{u.tenant_id}</td>
+                  <td>
+                    {editing === u.user_id ? (
+                      <input
+                        className="probe-input" style={{ width: 140 }}
+                        value={draft.roles}
+                        onChange={(e) => setDraft({ ...draft, roles: e.target.value })}
+                        placeholder="逗号分隔，如 hr,finance"
+                      />
+                    ) : (
+                      u.roles.map((r) => <span key={r} className="issue-tag resolved" style={{ marginRight: 4 }}>{r}</span>)
+                    )}
+                  </td>
+                  <td>
+                    {editing === u.user_id ? (
+                      <input
+                        className="probe-input" style={{ width: 120 }}
+                        value={draft.groups}
+                        onChange={(e) => setDraft({ ...draft, groups: e.target.value })}
+                        placeholder="逗号分隔"
+                      />
+                    ) : (
+                      u.groups.join(", ") || "-"
+                    )}
+                  </td>
+                  <td>
+                    {editing === u.user_id ? (
+                      <label className="graph-filter">
+                        <input
+                          type="checkbox" checked={draft.enabled}
+                          onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+                        />
+                        启用
+                      </label>
+                    ) : (
+                      <span className={`status-tag ${u.enabled ? "st-pass" : "st-fail"}`}>{u.enabled ? "启用" : "禁用"}</span>
+                    )}
+                  </td>
+                  <td>
+                    {editing === u.user_id ? (
+                      <>
+                        <button
+                          type="button" className="btn-text"
+                          onClick={() => {
+                            void editUser(u.user_id, {
+                              roles: draft.roles.split(",").map((s) => s.trim()).filter(Boolean),
+                              groups: draft.groups.split(",").map((s) => s.trim()).filter(Boolean),
+                              enabled: draft.enabled,
+                            }).then(() => { setEditing(null); void load(); });
+                          }}
+                        >
+                          保存
+                        </button>
+                        <button type="button" className="btn-text" onClick={() => setEditing(null)}>取消</button>
+                      </>
+                    ) : (
+                      <button
+                        type="button" className="btn-text"
+                        onClick={() => {
+                          setEditing(u.user_id);
+                          setDraft({ roles: u.roles.join(","), groups: u.groups.join(","), enabled: u.enabled });
+                        }}
+                      >
+                        编辑
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}

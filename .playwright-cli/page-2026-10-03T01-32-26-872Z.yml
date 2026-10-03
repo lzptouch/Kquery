@@ -1,0 +1,99 @@
+- generic [ref=f5e3]:
+  - banner [ref=f5e4]:
+    - generic [ref=f5e5]: Kquery
+    - generic [ref=f5e6]: 智能知识库问答 · 阶段 9
+  - generic [ref=f5e7]:
+    - navigation "主导航" [ref=f5e8]:
+      - generic [ref=f5e9]: 主功能
+      - link "对话" [ref=f5e10] [cursor=pointer]:
+        - /url: /
+      - link "知识库" [ref=f5e11] [cursor=pointer]:
+        - /url: /knowledge
+      - link "图谱" [ref=f5e12] [cursor=pointer]:
+        - /url: /graph
+      - link "报告中心" [ref=f5e13] [cursor=pointer]:
+        - /url: /reports
+      - generic [ref=f5e14]: 管理区
+      - link "监控大盘" [ref=f5e15] [cursor=pointer]:
+        - /url: /admin/monitor
+      - link "检索配置" [ref=f5e16] [cursor=pointer]:
+        - /url: /admin/retrieval-config
+      - generic [ref=f5e17]: 安全治理
+      - link "用户权限" [ref=f5e18] [cursor=pointer]:
+        - /url: /admin/users
+      - link "文档 ACL" [ref=f5e19] [cursor=pointer]:
+        - /url: /admin/acl
+      - link "审计日志" [ref=f5e20] [cursor=pointer]:
+        - /url: /admin/audit
+      - link "配额管理" [ref=f5e21] [cursor=pointer]:
+        - /url: /admin/quota
+      - link "敏感词" [ref=f5e22] [cursor=pointer]:
+        - /url: /admin/sensitive
+      - link "评测平台" [ref=f5e23] [cursor=pointer]:
+        - /url: /admin/eval
+    - main [ref=f5e24]:
+      - generic [ref=f5e26]:
+        - generic [ref=f5e27]:
+          - heading "审计日志" [level=3] [ref=f5e28]
+          - combobox "时间范围" [ref=f5e29]:
+            - option "近 1h" [selected]
+            - option "近 24h"
+            - option "近 7 天"
+          - combobox "事件类型" [ref=f5e30]:
+            - option "全部事件" [selected]
+            - option "请求"
+            - option "检索"
+            - option "回答"
+            - option "管理操作"
+          - textbox "追踪号搜索" [ref=f5e31]:
+            - /placeholder: trace_id 精确搜索
+            - text: f56b56aa2e324fef
+          - button "查询" [ref=f5e32] [cursor=pointer]
+          - link "导出 CSV" [ref=f5e33] [cursor=pointer]:
+            - /url: /admin/audit/export?range_s=3600
+        - table [ref=f5e35]:
+          - rowgroup [ref=f5e36]:
+            - row [ref=f5e37]:
+              - columnheader "时间" [ref=f5e38]
+              - columnheader "trace_id" [ref=f5e39]
+              - columnheader "主体" [ref=f5e40]
+              - columnheader "事件" [ref=f5e41]
+              - columnheader "摘要" [ref=f5e42]
+          - rowgroup [ref=f5e43]:
+            - row [ref=f5e278] [cursor=pointer]:
+              - cell "09:05:49" [ref=f5e279]
+              - cell "f56b56aa2e324fef" [ref=f5e280]
+              - cell "default:zhangsan" [ref=f5e281]
+              - cell "回答" [ref=f5e282]
+              - 'cell "答案 hash: 9ab489fb8d1d94a0 · 敏感命中 0 类" [ref=f5e283]'
+            - row [ref=f5e284] [cursor=pointer]:
+              - cell "09:05:43" [ref=f5e285]
+              - cell "f56b56aa2e324fef" [ref=f5e286]
+              - cell "default:zhangsan" [ref=f5e287]
+              - cell "检索" [ref=f5e288]
+              - cell "召回 4 条 / 可见 4 条" [ref=f5e289]
+            - row [ref=f5e290] [cursor=pointer]:
+              - cell "09:05:42" [ref=f5e291]
+              - cell "f56b56aa2e324fef" [ref=f5e292]
+              - cell "default:zhangsan" [ref=f5e293]
+              - cell "请求" [ref=f5e294]
+              - 'cell "提问 hash: 7931a54dbc19438c（13 字）" [ref=f5e295]'
+        - dialog "事件详情" [ref=f5e705]:
+          - heading "事件详情" [level=3] [ref=f5e706]
+          - generic [ref=f5e707]:
+            - term [ref=f5e708]: trace_id
+            - definition [ref=f5e709]: f56b56aa2e324fef
+            - term [ref=f5e710]: 主体
+            - definition [ref=f5e711]: default:zhangsan
+            - term [ref=f5e712]: 事件
+            - definition [ref=f5e713]: 回答
+            - term [ref=f5e714]: 时间
+            - definition [ref=f5e715]: 2026/10/3 09:05:49
+            - term [ref=f5e716]: payload
+            - definition [ref=f5e717]:
+              - generic [ref=f5e718]: "{ \"answer_hash\": \"9ab489fb8d1d94a0\", \"answer_len\": 328, \"sensitive_hits\": 0 }"
+          - generic [ref=f5e719]: 同一请求的关联事件（按时序）
+          - generic [ref=f5e720]: "09:05:42 请求 提问 hash: 7931a54dbc19438c（13 字）"
+          - generic [ref=f5e721]: 09:05:43 检索 召回 4 条 / 可见 4 条
+          - generic [ref=f5e722]: "09:05:49 回答 答案 hash: 9ab489fb8d1d94a0 · 敏感命中 0 类"
+          - button "关闭" [ref=f5e724] [cursor=pointer]

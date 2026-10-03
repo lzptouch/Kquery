@@ -1,0 +1,84 @@
+- generic [ref=f4e3]:
+  - banner [ref=f4e4]:
+    - generic [ref=f4e5]: Kquery
+    - generic [ref=f4e6]: 智能知识库问答 · 阶段 9
+  - generic [ref=f4e7]:
+    - navigation "主导航" [ref=f4e8]:
+      - generic [ref=f4e9]: 主功能
+      - link "对话" [ref=f4e10] [cursor=pointer]:
+        - /url: /
+      - link "知识库" [ref=f4e11] [cursor=pointer]:
+        - /url: /knowledge
+      - link "图谱" [ref=f4e12] [cursor=pointer]:
+        - /url: /graph
+      - link "报告中心" [ref=f4e13] [cursor=pointer]:
+        - /url: /reports
+      - generic [ref=f4e14]: 管理区
+      - link "监控大盘" [ref=f4e15] [cursor=pointer]:
+        - /url: /admin/monitor
+      - link "检索配置" [ref=f4e16] [cursor=pointer]:
+        - /url: /admin/retrieval-config
+      - generic [ref=f4e17]: 安全治理
+      - link "用户权限" [ref=f4e18] [cursor=pointer]:
+        - /url: /admin/users
+      - link "文档 ACL" [ref=f4e19] [cursor=pointer]:
+        - /url: /admin/acl
+      - link "审计日志" [ref=f4e20] [cursor=pointer]:
+        - /url: /admin/audit
+      - link "配额管理" [ref=f4e21] [cursor=pointer]:
+        - /url: /admin/quota
+      - link "敏感词" [ref=f4e22] [cursor=pointer]:
+        - /url: /admin/sensitive
+      - link "评测平台" [ref=f4e23] [cursor=pointer]:
+        - /url: /admin/eval
+    - main [ref=f4e24]:
+      - generic [ref=f4e27]:
+        - heading "用户与权限" [level=3] [ref=f4e28]
+        - table [ref=f4e29]:
+          - rowgroup [ref=f4e30]:
+            - row [ref=f4e31]:
+              - columnheader "用户" [ref=f4e32]
+              - columnheader "租户" [ref=f4e33]
+              - columnheader "角色" [ref=f4e34]
+              - columnheader "组" [ref=f4e35]
+              - columnheader "状态" [ref=f4e36]
+              - columnheader "操作" [ref=f4e37]
+          - rowgroup [ref=f4e38]:
+            - row [ref=f4e39]:
+              - cell "admin" [ref=f4e40]
+              - cell "default" [ref=f4e41]
+              - cell "admin" [ref=f4e42]
+              - cell "-" [ref=f4e43]
+              - cell "启用" [ref=f4e44]
+              - cell [ref=f4e46]:
+                - button "编辑" [ref=f4e47] [cursor=pointer]
+            - row [ref=f4e75]:
+              - cell "zhangsan" [ref=f4e49]
+              - cell "default" [ref=f4e50]
+              - cell [ref=f4e51]:
+                - textbox "逗号分隔，如 hr,finance" [ref=f4e76]: hr
+              - cell [ref=f4e77]:
+                - textbox "逗号分隔" [ref=f4e78]
+              - cell [ref=f4e53]:
+                - generic [ref=f4e79] [cursor=pointer]:
+                  - checkbox "启用" [checked] [ref=f4e80]
+                  - text: 启用
+              - cell [ref=f4e81]:
+                - button "保存" [active] [ref=f4e82] [cursor=pointer]
+                - button "取消" [ref=f4e83] [cursor=pointer]
+            - row [ref=f4e57]:
+              - cell "lisi" [ref=f4e58]
+              - cell "default" [ref=f4e59]
+              - cell "salesfinance" [ref=f4e60]
+              - cell "-" [ref=f4e61]
+              - cell "启用" [ref=f4e62]
+              - cell [ref=f4e64]:
+                - button "编辑" [ref=f4e65] [cursor=pointer]
+            - row [ref=f4e66]:
+              - cell "wangwu" [ref=f4e67]
+              - cell "tenant-b" [ref=f4e68]
+              - cell "finance" [ref=f4e69]
+              - cell "exec" [ref=f4e70]
+              - cell "启用" [ref=f4e71]
+              - cell [ref=f4e73]:
+                - button "编辑" [ref=f4e74] [cursor=pointer]

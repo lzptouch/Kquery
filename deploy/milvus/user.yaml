@@ -1,0 +1,7 @@
+# Milvus 本地存储配置（替代 MinIO 对象存储）
+# 单机开发/测试场景使用本地磁盘持久化，免去 MinIO 依赖
+common:
+  storage:
+    type: local
+localStorage:
+  path: /var/lib/milvus/data/

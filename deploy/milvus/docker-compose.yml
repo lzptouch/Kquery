@@ -1,0 +1,49 @@
+# Milvus Standalone 单机部署（Kquery 向量库）
+# 组件：etcd（元数据）+ Milvus standalone（向量检索，本地存储模式，无需 MinIO）
+# 数据落盘到 ./volumes/，与业务数据分卷（阶段 2 §4.1 约定）
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: kquery-milvus-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - ./volumes/etcd:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  standalone:
+    image: milvusdb/milvus:v2.6.4
+    container_name: kquery-milvus
+    command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: localhost:9000
+    volumes:
+      - ./volumes/milvus:/var/lib/milvus
+      - ./user.yaml:/milvus/configs/user.yaml:ro
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+    depends_on:
+      etcd:
+        condition: service_healthy
+
+networks:
+  default:
+    name: kquery-milvus-net

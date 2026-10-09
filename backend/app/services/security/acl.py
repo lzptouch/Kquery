@@ -21,18 +21,57 @@ from app.services.security.auth import Principal
 logger = logging.getLogger(__name__)
 
 
+class _StaticDirectory:
+    """旧调用兼容层：把 list[dict] 包成目录接口（不持久化）。"""
+
+    def __init__(self, users: list[dict]):
+        self._users = list(users)
+
+    def all(self) -> list[dict]:
+        return [dict(u) for u in self._users]
+
+    def matches(self, expression: str) -> bool:
+        kind, _, value = expression.partition(":")
+        return any(
+            (kind == "user" and u.get("user_id") == value)
+            or (kind == "role" and value in (u.get("roles") or []))
+            or (kind == "group" and value in (u.get("groups") or []))
+            for u in self._users
+            if u.get("enabled", True)
+        )
+
+    def identities_to_users(self, expressions: list[str]) -> list[dict]:
+        wanted = set(expressions)
+        out = []
+        for u in self._users:
+            ids = {
+                f"user:{u.get('user_id', '')}",
+                *(f"role:{r}" for r in u.get("roles") or []),
+                *(f"group:{g}" for g in u.get("groups") or []),
+            }
+            if ids & wanted:
+                out.append(dict(u))
+        return out
+
+
 class ACLService:
-    def __init__(self, acl_path: Path, users: list[dict]):
+    def __init__(self, acl_path: Path, users):
+        """`users` 为 `UserDirectory` 或 `list[dict]`（兼容旧调用）。
+
+        走 UserDirectory 才有持久化与启停状态；给 list 时退化为静态目录。
+        """
         self._path = acl_path
         self._lock = threading.Lock()
         # doc_id → {allow, deny, is_public, updated_at, updated_by}
         self._acl: dict[str, dict] = {}
-        self._users = users  # 用户目录（影响人数反查）
+        self._directory = users if hasattr(users, "all") else _StaticDirectory(users or [])
         if acl_path.exists():
             try:
                 self._acl = json.loads(acl_path.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001
-                logger.warning("ACL 存储加载失败，从空开始")
+            except (OSError, json.JSONDecodeError) as exc:
+                # 权限数据损坏比"没有权限数据"严重得多：拒绝以空 ACL 对外服务
+                logger.error("ACL 存储损坏，拒绝启动: %s", exc)
+                raise
 
     # ---- 判定 ----
 
@@ -87,28 +126,23 @@ class ACLService:
         }
 
     def _identities_to_users(self, identities: list[str]) -> set[str]:
-        """身份表达式 → 覆盖的用户集合（反查）。"""
-        users: set[str] = set()
-        for ident in identities:
-            kind, _, value = ident.partition(":")
-            for u in self._users:
-                if not u.get("enabled", True):
-                    continue
-                if kind == "user" and u["user_id"] == value:
-                    users.add(u["user_id"])
-                elif kind == "role" and value in u.get("roles", []):
-                    users.add(u["user_id"])
-                elif kind == "group" and value in u.get("groups", []):
-                    users.add(u["user_id"])
-        return users
+        """身份表达式 → 覆盖的用户集合（反查，走用户目录的真实启停状态）。"""
+        return {
+            u["user_id"]
+            for u in self._directory.identities_to_users(list(identities))
+            if u.get("enabled", True)
+        }
+
+    def _enabled_user_ids(self) -> set[str]:
+        return {u["user_id"] for u in self._directory.all() if u.get("enabled", True)}
 
     def _impact(self, old: dict, new: dict) -> dict:
         old_users = self._identities_to_users(old.get("allow", []))
         new_users = self._identities_to_users(new.get("allow", []))
         if old.get("is_public", True):
-            old_users |= {u["user_id"] for u in self._users if u.get("enabled", True)}
+            old_users |= self._enabled_user_ids()
         if new.get("is_public", True):
-            new_users |= {u["user_id"] for u in self._users if u.get("enabled", True)}
+            new_users |= self._enabled_user_ids()
         denied_users = self._identities_to_users(new.get("deny", []))
         new_users -= denied_users
         added = sorted(new_users - old_users)

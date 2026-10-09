@@ -11,6 +11,11 @@ interface Props {
   fromCache?: boolean;
   reranked?: boolean;
   crag?: CragInfo | null;
+  /** CRAG 精炼前后查询（用于对比展示） */
+  refineFrom?: string;
+  refineTo?: string;
+  /** 阶段 9：因权限被过滤的条数（只报数量） */
+  aclFiltered?: number;
 }
 
 const BRANCH_STYLE: Record<string, { label: string; color: string }> = {
@@ -45,11 +50,19 @@ function RouteCard({
   );
 }
 
-export function RetrievalTracePanel({ stats, fromCache, reranked, crag }: Props) {
+export function RetrievalTracePanel({
+  stats,
+  fromCache,
+  reranked,
+  crag,
+  refineFrom,
+  refineTo,
+  aclFiltered,
+}: Props) {
   if (fromCache) {
     return (
       <div className="trace-panel">
-        <span className="cache-badge" title="语义缓存：相同问题在 TTL 内直接复用响应">
+        <span className="cache-badge" title="语义缓存：问题语义相似（余弦 ≥ 阈值）且 TTL 未过期时直接复用响应">
           ⚡ 来自缓存（TTL 1 小时）
         </span>
         <span className="trace-id">未触发检索与生成</span>
@@ -57,35 +70,65 @@ export function RetrievalTracePanel({ stats, fromCache, reranked, crag }: Props)
     );
   }
   if (!stats) return null;
+
+  // 嵌套口径优先：后端同时下发平铺字段（内部）与嵌套对象（前端规范），
+  // 缺任一侧都能渲染——这是"新旧消费者不必同步上线"的代价。
+  const latency = stats.latency_ms ?? {
+    keyword: stats.keyword_ms,
+    vector: stats.vector_ms,
+    fusion: stats.fusion_ms,
+    rerank: stats.rerank_ms,
+  };
+  const funnel = stats.candidates ?? {
+    keyword: stats.keyword_candidates,
+    vector: stats.vector_candidates,
+    fused: stats.fused_count,
+    reranked: stats.reranked_count,
+    into_context: stats.into_context_count,
+  };
+
   return (
     <div className="trace-panel" aria-label="检索过程">
       <div className="trace-routes">
         <RouteCard
           title="BM25 关键词"
           color="#8b5cf6"
-          candidates={stats.keyword_candidates}
-          ms={stats.keyword_ms}
+          candidates={funnel.keyword}
+          ms={latency.keyword}
           hint="关键词精确匹配：编号 / 型号召回靠它"
         />
         <RouteCard
           title="向量语义"
           color="#3b82f6"
-          candidates={stats.vector_candidates}
-          ms={stats.vector_ms}
+          candidates={funnel.vector}
+          ms={latency.vector}
           hint="语义相似度召回：表述不同但语义相近的内容靠它"
         />
       </div>
-      <div className="trace-arrow">↓ RRF 融合（{stats.fusion_ms ?? 0}ms）</div>
+      <div className="trace-arrow">↓ RRF 融合（{latency.fusion ?? 0}ms）</div>
       <div className="trace-fused">
         <span className="trace-bar" style={{ background: "#06b6d4" }} />
         <span className="mono">
-          融合候选 {stats.fused_count ?? "-"} →
-          <span style={{ color: "#f59e0b" }}> gte-rerank-v2 精排（{stats.rerank_ms ?? 0}ms） </span>→ 入上下文 {stats.into_context_count ?? "-"}
+          融合候选 {funnel.fused ?? "-"} →
+          <span style={{ color: "#f59e0b" }}> gte-rerank-v2 精排（{latency.rerank ?? 0}ms） </span>→ 入上下文 {funnel.into_context ?? "-"}
         </span>
       </div>
+      {/* Agent 路径额外给出的工具级统计（工具数与其中失败数） */}
+      {stats.tool_calls !== undefined && stats.tool_calls > 0 && (
+        <div className="trace-id">
+          检索工具调用 {stats.tool_calls} 次
+          {stats.tool_errors ? `（其中 ${stats.tool_errors} 次失败）` : ""}
+        </div>
+      )}
       {reranked === false && (
         <div className="degrade-note" role="note">
           本次未进行精排（重排服务降级），结果可能不够精确
+        </div>
+      )}
+      {/* 阶段 9：只报数量，绝不展示被过滤文档的任何元信息 */}
+      {(aclFiltered ?? stats.acl_filtered ?? 0) > 0 && (
+        <div className="degrade-note" role="note">
+          另有 {aclFiltered ?? stats.acl_filtered} 条结果因权限未展示
         </div>
       )}
 
@@ -105,6 +148,16 @@ export function RetrievalTracePanel({ stats, fromCache, reranked, crag }: Props)
               </div>
             );
           })}
+          {/* 精炼前后对比（stage-5 §三）：只显示 after 会让用户无法判断"改了什么" */}
+          {refineFrom && refineTo && refineFrom !== refineTo && (
+            <div className="crag-round" style={{ borderLeftColor: "var(--info)" }}>
+              <div className="mono" style={{ color: "var(--info)", fontSize: 12 }}>
+                精炼前后对比
+              </div>
+              <div className="trace-id">前：{refineFrom}</div>
+              <div className="trace-id">后：{refineTo}</div>
+            </div>
+          )}
         </div>
       )}
     </div>

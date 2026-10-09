@@ -77,8 +77,32 @@ def test_ask_without_knowledge_refuses(client):
 
 
 def test_ask_rejects_empty_question(client):
+    """空问题必须被拒，且响应是统一信封。
+
+    断言不只看状态码：校验错误若走 FastAPI 默认的 {"detail": ...}，
+    前端统一读 body.error 就拿不到 message，页面会显示 undefined。
+    """
     resp = client.post("/ask", json={"question": ""})
-    assert resp.status_code == 422
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["status"] == "error"
+    assert body["error"]["code"] is not None
+    assert body["error"]["message"], "错误必须带可照着改的提示文案"
+
+
+def test_missing_field_returns_envelope_not_detail(client):
+    """字段缺失同样走统一信封（422 → 400 契约修正的回归护栏）。"""
+    resp = client.post("/ask", json={})
+    assert resp.status_code == 400
+    body = resp.json()
+    assert "detail" not in body, "仍在返回 FastAPI 默认的 detail 结构"
+    assert body["error"]["message"]
+
+
+def test_unknown_path_returns_envelope(client):
+    resp = client.get("/no-such-endpoint")
+    assert resp.status_code == 404
+    assert "detail" not in resp.json()
 
 
 def test_ask_stream_events(client):

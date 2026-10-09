@@ -14,7 +14,7 @@ from typing import Callable, Iterator
 from app.core.config import Settings
 from app.core.envelope import ErrCode
 from app.core.metrics import MetricsStore, PromMetrics
-from app.domain.schemas import AskResult, Evidence, RetrievalConfig
+from app.domain.schemas import AskResult, Evidence, RetrievalConfig, SelfCheckRecord
 from app.services.cache import SemanticCache, config_digest, make_cache_key
 from app.services.config_store import RetrievalConfigStore
 from app.services.llm import LLM, LLMError
@@ -25,7 +25,12 @@ from app.services.validation.crag import (
     BRANCH_INCORRECT,
     CragRouter,
 )
-from app.services.validation.selfcheck import HallucinationChecker, compute_confidence
+from app.services.validation.history import CRAG_KIND, SELFCHECK_KIND, ValidationHistoryStore
+from app.services.validation.selfcheck import (
+    HallucinationChecker,
+    compute_confidence,
+    estimate_claims,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +87,11 @@ class RagPipeline:
         analysis_store=None,
         crag_router: CragRouter | None = None,
         self_checker: HallucinationChecker | None = None,
+        # ---- 阶段 9：企业护栏在**线性路径**同样生效（此前只有 Agent 路径接入）----
+        acl_filter: Callable[[str], bool] | None = None,
+        audit=None,  # AuditStore：三事件审计
+        scanner=None,  # SensitiveScanner：输出侧扫描
+        history_store=None,  # ValidationHistoryStore：CRAG 轮次 / 自检明细落库
     ):
         self._settings = settings
         self._llm = llm
@@ -97,6 +107,46 @@ class RagPipeline:
         self._analysis_store = analysis_store
         self._crag = crag_router
         self._self_checker = self_checker
+        self._acl_filter = acl_filter
+        self._audit = audit
+        self._scanner = scanner
+        self._history = history_store
+
+    # ---- 阶段 9：护栏挂载点（同一请求内固定，便于审计三事件复用同一主体）----
+
+    def bind_principal(self, tenant_id: str, user_id: str = "anon") -> "RagPipeline":
+        """绑定认证主体（副本语义，不改共享实例——流水线是单例）。"""
+        clone = object.__new__(RagPipeline)
+        clone.__dict__.update(self.__dict__)
+        clone._tenant_id = tenant_id
+        clone._user_id = user_id
+        return clone
+
+    def attach_security(self, audit=None, scanner=None, history_store=None) -> None:
+        """装配期回填阶段 9 护栏。
+
+        这些组件在装配顺序上晚于流水线创建（审计库依赖认证配置、扫描器依赖词表），
+        因此不能在构造参数里传——否则只能挂到 Agent 路径上，线性路径永远拿不到。
+        """
+        self._audit = audit
+        self._scanner = scanner
+        self._history = history_store
+
+    @property
+    def _principal_tenant(self) -> str:
+        return getattr(self, "_tenant_id", "")
+
+    @property
+    def _principal_user(self) -> str:
+        return getattr(self, "_user_id", "anon")
+
+    def _log_request(self, trace_id: str, tenant_id: str, question: str) -> None:
+        if self._audit and trace_id:
+            self._audit.log_request(trace_id, tenant_id, self._principal_user, question)
+
+    def _log_retrieve(self, trace_id: str, tenant_id: str, retrieved: int, visible: int) -> None:
+        if self._audit and trace_id:
+            self._audit.log_retrieve(trace_id, tenant_id, self._principal_user, retrieved, visible)
 
     # ---- 缓存键 ----
 
@@ -119,6 +169,51 @@ class RagPipeline:
         )
         return make_cache_key(tenant_id, question, self._model_version(config), digest)
 
+    # ---- 缓存读写（45xx 无感降级：缓存故障不得让用户看到错误）----
+
+    def _question_vector(self, question: str) -> list:
+        """问题向量（供语义近似命中）。编码失败返回空列表，退回精确匹配。"""
+        embedder = getattr(self._cache, "_embeddings", None)
+        if embedder is None:
+            return []
+        try:
+            vectors = embedder.embed([question])
+            return list(vectors[0]) if vectors else []
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("缓存问题编码失败，退回精确匹配: %s", exc)
+            return []
+
+    def _cache_lookup(self, question: str, tenant_id: str, key: str):
+        """返回 (entry, hit_kind)。缓存不可用时静默 miss + 上报 45xx 计数。"""
+        if not hasattr(self._cache, "lookup"):
+            return self._cache.get(key), "exact"
+        try:
+            return self._cache.lookup(question, key, self._question_vector(question))
+        except Exception as exc:  # noqa: BLE001
+            # 45xx：无感降级，只上报指标不回传用户
+            logger.warning("缓存读取降级（本次不走缓存）: %s", exc)
+            self._prom.cache_total.labels(result="error").inc()
+            return None, "miss"
+
+    def _cache_store(self, key: str, question: str, payload: dict, ttl: float) -> None:
+        """写入缓存。优先用支持"问题 + 向量"的新签名，旧实现退回三参数。"""
+        try:
+            self._cache.set(
+                key, payload, ttl, question=question, vector=self._question_vector(question)
+            )
+            return
+        except TypeError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            self._prom.cache_total.labels(result="error").inc()
+            logger.warning("缓存写入降级（不影响本次返回）: %s", exc)
+            return
+        try:
+            self._cache.set(key, payload, ttl)
+        except Exception as exc:  # noqa: BLE001
+            self._prom.cache_total.labels(result="error").inc()
+            logger.warning("缓存写入降级（不影响本次返回）: %s", exc)
+
     # ---- 预处理 ----
 
     def _preprocess(self, question: str, tenant_id: str) -> tuple[dict | None, list[tuple[str, str]], bool]:
@@ -129,11 +224,41 @@ class RagPipeline:
             self._analysis_store.save(analysis_obj)
         return analysis_obj.model_dump(), query_items, not analysis_obj.needs_retrieval
 
+    # ---- ACL 过滤（检索后强制校验，阶段 9 §3.3 双保险的应用层一侧）----
+
+    def _visible_candidates(self, hybrid_result: HybridResult) -> tuple[list, int]:
+        """ACL 过滤后的可见候选 + 被过滤条数。
+
+        向量库 filter 只有"完全等于"语义，deny 优先 + 多身份 ACL 必须在应用层做。
+        被过滤条目既不进证据，也不参与充分度聚合——否则会虚高置信度。
+        """
+        acl_filter = self._acl_filter
+        if not acl_filter:
+            return list(hybrid_result.candidates), 0
+        visible, filtered = [], 0
+        for cand in hybrid_result.candidates:
+            if acl_filter(cand.chunk.doc_id):
+                visible.append(cand)
+            else:
+                filtered += 1
+        if filtered:
+            logger.info("ACL 检索后过滤：%d 条不可见", filtered)
+        return visible, filtered
+
     # ---- 证据装配 ----
 
-    def _to_evidence(self, hybrid_result: HybridResult) -> list[Evidence]:
+    def _to_evidence(self, hybrid_result: HybridResult) -> tuple[list[Evidence], int]:
+        """装配证据。返回 (证据列表, 因权限被过滤的条数)。
+
+        ACL 在检索后二次校验（stage-9 §3.3）：向量库 filter 只有"完全等于"语义，
+        deny 优先 + 多身份 ACL 必须在应用层做。被过滤条目**不进证据**，
+        只把数量交给调用方报给前端——不暴露被过滤文档的任何元信息。
+        """
+        acl_filter = self._acl_filter
+        visible, acl_filtered = self._visible_candidates(hybrid_result)
+
         evidence: list[Evidence] = []
-        for rank, cand in enumerate(hybrid_result.candidates, start=1):
+        for rank, cand in enumerate(visible, start=1):
             chunk = cand.chunk
             filename = self._doc_name_resolver(chunk.doc_id)
             score = cand.rerank_score if hybrid_result.reranked else cand.rrf_score
@@ -161,6 +286,8 @@ class RagPipeline:
         # 未采纳证据也必须返回（用户需要看到"检索到了但没用"），原因可归类
         for cand in hybrid_result.rejected:
             chunk = cand.chunk
+            if acl_filter and not acl_filter(chunk.doc_id):
+                continue
             filename = self._doc_name_resolver(chunk.doc_id)
             score = cand.rerank_score if hybrid_result.reranked else cand.rrf_score
             evidence.append(
@@ -180,7 +307,16 @@ class RagPipeline:
                     rejected_reason="相关度分不足（未进 Top-K）",
                 )
             )
-        return evidence
+        return evidence, acl_filtered
+
+    @staticmethod
+    def _avg_score(evidence: list[Evidence], top_n: int) -> tuple[float, int]:
+        """Top-N 重排分均值与样本数（以 ACL 过滤后的可见证据为口径）。"""
+        scores = sorted((e.score for e in evidence if e.score is not None), reverse=True)
+        scores = scores[:top_n]
+        if not scores:
+            return 0.0, 0
+        return sum(scores) / len(scores), len(scores)
 
     def build_prompt(self, question: str, evidence: list[Evidence]) -> str:
         return PROMPT_TEMPLATE.format(
@@ -220,6 +356,7 @@ class RagPipeline:
         self, question: str, tenant_id: str, trace_id: str, config: RetrievalConfig
     ) -> Iterator[tuple[str, dict]]:
         """校验闭环主流程。产出的事件同时支撑 /ask（聚合）与 /ask/stream（透传）。"""
+        self._log_request(trace_id, tenant_id, question)
         analysis, query_items, is_chitchat = self._preprocess(question, tenant_id)
         preprocess_calls = (analysis or {}).get("llm_calls", 0)
         llm_calls = preprocess_calls
@@ -245,20 +382,29 @@ class RagPipeline:
         hybrid_result: HybridResult | None = None
         final_branch = "correct"
         unvalidated = False
+        acl_filtered = 0
+        retrieved_total = 0
+        refusal_reason = REASON_NO_CONTENT
         max_rounds = 1 + (self._crag.max_iterations if self._crag else 0)
 
         for round_no in range(1, max_rounds + 1):
             hybrid_result = self._hybrid.search_multi(query_items, tenant_id, config, rerank_query=question)
             self._observe_retrieval(hybrid_result)
+            # ACL 先于评分：不可见的证据既不该进上下文，也不该撑高置信度
+            candidates, acl_filtered = self._visible_candidates(hybrid_result)
+            retrieved_total += len(hybrid_result.candidates)
 
             if self._crag is None:
                 break  # 未启用校验（阶段 4 行为）
 
-            candidates = hybrid_result.candidates
             if not candidates:
+                # 有召回但全被权限过滤 → 权限类拒答（与"知识库没有"是不同产品动作）
+                reason = REASON_PERMISSION if acl_filtered and retrieved_total else REASON_NO_CONTENT
                 rounds.append({"round": round_no, "branch": BRANCH_INCORRECT, "avg_score": 0.0, "evidence_count": 0, "refined_query": ""})
-                yield "crag_branch", {"branch": BRANCH_INCORRECT, "avg_score": 0.0, "round": round_no}
+                self._persist_round(trace_id, question, tenant_id, rounds[-1])
+                yield "crag_branch", {"branch": BRANCH_INCORRECT, "avg_score": 0.0, "round": round_no, "acl_filtered": acl_filtered}
                 final_branch = BRANCH_INCORRECT
+                refusal_reason = reason
                 break
 
             # 证据评分：复用重排相关度分（与阶段 2 同口径）；重排降级 → 评分不可用 → 降级不校验
@@ -276,6 +422,7 @@ class RagPipeline:
             avg = sum(top_scores) / len(top_scores) if top_scores else 0.0
             branch = self._crag.decide(avg)
             rounds.append({"round": round_no, "branch": branch, "avg_score": round(avg, 4), "evidence_count": len(candidates), "refined_query": ""})
+            self._persist_round(trace_id, question, tenant_id, rounds[-1])
             yield "crag_branch", {"branch": branch, "avg_score": round(avg, 4), "round": round_no}
             final_branch = branch
 
@@ -292,32 +439,40 @@ class RagPipeline:
                 yield "refine", {"before": question if round_no == 1 else rounds[-2].get("refined_query") or question, "after": refined}
                 query_items = [("refined", refined)]
 
+        self._log_retrieve(trace_id, tenant_id, retrieved_total, retrieved_total - acl_filtered)
         crag_payload = {"branch": final_branch if self._crag else "disabled", "rounds": rounds} if self._crag else None
 
         # ---- 拒答判定（一等公民：走成功状态码）----
         if self._crag is not None and final_branch == BRANCH_INCORRECT:
-            yield "refused", {"reason": REASON_NO_CONTENT, "trace_id": trace_id}
+            yield "refused", {"reason": refusal_reason, "trace_id": trace_id,
+                              "acl_filtered": acl_filtered}
             yield "_final", {
                 "answer": REFUSAL_TEXT, "evidence": [], "analysis": analysis,
                 "retrieval": hybrid_result.stats if hybrid_result else None,
-                "reranked": True, "verdict": "refused",
-                "refusal_reason": REASON_NO_CONTENT, "confidence": 0.0,
+                "reranked": bool(hybrid_result.reranked) if hybrid_result else False,
+                "verdict": "refused",
+                "refusal_reason": refusal_reason, "confidence": 0.0,
                 "crag": crag_payload, "llm_calls": llm_calls,
+                "acl_filtered": acl_filtered,
             }
             return
         if self._crag is not None and final_branch == BRANCH_AMBIGUOUS and len(rounds) >= max_rounds:
-            yield "refused", {"reason": REASON_INSUFFICIENT, "trace_id": trace_id}
+            yield "refused", {"reason": REASON_INSUFFICIENT, "trace_id": trace_id,
+                              "acl_filtered": acl_filtered}
             yield "_final", {
                 "answer": REFUSAL_TEXT, "evidence": [], "analysis": analysis,
                 "retrieval": hybrid_result.stats if hybrid_result else None,
-                "reranked": True, "verdict": "refused",
+                "reranked": bool(hybrid_result.reranked) if hybrid_result else False,
+                "verdict": "refused",
                 "refusal_reason": REASON_INSUFFICIENT, "confidence": 0.0,
                 "crag": crag_payload, "llm_calls": llm_calls,
+                "acl_filtered": acl_filtered,
             }
             return
 
         # ---- 生成（证据已筛干净）----
-        evidence = self._to_evidence(hybrid_result)
+        evidence, evidence_acl_filtered = self._to_evidence(hybrid_result)
+        acl_filtered = max(acl_filtered, evidence_acl_filtered)
         used_evidence = [e for e in evidence if e.used]
         evidence_block = build_evidence_block(used_evidence)
         answer = self._llm.generate(self.build_prompt(question, used_evidence))
@@ -327,12 +482,17 @@ class RagPipeline:
         confidence: float | None = None
         regenerated = False
         unsupported_count = 0
+        self_check_record = None
         if self._self_checker is not None and used_evidence and self._settings.selfcheck_enabled:
+            check_started = time.perf_counter()
             try:
                 check = self._self_checker.check(answer, evidence_block)
                 llm_calls += 1
+                removed = 0
+                recheck = check
                 if check.is_hallucination and check.unsupported_claims:
                     regenerated = True
+                    removed = len(check.unsupported_claims)
                     answer = self._self_checker.regenerate(question, evidence_block, check.unsupported_claims)
                     llm_calls += 1
                     # 二次校验：仍有无据声明 → 如实输出并下调置信度，不掩饰
@@ -340,6 +500,11 @@ class RagPipeline:
                     llm_calls += 1
                     unsupported_count = len(recheck.unsupported_claims)
                 confidence = compute_confidence(unsupported_count)
+                self_check_record = self._to_self_check_record(
+                    self._self_checker, recheck, answer, removed, unsupported_count
+                )
+                self_check_record.elapsed_ms = int((time.perf_counter() - check_started) * 1000)
+                self._persist_self_check(trace_id, tenant_id, self_check_record)
             except Exception as exc:
                 # 4Axx 降级：自检不可用不阻断答案返回，置信度标为未知
                 logger.warning("幻觉自检降级（本次未做答案校验）: %s", exc)
@@ -358,8 +523,22 @@ class RagPipeline:
                 "reranked": hybrid_result.reranked if hybrid_result else True,
                 "verdict": "refused", "refusal_reason": REASON_NO_CONTENT,
                 "confidence": 0.0, "crag": crag_payload, "llm_calls": llm_calls,
+                "acl_filtered": acl_filtered,
             }
             return
+
+        # ---- 输出侧敏感词扫描（阶段 9 §5.1 红线：响应返回前必须完成）----
+        sensitive = {"safe": True, "categories": [], "action": "none"}
+        verdict_out, refusal_reason_out = "answered", ""
+        if self._scanner:
+            sensitive = self._scanner.scan(answer, tenant_id)
+            if sensitive["action"] == "refuse":
+                # 命中最高密级：整体拒答，缓冲的证据也不外带
+                answer = ""
+                verdict_out, refusal_reason_out = "refused", REASON_PERMISSION
+                yield "refused", {"reason": refusal_reason_out, "trace_id": trace_id}
+            elif sensitive["action"] == "mask":
+                answer = sensitive["masked_text"]
 
         for ev in evidence:
             yield "evidence", ev.model_dump()
@@ -367,23 +546,77 @@ class RagPipeline:
             yield "retrieval_stats", {
                 "from_cache": False,
                 "reranked": hybrid_result.reranked,
+                "acl_filtered": acl_filtered,
                 **hybrid_result.stats.model_dump(),
             }
         yield "confidence", {
-            "verdict": "answered",
+            "verdict": verdict_out,
             "score": confidence,
             "unsupported_claims_count": unsupported_count,
             "regenerated": regenerated,
             "unvalidated": unvalidated,
+            "self_check": self_check_record.model_dump() if self_check_record else None,
+            "removed_claims": self_check_record.unsupported_claims if self_check_record else [],
         }
+        self._log_answer(trace_id, tenant_id, answer, len(sensitive["categories"]))
         yield "_final", {
-            "answer": answer, "evidence": evidence, "analysis": analysis,
+            "answer": answer, "evidence": evidence if verdict_out == "answered" else [],
+            "analysis": analysis,
             "retrieval": hybrid_result.stats if hybrid_result else None,
             "reranked": hybrid_result.reranked if hybrid_result else True,
-            "verdict": "answered", "confidence": confidence,
+            "verdict": verdict_out, "refusal_reason": refusal_reason_out,
+            "confidence": confidence,
             "regenerated": regenerated, "unsupported_claims_count": unsupported_count,
             "crag": crag_payload, "llm_calls": llm_calls,
+            "self_check": self_check_record.model_dump() if self_check_record else None,
+            "acl_filtered": acl_filtered,
         }
+
+    # ---- 阶段 5 历史落库 ----
+
+    @staticmethod
+    def _to_self_check_record(checker, result, answer: str, removed: int, remaining: int) -> SelfCheckRecord:
+        """自检明细落库记录。
+
+        `to_record` 是可选能力：自检器替身（或第三方实现）只实现 check/regenerate 时
+        不应因为缺它而把置信度降级成"未知"——那会让"做没做校验"与"校验失败"混淆。
+        """
+        if hasattr(checker, "to_record"):
+            return checker.to_record(result, answer, removed, passed=remaining == 0)
+        claims = list(getattr(result, "unsupported_claims", []) or [])
+        checked = getattr(result, "checked_claims", 0) or estimate_claims(answer)
+        return SelfCheckRecord(
+            method="llm_claim_review",
+            checked_claims=int(checked),
+            removed_claims=removed,
+            passed=remaining == 0,
+            unsupported_claims=claims,
+            reasoning=getattr(result, "reasoning", ""),
+            model_version=getattr(checker, "model_version", ""),
+        )
+
+    def _persist_round(self, trace_id: str, question: str, tenant_id: str, round_data: dict) -> None:
+        if self._history is None:
+            return
+        self._history.append(CRAG_KIND, {
+            "trace_id": trace_id,
+            "question": question,
+            "tenant_id": tenant_id,
+            **round_data,
+        })
+
+    def _persist_self_check(self, trace_id: str, tenant_id: str, record) -> None:
+        if self._history is None:
+            return
+        self._history.append(SELFCHECK_KIND, {
+            "trace_id": trace_id,
+            "tenant_id": tenant_id,
+            **record.model_dump(),
+        })
+
+    def _log_answer(self, trace_id: str, tenant_id: str, answer: str, sensitive_hits: int) -> None:
+        if self._audit and trace_id:
+            self._audit.log_answer(trace_id, tenant_id, self._principal_user, answer, sensitive_hits)
 
     def _assemble(self, trace_id: str, started: float, events: list[tuple[str, dict]]) -> AskResult:
         final = next(payload for kind, payload in events if kind == "_final")
@@ -393,7 +626,7 @@ class RagPipeline:
             evidence=final["evidence"],
             trace_id=trace_id,
             elapsed_ms=elapsed,
-            from_cache=False,
+            from_cache=final.get("from_cache", False),
             reranked=final.get("reranked", True),
             retrieval=final.get("retrieval"),
             analysis=final.get("analysis"),
@@ -403,6 +636,8 @@ class RagPipeline:
             regenerated=final.get("regenerated", False),
             unsupported_claims_count=final.get("unsupported_claims_count", 0),
             crag=final.get("crag"),
+            self_check=final.get("self_check"),
+            acl_filtered=final.get("acl_filtered", 0),
         )
 
     def _record_quality(self, result: AskResult) -> None:
@@ -423,9 +658,9 @@ class RagPipeline:
             config = config.model_copy(update={"top_k": top_k})
         cache_key = self._cache_key(question, tenant_id, config)
 
-        entry = self._cache.get(cache_key)
+        entry, hit_kind = self._cache_lookup(question, tenant_id, cache_key)
         if entry is not None:
-            self._prom.cache_total.labels(result="hit").inc()
+            self._prom.cache_total.labels(result=hit_kind if hit_kind != "miss" else "hit").inc()
             elapsed = int((time.perf_counter() - started) * 1000)
             payload = {**entry.payload, "trace_id": trace_id, "elapsed_ms": elapsed, "from_cache": True}
             result = AskResult.model_validate(payload)
@@ -438,7 +673,9 @@ class RagPipeline:
             events = list(self._core_events(question, tenant_id, trace_id, config))
             final = next(p for k, p in events if k == "_final")
             result = self._assemble(trace_id, started, events)
-            self._cache.set(cache_key, result.model_dump(mode="json"), ttl_seconds=config.cache_ttl_s)
+            self._cache_store(
+                cache_key, question, result.model_dump(mode="json"), config.cache_ttl_s
+            )
             self._prom.llm_calls_total.inc(final.get("llm_calls", 1))
             self._record(question, tenant_id, True, result.elapsed_ms, from_cache=False, llm_called=True)
             self._record_quality(result)
@@ -467,9 +704,9 @@ class RagPipeline:
             config = config.model_copy(update={"top_k": top_k})
         cache_key = self._cache_key(question, tenant_id, config)
 
-        entry = self._cache.get(cache_key)
+        entry, hit_kind = self._cache_lookup(question, tenant_id, cache_key)
         if entry is not None:
-            self._prom.cache_total.labels(result="hit").inc()
+            self._prom.cache_total.labels(result=hit_kind if hit_kind != "miss" else "hit").inc()
             payload = entry.payload
             if payload.get("analysis"):
                 yield "query_analysis", payload["analysis"]
@@ -477,7 +714,11 @@ class RagPipeline:
                 yield "refused", {"reason": payload.get("refusal_reason", REASON_NO_CONTENT), "trace_id": trace_id}
             for ev in payload.get("evidence", []):
                 yield "evidence", ev
-            yield "retrieval_stats", {"from_cache": True, "reranked": payload.get("reranked", True)}
+            yield "retrieval_stats", {
+                "from_cache": True,
+                "hit_kind": hit_kind,
+                "reranked": payload.get("reranked", True),
+            }
             yield "confidence", {
                 "verdict": payload.get("verdict", "answered"),
                 "score": payload.get("confidence"),
@@ -510,7 +751,9 @@ class RagPipeline:
                 yield kind, payload
 
             result = self._assemble(trace_id, started, events)
-            self._cache.set(cache_key, result.model_dump(mode="json"), ttl_seconds=config.cache_ttl_s)
+            self._cache_store(
+                cache_key, question, result.model_dump(mode="json"), config.cache_ttl_s
+            )
             final = next(p for k, p in events if k == "_final")
             self._prom.llm_calls_total.inc(final.get("llm_calls", 1))
             self._record(question, tenant_id, True, result.elapsed_ms, from_cache=False, llm_called=True)

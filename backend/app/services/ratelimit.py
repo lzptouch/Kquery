@@ -52,3 +52,14 @@ class TokenBucketLimiter:
 def build_limiter() -> TokenBucketLimiter:
     # 预留：生产接 Redis 时在此替换实现
     return TokenBucketLimiter()
+
+
+def resolve_bucket_limits(active_config, settings) -> tuple[float, float]:
+    """令牌桶参数的取值优先级：运行时热配置 > 全局配置。
+
+    此前两个配置项声明后从未被读取，实际生效的永远是 RetrievalConfig 里的硬编码默认
+    ——改环境变量没有任何效果。
+    """
+    rate = getattr(active_config, "ratelimit_per_min", None) or settings.ratelimit_refill_per_min
+    capacity = getattr(active_config, "ratelimit_capacity", None) or settings.ratelimit_capacity
+    return float(rate), float(capacity)

@@ -156,6 +156,8 @@ export interface QueryAnalysis {
   degraded: string[];
   elapsed_ms: number;
   llm_calls: number;
+  /** 预估费用（元）：调参时"关掉 HyDE 省了多少"的答案 */
+  cost?: number;
   strategy_version: string;
   created_at: string;
 }
@@ -180,7 +182,11 @@ export interface QueryPattern {
   avg_elapsed_ms: number;
 }
 
-/** 检索统计（阶段 2）：四个计数 + 四段耗时 */
+/** 检索统计（阶段 2）：四个计数 + 四段耗时。
+ *
+ * 后端同时下发平铺字段（内部口径）与嵌套对象（前端规范口径）：
+ * `latency_ms` / `candidates` 是文档要求的前端消费形态。
+ */
 export interface RetrievalStats {
   keyword_candidates: number;
   vector_candidates: number;
@@ -191,6 +197,40 @@ export interface RetrievalStats {
   vector_ms: number;
   fusion_ms: number;
   rerank_ms: number;
+  /** 嵌套口径：分阶段耗时 */
+  latency_ms?: {
+    keyword: number;
+    vector: number;
+    fusion: number;
+    rerank: number;
+  };
+  /** 嵌套口径：候选漏斗 召回→融合→重排→入上下文 */
+  candidates?: {
+    keyword: number;
+    vector: number;
+    fused: number;
+    reranked: number;
+    into_context: number;
+  };
+  /** Agent 路径额外给出：工具调用数与其中失败数 */
+  tool_calls?: number;
+  tool_errors?: number;
+  /** 因 ACL 被过滤的条数 */
+  acl_filtered?: number;
+  from_cache?: boolean;
+  reranked_flag?: boolean;
+}
+
+/** 幻觉自检明细（阶段 5 §8.2 SELF_CHECK 实体） */
+export interface SelfCheckInfo {
+  method: string;
+  checked_claims: number;
+  removed_claims: number;
+  passed: boolean;
+  unsupported_claims: string[];
+  reasoning: string;
+  model_version: string;
+  elapsed_ms: number;
 }
 
 export interface AskData {
@@ -246,6 +286,13 @@ export interface ChatMessage {
   regenerated?: boolean;
   unsupportedClaimsCount?: number;
   crag?: CragInfo | null;
+  /** 阶段 5：本次未做答案校验（评分器/自检器降级），置信度应显示为"未知" */
+  unvalidated?: boolean;
+  /** 被剔除的无据声明原文（前端要告诉用户剔除了哪句） */
+  removedClaims?: string[];
+  /** CRAG 精炼前后对比（stage-5 §三） */
+  refineFrom?: string;
+  refineTo?: string;
   // 阶段 6：Agent 轨迹
   agent?: AgentTrace | null;
   traceNodes?: TraceNode[]; // 流式期间的实时轨迹
@@ -494,10 +541,16 @@ export interface EvalRunSummary {
   dataset: string;
   dataset_version: string;
   model_version: string;
+  /** 业务代码版本：指标变化到底是平台换版还是我们改了代码，靠它区分 */
+  code_version?: string | null;
+  /** 评测走的链路（linear / agent）：两种口径的 faithfulness 不可比 */
+  path?: string | null;
   sample_count: number;
   faithfulness: number;
   citation_accuracy: number;
   refusal_accuracy: number | null;
+  /** 期望证据被答案真正引用的比例：唯一能区分"检索没找到"与"生成写错了"的指标 */
+  coverage?: number | null;
   created_at: number;
 }
 

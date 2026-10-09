@@ -9,6 +9,7 @@ import type { ChatMessage, Evidence } from "../../../types";
 import { AgentTraceTimeline } from "./AgentTraceTimeline";
 import { ConfidenceBar } from "./ConfidenceBar";
 import { EvidenceCard } from "./EvidenceCard";
+import { EvidenceScoreTable } from "./EvidenceScoreTable";
 import { QueryAnalysisPanel } from "./QueryAnalysisPanel";
 import { RefusalCard } from "./RefusalCard";
 import { RetrievalTracePanel } from "./RetrievalTracePanel";
@@ -216,7 +217,21 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
                   fromCache={message.fromCache}
                   reranked={message.reranked}
                   crag={message.crag}
+                  refineFrom={message.refineFrom}
+                  refineTo={message.refineTo}
+                  aclFiltered={message.aclFiltered}
                 />
+                {message.evidence.length > 0 && (message.retrieval || message.confidence != null || message.crag) && (
+                  <details
+                    className="evidence-score-wrap"
+                    open={(message.confidence ?? 1) < 0.5}
+                  >
+                    <summary className="trace-id">
+                      证据相关度评分（{message.evidence.length} 条）
+                    </summary>
+                    <EvidenceScoreTable evidence={message.evidence} />
+                  </details>
+                )}
                 {message.evidence.length > 0 && (
                   <div className="evidence-list">
                     {visibleEvidence.map((ev) => (

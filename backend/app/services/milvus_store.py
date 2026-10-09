@@ -168,6 +168,64 @@ class MilvusVectorStore:
         )
         return [r["chunk_id"] for r in rows]
 
+    def doc_versions(self, doc_id: str) -> list[int]:
+        """文档已存在的索引版本号（从 chunk_id 里的 `@v{n}` 解析）。"""
+        from app.services.vectorstore import chunk_version
+
+        return sorted({v for v in (chunk_version(cid) for cid in self.doc_chunk_ids(doc_id)) if v})
+
+    def delete_doc_versions(self, doc_id: str, keep_versions: int = 3) -> int:
+        """删除该文档最旧的若干历史版本块，只保留最近 `keep_versions` 版。
+
+        与 VectorStore 同语义：版本号来自 chunk_id，删除按 chunk_id 精确执行。
+        """
+        from app.services.vectorstore import chunk_version
+
+        versions = self.doc_versions(doc_id)
+        if len(versions) <= keep_versions:
+            return 0
+        drop = set(versions[: len(versions) - keep_versions])
+        stale = [cid for cid in self.doc_chunk_ids(doc_id) if chunk_version(cid) in drop]
+        if not stale:
+            return 0
+        quoted = ", ".join(f'"{cid}"' for cid in stale)
+        with self._lock:
+            self._client.delete(
+                collection_name=self._collection, filter=f"chunk_id in [{quoted}]"
+            )
+        return len(stale)
+
+    def rename_doc_version(self, doc_id: str, version: int) -> list[str]:
+        """把该文档的无版本 chunk_id 改写成带版本号的形式（供 reparse 保留历史块）。
+
+        Milvus 的主键即 chunk_id，改主键只能"读出含向量的整行 → 以新主键 upsert →
+        删旧主键"。因此这里一次性把整批行搬完，不做逐条改写。
+        """
+        from app.services.vectorstore import chunk_version, with_version
+
+        rows = self._client.query(
+            collection_name=self._collection,
+            filter=f'doc_id == "{doc_id}"',
+            output_fields=[*_OUTPUT_FIELDS, "vector"],
+            limit=16384,
+        )
+        stale_ids = [r["chunk_id"] for r in rows if chunk_version(r["chunk_id"]) == 0]
+        if not stale_ids:
+            return []
+        moved: list[dict] = []
+        for row in rows:
+            new_id = with_version(row["chunk_id"], version)
+            if new_id != row["chunk_id"]:
+                moved.append({**row, "chunk_id": new_id})
+        if moved:
+            with self._lock:
+                self._client.upsert(collection_name=self._collection, data=moved)
+                quoted = ", ".join(f'"{cid}"' for cid in stale_ids)
+                self._client.delete(
+                    collection_name=self._collection, filter=f"chunk_id in [{quoted}]"
+                )
+        return [r["chunk_id"] for r in moved]
+
     def get_chunk(self, chunk_id: str) -> Chunk | None:
         rows = self._client.query(
             collection_name=self._collection,

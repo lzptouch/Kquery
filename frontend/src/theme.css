@@ -1708,3 +1708,339 @@ button {
   align-items: center;
   gap: 10px;
 }
+
+/* ==========================================================================
+   可访问性与视觉规范补齐（stage-0 §9 / §四、stage-8 §8.3）
+   ========================================================================== */
+
+/* ① 全局可见焦点环。
+   此前全仓只有一条 `textarea:focus`，.btn / .citation-chip / .session-item /
+   .report-tab 等可聚焦元素都没有焦点样式，键盘用户无法判断当前位置。 */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ② 动画降级：尊重系统"减少动态效果"偏好。
+   theme.css 有 5 处 @keyframes（打字光标、证据高亮、骨架屏、轨迹流动、脉冲），
+   前庭功能障碍用户需要能一键关掉。 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* 光标与流动线改为静态呈现：直接隐藏比让它闪更可读 */
+  .stream-cursor,
+  .trace-flow {
+    display: none;
+  }
+}
+
+/* ③ 数据来源标签：EvidenceCard 会输出 route-graph / route-image / origin-original，
+   但这三个类此前在 CSS 里没有定义，标签渲染后与普通文本无异（"有代码没样式"）。 */
+.route-tag.route-graph {
+  background: color-mix(in srgb, #ec4899 12%, transparent);
+  color: #ec4899;
+  border-color: color-mix(in srgb, #ec4899 30%, transparent);
+}
+.route-tag.route-image {
+  background: color-mix(in srgb, #06b6d4 12%, transparent);
+  color: #06b6d4;
+  border-color: color-mix(in srgb, #06b6d4 30%, transparent);
+}
+.origin-tag.origin-original {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-secondary);
+  border-color: color-mix(in srgb, var(--text-secondary) 25%, transparent);
+}
+
+/* ④ 黑板已淘汰证据：文档 §8.3 要求"灰色 + 删除线"，
+   此前用的是红色且无删除线——红色在黑板上读作"出错"，而不是"已被淘汰"。 */
+.bb-rejected {
+  color: var(--text-secondary) !important;
+  text-decoration: line-through;
+  background: transparent;
+}
+
+/* ⑤ 文档状态分色（stage-3 §9.3）：此前 uploading/queued/parsing/chunking/indexing
+   全部映射为同一个蓝色，"卡在哪一步"只能靠文字读。 */
+.status-tag.pending,
+.status-tag.uploading,
+.status-tag.queued {
+  background: color-mix(in srgb, var(--text-secondary) 12%, transparent);
+  color: var(--text-secondary);
+  border-color: color-mix(in srgb, var(--text-secondary) 25%, transparent);
+}
+.status-tag.parsing {
+  background: color-mix(in srgb, #3b82f6 12%, transparent);
+  color: #1d4ed8;
+  border-color: color-mix(in srgb, #3b82f6 30%, transparent);
+}
+.status-tag.chunking {
+  background: color-mix(in srgb, #0891b2 12%, transparent);
+  color: #0e7490;
+  border-color: color-mix(in srgb, #0891b2 30%, transparent);
+}
+.status-tag.indexing {
+  background: color-mix(in srgb, #8b5cf6 12%, transparent);
+  color: #6d28d9;
+  border-color: color-mix(in srgb, #8b5cf6 30%, transparent);
+}
+.status-tag.cancelled {
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+
+/* ⑥ 正文对比度补足：--warning(#d97706) 与 --info(#0891b2) 在白底约 3.2~3.4:1，
+   低于 WCAG AA 正文 4.5:1。新增 --warning-text / --info-text 专供正文使用，
+   保留原变量给边框与图形（图形只需 3:1）。 */
+:root {
+  --warning-text: #92400e;
+  --info-text: #0e7490;
+}
+[data-theme="dark"],
+:root.dark {
+  --warning-text: #fbbf24;
+  --info-text: #67e8f9;
+}
+.confidence-label,
+.st-warn,
+.status-tag.parsing {
+  color: var(--warning-text);
+}
+
+/* ⑦ 深色模式下重定义引用编号 6 色循环：--cite-4(#d97706) 与 --cite-6(#16a34a)
+   在 #0f172a 上对比度不足，会让第 4~6 条引用在深色主题里"看不见"。 */
+:root.dark,
+[data-theme="dark"] {
+  --cite-1: #60a5fa;
+  --cite-2: #a78bfa;
+  --cite-3: #22d3ee;
+  --cite-4: #fbbf24;
+  --cite-5: #f472b6;
+  --cite-6: #4ade80;
+}
+
+/* ⑧ 破坏性确认对话框：stage-10 §10 要求焦点锁定，避免误 Tab 到确认按钮后回车。
+   配合组件侧的 aria-modal + Esc 关闭使用。 */
+.modal-mask[role="dialog"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-mask .modal {
+  max-width: min(520px, 92vw);
+}
+
+/* ==========================================================================
+   权限矩阵与评测对比（stage-9 §2.3 / §7.4）
+   ========================================================================== */
+
+/* 可访问性第一：矩阵每格必须"颜色 + 文字"双通道，
+   浅色模式下 ✓/✗ 仍需各自达 4.5:1。 */
+.perm-yes {
+  color: #15803d;
+  text-align: center;
+}
+.perm-no {
+  color: var(--text-secondary);
+  text-align: center;
+}
+.perm-word {
+  margin-left: 4px;
+  font-size: 12px;
+}
+:root.dark .perm-yes,
+[data-theme="dark"] .perm-yes {
+  color: #4ade80;
+}
+
+/* 评测对比：基线 / 本次双条 */
+.cmp-metrics {
+  display: grid;
+  gap: 14px;
+  margin: 12px 0 18px;
+}
+.cmp-metric-name {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.cmp-delta {
+  font-size: 12px;
+}
+.cmp-delta[data-dir="up"] { color: #15803d; }
+.cmp-delta[data-dir="down"] { color: #b91c1c; }
+.cmp-delta[data-dir="flat"] { color: var(--text-secondary); }
+:root.dark .cmp-delta[data-dir="up"],
+[data-theme="dark"] .cmp-delta[data-dir="up"] { color: #4ade80; }
+:root.dark .cmp-delta[data-dir="down"],
+[data-theme="dark"] .cmp-delta[data-dir="down"] { color: #f87171; }
+
+.cmp-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.cmp-bar-label {
+  width: 32px;
+  flex: none;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.cmp-bar {
+  height: 10px;
+  border-radius: 5px;
+  min-width: 2px;
+  transition: width 0.2s ease;
+}
+.cmp-bar[data-run="a"] { background: var(--cite-2); }
+.cmp-bar[data-run="b"] { background: var(--cite-1); }
+.cmp-value {
+  font-size: 11px;
+  color: var(--text-secondary);
+  flex: none;
+}
+
+.cmp-diff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+.cmp-diff h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+.cmp-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.cmp-list li { margin-bottom: 6px; }
+
+/* 仅屏幕阅读器可见：表格 caption */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ==========================================================================
+   证据评分表与改写高亮（stage-5 §9 / stage-4 §2.2）
+   ========================================================================== */
+.evidence-score-wrap {
+  margin: 6px 0;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+.evidence-score-wrap > summary {
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 0;
+  user-select: none;
+}
+.evidence-score-wrap > summary:hover { color: var(--text-primary); }
+.score-table { font-size: 12px; }
+.score-bar {
+  display: inline-block;
+  height: 8px;
+  border-radius: 4px;
+  min-width: 2px;
+  vertical-align: middle;
+}
+/* 被淘汰的证据：删除线 + 灰化（红色读作"出错"，这里表达的是"被主动排除"） */
+.score-rejected td {
+  color: var(--text-secondary);
+  text-decoration: line-through;
+}
+
+/* 改写/子问题被选中：左侧高亮条 + 浅底，让"当前定位的是哪一条"一眼可见 */
+.rewrite-item.focused {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  border-left: 3px solid var(--primary);
+  padding-left: 6px;
+  border-radius: 3px;
+}
+.rewrite-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+/* 可点击的数据源标签是 button，需要去掉浏览器默认按钮外观 */
+button.route-tag {
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font: inherit;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+button.route-tag:hover { filter: brightness(1.08); }
+.rewrite-text[data-expanded="false"] { color: var(--text-secondary); }
+
+/* ==========================================================================
+   四态骨架屏与虚拟滚动容器（stage-0 §三 / §四）
+   ========================================================================== */
+
+/* 骨架屏：转圈只说明"在忙"，骨架屏说明"马上会是什么形状"。
+   叠加 prefers-reduced-motion 的降级（见文件上方动效降级块）。 */
+.skeleton-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+}
+.skeleton-row {
+  height: 14px;
+  border-radius: 7px;
+  background: linear-gradient(
+    90deg,
+    var(--bg-secondary) 25%,
+    var(--border) 37%,
+    var(--bg-secondary) 63%
+  );
+  background-size: 400% 100%;
+  animation: skeleton-sweep 1.4s ease infinite;
+}
+@keyframes skeleton-sweep {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* 虚拟滚动容器：滚动条常显可提示"下面还有"，但默认仍保持克制 */
+.windowed-list {
+  overflow-y: auto;
+  overflow-x: hidden;
+  /* 滚动锚定关掉：虚拟化下 DOM 高度变化会让浏览器锚点跳位 */
+  contain: strict;
+}
+.windowed-list:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.windowed-row {
+  box-sizing: border-box;
+  padding: 2px 4px;
+}
+/* 虚拟化下的行需要自己处理纵向间距（原本靠 flex gap） */
+.windowed-list .windowed-row + .windowed-row {
+  border-top: 1px solid var(--border);
+}
+.data-state { min-height: 120px; display: flex; align-items: center; justify-content: center; }

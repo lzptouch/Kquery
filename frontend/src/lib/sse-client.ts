@@ -24,6 +24,9 @@ export interface ConfidencePayload {
   unsupported_claims_count: number;
   regenerated: boolean;
   unvalidated?: boolean;
+  /** 阶段 5：被剔除的无据声明原文（前端要告诉用户剔除了哪句） */
+  removed_claims?: string[];
+  self_check?: import("../types").SelfCheckInfo | null;
   crag?: { branch: string; rounds: { round: number; branch: "correct" | "ambiguous" | "incorrect"; avg_score: number; evidence_count: number; refined_query: string }[] } | null;
 }
 
@@ -32,10 +35,10 @@ export interface StreamHandlers {
   onEvidence: (evidence: Evidence) => void;
   onRetrievalStats: (stats: Partial<RetrievalStats> & { from_cache: boolean; reranked: boolean }) => void;
   onQueryAnalysis: (analysis: QueryAnalysis) => void;
-  onCragBranch: (data: { branch: string; avg_score: number; round: number }) => void;
+  onCragBranch: (data: { branch: string; avg_score: number; round: number; acl_filtered?: number }) => void;
   onRefine: (data: { before: string; after: string }) => void;
   onConfidence: (data: ConfidencePayload) => void;
-  onRefused: (data: { reason: RefusalReason; trace_id: string }) => void;
+  onRefused: (data: { reason: RefusalReason; trace_id: string; acl_filtered?: number }) => void;
   onDone: (data: {
     trace_id: string;
     elapsed_ms: number;
@@ -48,6 +51,11 @@ export interface StreamHandlers {
     verdict?: string;
     confidence?: number;
     acl_filtered?: number;  // 阶段 9：权限过滤数
+    retrieval?: import("../types").RetrievalStats | null;
+    crag?: import("../types").CragInfo | null;
+    refusal_reason?: string;
+    regenerated?: boolean;
+    unsupported_claims_count?: number;
   }) => void;
   onError: (error: { code: number; message: string; retry_after?: number }) => void;
   // ---- 阶段 6：Agent 轨迹事件 ----
@@ -67,6 +75,9 @@ const KNOWN_EVENTS = new Set([
   "token", "evidence", "retrieval_stats", "query_analysis",
   "crag_branch", "refine", "confidence", "refused",
   "plan", "tool_start", "tool_end", "reflect", "iteration", "fuse", "replan",
+  // 阶段 7 预留：图谱关系路径。缺了它前端会把后端已发出的事件静默丢弃，
+  // 表现为"跨模态证据形态不完整"且无处排查。
+  "graph_path",
   "done", "error",
 ]);
 
@@ -124,7 +135,7 @@ export async function askStream(
     else if (event === "crag_branch") handlers.onCragBranch(data as { branch: string; avg_score: number; round: number });
     else if (event === "refine") handlers.onRefine(data as { before: string; after: string });
     else if (event === "confidence") handlers.onConfidence(data as ConfidencePayload);
-    else if (event === "refused") handlers.onRefused(data as { reason: RefusalReason; trace_id: string });
+    else if (event === "refused") handlers.onRefused(data as { reason: RefusalReason; trace_id: string; acl_filtered?: number });
     else if (event === "retrieval_stats")
       handlers.onRetrievalStats(data as Partial<RetrievalStats> & { from_cache: boolean; reranked: boolean });
     else if (event === "plan") handlers.onPlan?.(data as { steps: AgentPlanStep[]; max_iterations: number; replan?: boolean });

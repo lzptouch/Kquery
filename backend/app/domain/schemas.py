@@ -3,7 +3,7 @@
 字段按"将来要进数据库"的标准设计：标识稳定可组合、租户字段从第一天就存在、
 证据是一等实体（带标识、可追溯、可评分）。
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 
 # 文档状态机：阶段 1 仅 uploaded / parsing / indexed / failed，阶段 3 扩展为七态
 DOC_STATUS_UPLOADED = "uploaded"
@@ -21,6 +21,9 @@ class DocumentRecord(BaseModel):
     tenant_id: str  # 租户标识，阶段 1 取默认值
     source_path: str  # 原始文件路径
     chunk_count: int = 0  # 入库后回填，用于校验完整性
+    short_chunk_count: int = 0  # 超短块数（质量红线：占比 >10% 需调整切块参数）
+    chunker: str = ""  # 本次实际使用的切块器（策略可能被自动选择覆盖）
+    version: int = 1  # 索引版本号：重新解析时 +1，旧版本块保留供历史引用溯源
     content_hash: str  # 判断"文件变了但名字没变"
     status: str = DOC_STATUS_UPLOADED
     error: str | None = None  # 失败原因（hover 查看）
@@ -92,6 +95,9 @@ class FileRecord(BaseModel):
     error_reason: str = ""  # 失败原因（可读）
     doc_id: str = ""  # 成功后产出的文档标识
     stats: dict = Field(default_factory=dict)  # 产物统计：页数/表格数/块数/超短块数
+    #: 图谱 / 图像索引联动结果（stage-7 §5.1 入库联动）。
+    #: 单独一栏而不是塞进 stats：前端要按它区分"文档已入库但图谱未构建"与"图谱构建失败"。
+    graph_stats: dict = Field(default_factory=dict)
 
 
 class IngestTask(BaseModel):
@@ -192,15 +198,22 @@ class RelationEdge(BaseModel):
 
 
 class Community(BaseModel):
-    """社区：实体聚类分组 + 摘要（摘要入向量空间，主题问题可命中）。"""
+    """社区：实体聚类分组 + 摘要（摘要入向量空间，主题问题可命中）。
+
+    `level` 支撑多级社区（stage-7 §5.3「社区必须有层级」）：
+    0 为基础层（直接由连通分量得到），1+ 为上层社区（对下层社区再聚类）。
+    前端据此渲染层级缩进，检索侧据此做"先粗后细"的二级定位。
+    """
 
     community_id: str
-    members: list[str] = []  # 实体规范名
+    members: list[str] = []  # 实体规范名（各层统一用实体名，便于直接展开）
     size: int = 0
     summary: str = ""
     generated_at: float = 0.0  # 摘要生成时刻（判断是否过时）
     model_version: str = ""  # 生成所用模型版本
     tenant_id: str = "default"
+    level: int = 0  # 层级：0 基础层，越大越抽象
+    parent_id: str = ""  # 上层社区的父节点（level>0 时非空）
 
 
 class ImageIndexEntry(BaseModel):
@@ -220,6 +233,10 @@ class RetrievalStats(BaseModel):
     """检索统计（阶段 2 §4.4）：四个计数 + 四段耗时，随响应返回不持久化。
 
     排查"召回率下降"靠这八个值定位问题出在哪一段。
+
+    对外形态按前端规范是**嵌套对象**（`latency_ms:{...}` / `candidates:{...}`），
+    平铺字段保留为内部计算口径：两者同时出现在 `model_dump()` 里，
+    新前端读嵌套、旧消费者读平铺，不必同步改完再上线。
     """
 
     keyword_candidates: int = 0
@@ -232,11 +249,38 @@ class RetrievalStats(BaseModel):
     fusion_ms: int = 0
     rerank_ms: int = 0
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def latency_ms(self) -> dict:
+        """分阶段耗时（毫秒）。缺失段返回 0 而不是 null——前端直接做加减。"""
+        return {
+            "keyword": self.keyword_ms,
+            "vector": self.vector_ms,
+            "fusion": self.fusion_ms,
+            "rerank": self.rerank_ms,
+        }
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def candidates(self) -> dict:
+        """候选漏斗：召回 → 融合 → 重排 → 入上下文。"""
+        return {
+            "keyword": self.keyword_candidates,
+            "vector": self.vector_candidates,
+            "fused": self.fused_count,
+            "reranked": self.reranked_count,
+            "into_context": self.into_context_count,
+        }
+
 
 class RetrievalConfig(BaseModel):
     """运行时可调检索参数（阶段 2 前端规范 §4）：管理员经 /admin/retrieval-config 修改。
 
     变更不立即生效——先存为 pending，到达生效时刻后晋升为 active。
+
+    六个参数与前端规范的"6 个可调参数"对齐：`top_k` / 权重 / 开关 / 重排 / 缓存 TTL /
+    限流。其中 RRF 常数与两级召回数此前只注入到 `HybridRetriever.__init__`，
+    模型里根本没有这三个字段——文档说可调，实际改不了。
     """
 
     vector_enabled: bool = True
@@ -249,6 +293,31 @@ class RetrievalConfig(BaseModel):
     cache_ttl_s: int = 3600
     ratelimit_per_min: float = 60.0
     ratelimit_capacity: int = 60
+    # ---- 补齐：文档声明可调但此前写死在检索器构造参数里的三项 ----
+    rrf_k: int = 60  # RRF 平滑常数（论文默认 60；调小更看重头部排名）
+    per_route_top_n: int = 20  # 单路召回条数
+    fused_top_n: int = 20  # 融合后进入重排的候选数
+
+    def with_fallbacks(self, settings) -> "RetrievalConfig":
+        """零值字段回落��全局配置。
+
+        存量配置 JSON 里没有新增的三个字段，用 0 表达"未设置"会静默把召回数清零，
+        表现为"检索突然什么都召不回"——这类故障极难定位。
+        """
+        patch: dict = {}
+        if self.rrf_k <= 0:
+            patch["rrf_k"] = settings.rrf_k
+        if self.per_route_top_n <= 0:
+            patch["per_route_top_n"] = settings.retrieval_per_route_top_n
+        if self.fused_top_n <= 0:
+            patch["fused_top_n"] = settings.retrieval_fused_top_n
+        if self.cache_ttl_s <= 0:
+            patch["cache_ttl_s"] = settings.cache_ttl_s
+        if self.ratelimit_per_min <= 0:
+            patch["ratelimit_per_min"] = settings.ratelimit_refill_per_min
+        if self.ratelimit_capacity <= 0:
+            patch["ratelimit_capacity"] = settings.ratelimit_capacity
+        return self.model_copy(update=patch) if patch else self
 
 
 class AskRequest(BaseModel):
@@ -280,3 +349,44 @@ class AskResult(BaseModel):
     regenerated: bool = False
     unsupported_claims_count: int = 0
     crag: dict | None = None  # {branch, rounds: [{round, branch, avg_score, evidence_count, refined_query}]}
+    # 阶段 5 扩展：自检明细（哪些声明被剔除、用的什么方式校验）
+    self_check: "SelfCheckRecord | None" = None
+    # 阶段 9 扩展：因权限被过滤的条数（只报数量，绝不暴露被过滤文档的元信息）
+    acl_filtered: int = 0
+
+
+class SelfCheckRecord(BaseModel):
+    """幻觉自检记录（stage-5 §8.2 SELF_CHECK 实体）。
+
+    `checked_claims` / `removed_claims` 让"重生成过"可量化——
+    剔除过声明的样本是最有价值的改进素材，只存一个 int 就浪费了。
+    """
+
+    method: str = "llm_claim_review"  # 校验方式（换校验器时便于分组统计）
+    checked_claims: int = 0  # 送检的事实性声明条数
+    removed_claims: int = 0  # 因无据被剔除的条数
+    passed: bool = True  # 是否通过（false = 重生成后仍有无据声明）
+    unsupported_claims: list[str] = []  # 被判无据的声明原文（前端提示"剔除了哪句"）
+    reasoning: str = ""
+    model_version: str = ""
+    elapsed_ms: int = 0
+
+
+class CragRound(BaseModel):
+    """CRAG 单轮记录（stage-5 §8.2 CRAG_ROUND 实体）。
+
+    落库而非只随响应返回：否则事后无法复盘"这次为什么被拒答"。
+    """
+
+    trace_id: str = ""
+    question: str = ""
+    tenant_id: str = "default"
+    round: int = 1
+    branch: str = "correct"  # correct / ambiguous / incorrect
+    avg_score: float = 0.0
+    evidence_count: int = 0
+    refined_query: str = ""
+    created_at: float = 0.0
+
+
+AskResult.model_rebuild()

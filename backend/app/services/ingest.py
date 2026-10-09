@@ -15,6 +15,7 @@ import queue
 import threading
 import time
 import uuid
+from typing import Callable, Protocol
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from app.domain.schemas import (
     FILE_INDEXING,
     FILE_PARSING,
     FILE_QUEUED,
+    FILE_UPLOADING,
     TASK_CANCELLED,
     TASK_DONE,
     TASK_FAILED,
@@ -42,8 +44,25 @@ from app.services.parsers.base import ParseResult
 logger = logging.getLogger(__name__)
 
 
+class _DocRecordLike(Protocol):
+    """后置钩子只用到 doc_id 与 tenant_id，避免钩子与具体记录类型耦合。"""
+
+    doc_id: str
+    tenant_id: str
+
+
+#: 后置钩子签名：(文档记录, 解析产物) → 统计字典
+PostIndexHook = Callable[["_DocRecordLike", ParseResult], dict]
+
+
 class TaskManager:
-    def __init__(self, knowledge: KnowledgeService, tasks_file: Path, ingest_dir: Path):
+    def __init__(
+        self,
+        knowledge: KnowledgeService,
+        tasks_file: Path,
+        ingest_dir: Path,
+        post_index: PostIndexHook | None = None,
+    ):
         self._knowledge = knowledge
         self._tasks_file = tasks_file
         self._ingest_dir = ingest_dir  # 文件路径按 data/ingest/<task_id>/<filename> 约定推导
@@ -51,6 +70,8 @@ class TaskManager:
         self._tasks: dict[str, IngestTask] = {}
         self._cancel_flags: dict[str, threading.Event] = {}
         self._parse_cache: dict[str, ParseResult] = {}  # file_id → 解析产物（重试复用）
+        # 入库后置钩子：图谱构建 + 图像索引（stage-7 §5.1）。不传则退化为纯手动触发。
+        self._post_index = post_index
         self._queue: queue.Queue[str] = queue.Queue()
         self._load()
         self._worker = threading.Thread(target=self._loop, name="ingest-worker", daemon=True)
@@ -203,6 +224,52 @@ class TaskManager:
             self._save()
             logger.info("任务结束: %s → %s", task_id, task.status)
 
+    def _progress_reporter(self, file: FileRecord):
+        """返回一个 progress(done, total) 回调，供解析器/索引器上报真实进度。
+
+        没有它，扫描件多页 OCR 时进度条会从 10% 直接跳到 100%——
+        用户看到的就是"卡住了十几分钟然后突然好了"。
+        """
+        def report(done: int, total: int, stage: str | None = None) -> None:
+            if total <= 0:
+                return
+            ratio = max(0.0, min(1.0, done / total))
+            with self._lock:
+                if stage:
+                    file.stage = stage
+                    file.status = stage
+                file.stage_progress = round(ratio, 4)
+                file.stage_elapsed_ms = int((time.perf_counter() - self._stage_started(file)) * 1000)
+                self._save()
+        return report
+
+    @staticmethod
+    def _stage_started(file: FileRecord) -> float:
+        started = getattr(file, "_stage_started_at", None)
+        if started is None:
+            started = time.perf_counter()
+            object.__setattr__(file, "_stage_started_at", started)
+        return started
+
+    @staticmethod
+    def _quality_flags(record, parsed, short_chunks: int, pages: int) -> list[str]:
+        """入库质量红线（stage-3 §6.2）：不阻断入库，只如实标注供调参。
+
+        质量红线只标记不阻断——阻断会让"参数不合适"直接变成"文件进不来"，
+        运营反而看不到问题规模。
+        """
+        flags: list[str] = []
+        ratio = short_chunks / max(record.chunk_count, 1)
+        if ratio > 0.10:
+            flags.append(f"超短块占比 {ratio:.1%} > 10%，建议调整 chunk_size")
+        if record.chunk_count == 0:
+            flags.append("未产出任何块（文档无可抽取文本）")
+        if parsed.segments and pages / max(record.chunk_count, 1) < 0.2 and record.chunk_count < 5:
+            flags.append("块数明显少于页数，可能存在整段漏切")
+        if len(parsed.warnings) > 3:
+            flags.append(f"解析告警 {len(parsed.warnings)} 条，建议人工抽检")
+        return flags
+
     def _process_file(self, task: IngestTask, file: FileRecord, cancel_flag: threading.Event) -> None:
         path = self.file_path(task.task_id, file.filename)
         filename = file.filename
@@ -223,33 +290,67 @@ class TaskManager:
             content = path.read_bytes()
             record = self._knowledge.create_record(filename, content, source_path=path)
             file.doc_id = record.doc_id
+            # 上传落盘 → 解析之前也要占一个可见态（否则"上传中"两态在前端永远不出现）
+            set_stage(FILE_UPLOADING, 1.0)
 
             # ① 解析（OCR / 转写可能是分钟级，阶段内进度必需）
             parsed = self._parse_cache.get(file.file_id)
             if parsed is None:
-                set_stage(FILE_PARSING, 0.1)
-                parsed = self._knowledge.parse_document(record, task.parse_policy)
+                set_stage(FILE_PARSING, 0.05)
+                parsed = self._knowledge.parse_document(
+                    record, task.parse_policy, progress=self._progress_reporter(file)
+                )
                 self._parse_cache[file.file_id] = parsed
             set_stage(FILE_PARSING, 1.0)
             if cancel_flag.is_set():
                 raise _Cancelled()
 
             # ② 切块 + ③ 索引（临界区：进入后不可取消）
-            set_stage(FILE_CHUNKING, 0.3)
-            set_stage(FILE_INDEXING, 0.5)
-            self._knowledge.index_parsed(record, parsed, task.chunk_policy)
+            set_stage(FILE_CHUNKING, 0.1)
+            self._knowledge.apply_chunking(record, parsed, task.chunk_policy)
+            set_stage(FILE_CHUNKING, 1.0)
+            set_stage(FILE_INDEXING, 0.1)
+            # 索引阶段内部按"已处理块 / 总块数"推进，嵌入调用是最耗时的一段
+            self._knowledge.index_parsed(
+                record, parsed, task.chunk_policy,
+                progress=self._progress_reporter(file),
+            )
             set_stage(FILE_INDEXING, 1.0)
+
+            # ④ 图谱 / 图像索引联动（stage-7 §5.1：入库后触发，而非纯手动）。
+            # 刻意放在"索引成功之后、DONE 之前"：图谱与图像都是增强层，
+            # 它们的失败不能把一份已经可检索的文档打成入库失败。
+            if self._post_index is not None:
+                try:
+                    post_stats = self._post_index(record, parsed)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("图谱/图像索引联动失败（不影响入库）: %s", exc)
+                    post_stats = {"error": str(exc)[:200]}
+                else:
+                    if post_stats:
+                        logger.info(
+                            "图谱/图像索引联动完成 %s: %s", record.doc_id, post_stats
+                        )
+                        file.graph_stats = post_stats
 
             file.status = FILE_DONE
             file.stage = FILE_DONE
             file.stage_progress = 1.0
             file.stage_elapsed_ms = int((time.perf_counter() - stage_started) * 1000)
+            # 产物统计补齐文档 §6.2 质量红线所需的两项：页数与超短块数。
+            # 缺了它们"超短块占比 >10% 需调参"与"页数异常"这两条红线无数据可判。
+            short_chunks = int(getattr(record, "short_chunk_count", 0) or 0)
+            pages = max(1, len(parsed.segments))
             file.stats = {
                 "chunks": record.chunk_count,
                 "tables": len(parsed.tables),
                 "assets": len(parsed.assets),
                 "warnings": parsed.warnings,
                 "segments": len(parsed.segments),
+                "pages": pages,
+                "short_chunks": short_chunks,
+                "short_chunk_ratio": round(short_chunks / max(record.chunk_count, 1), 4),
+                "quality_flags": self._quality_flags(record, parsed, short_chunks, pages),
             }
             self._parse_cache.pop(file.file_id, None)
             logger.info("文件入库完成: %s → %s（%d 块）", filename, record.doc_id, record.chunk_count)

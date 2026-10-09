@@ -4,6 +4,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { fetchEvalDatasets, fetchEvalRun, fetchEvalRuns, runEval, saveEvalDataset } from "../../../lib/api-client";
+import { EvalComparisonChart } from "./EvalComparisonChart";
 import type { EvalDataset, EvalRunDetail, EvalRunSummary } from "../../../types";
 
 export function EvalPage() {
@@ -13,6 +14,8 @@ export function EvalPage() {
   const [running, setRunning] = useState(false);
   const [selectedDataset, setSelectedDataset] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // 对比基线：勾一个历史运行作为 A，当前选中的运行作为 B
+  const [baselineRunId, setBaselineRunId] = useState<string>("");
 
   const load = useCallback(async () => {
     const [ds, rs] = await Promise.all([fetchEvalDatasets(), fetchEvalRuns()]);
@@ -94,19 +97,43 @@ export function EvalPage() {
           {runs.length === 0 ? (
             <div className="empty-state" style={{ padding: 24 }}>暂无评测记录</div>
           ) : (
+            <>
             <table className="files-table">
               <thead>
-                <tr><th>评测集</th><th>模型版本</th><th>样本</th><th>Faithfulness</th><th>Citation</th><th>Refusal</th><th>时间</th><th></th></tr>
+                <tr>
+                  <th scope="col">基线</th>
+                  <th scope="col">评测集</th>
+                  <th scope="col">模型版本</th>
+                  <th scope="col">代码版本</th>
+                  <th scope="col">样本</th>
+                  <th scope="col">Faithfulness</th>
+                  <th scope="col">Citation</th>
+                  <th scope="col">Refusal</th>
+                  <th scope="col">Coverage</th>
+                  <th scope="col">时间</th>
+                  <th scope="col"></th>
+                </tr>
               </thead>
               <tbody>
                 {runs.map((r) => (
                   <tr key={r.run_id}>
+                    <td>
+                      <input
+                        type="radio"
+                        name="eval-baseline"
+                        checked={baselineRunId === r.run_id}
+                        onChange={() => setBaselineRunId(r.run_id)}
+                        aria-label={`以 ${r.run_id} 作为对比基线`}
+                      />
+                    </td>
                     <td>{r.dataset}@{r.dataset_version}</td>
                     <td className="mono">{r.model_version}</td>
+                    <td className="mono">{r.code_version ?? "-"}</td>
                     <td className="mono">{r.sample_count}</td>
                     <td>{metricCell(r.faithfulness)}</td>
                     <td>{metricCell(r.citation_accuracy)}</td>
                     <td>{metricCell(r.refusal_accuracy)}</td>
+                    <td>{metricCell(r.coverage ?? null)}</td>
                     <td className="trace-id">{new Date(r.created_at * 1000).toLocaleString("zh-CN", { hour12: false })}</td>
                     <td>
                       <button type="button" className="btn-text" onClick={() => void fetchEvalRun(r.run_id).then((e) => e.data && setSelected(e.data))}>
@@ -117,8 +144,15 @@ export function EvalPage() {
                 ))}
               </tbody>
             </table>
+            <p className="muted" style={{ fontSize: 13 }}>
+              勾选一行作为对比基线，再点另一行的「详情」，下方「版本对比」会给出
+              逐指标差值与新增失败 / 已修复样本清单。
+            </p>
+            </>
           )}
         </div>
+
+        <EvalComparisonChart runIdA={baselineRunId} runIdB={selected?.run_id ?? ""} />
 
         {selected && (
           <div className="card">

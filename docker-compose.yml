@@ -1,0 +1,142 @@
+# Kquery 全栈编排（stage-10 §6）
+#
+# 起法：
+#   docker compose up -d --build      # 构建并启动全栈
+#   docker compose logs -f backend    # 看后端日志
+#   docker compose down               # 停止
+#   docker compose down -v            # 连同数据卷一起清（会丢向量索引与审计日志）
+#
+# 依赖顺序靠 healthcheck gate：后端等 Milvus 真健康再启动，
+# 否则第一次启动时后端连不上向量库就直接崩，容器进入 restart 循环。
+
+name: kquery
+
+services:
+  # ---------------------------------------------------------------- 向量数据库
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    container_name: kquery-etcd
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: "1000"
+      ETCD_QUOTA_BACKEND_BYTES: "4294967296"
+      ETCD_SNAPSHOT_COUNT: "50000"
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.6.4
+    container_name: kquery-milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      COMMON_STORAGETYPE: local
+    volumes:
+      - milvus_data:/var/lib/milvus
+    ports:
+      - "19530:19530"   # gRPC：pymilvus 走这个
+      - "9091:9091"     # 健康检查 / 指标
+    depends_on:
+      etcd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 90s   # Milvus 冷启动要加载本地存储，30s 会一直判定 unhealthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------- 后端
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: kquery-backend:latest
+    container_name: kquery-backend
+    env_file:
+      - ./backend/.env          # 密钥从这里注入，不进镜像层
+    environment:
+      # 覆盖 .env 里面向本机的地址：容器内走服务名，不是 localhost
+      KQUERY_MILVUS_URI: http://milvus:19530
+      VECTOR_STORE: milvus
+      DATA_DIR: /data
+    volumes:
+      - backend_data:/data       # 向量索引 / 图谱快照 / 审计日志 / 备份
+    ports:
+      - "8000:8000"
+    depends_on:
+      # 必须等 init 建表完成：后端启动时会 load 集合，
+      # 集合不存在会直接抛异常，容器进入 restart 循环
+      init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # 一次性初始化：建 Milvus 集合与索引。独立成服务而不是放在后端启动流程里，
+  # 是为了让"建表"这件事只发生一次且可见——多副本后端同时建表会失败。
+  init:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: kquery-backend:latest
+    container_name: kquery-init
+    depends_on:
+      milvus:
+        condition: service_healthy
+    environment:
+      KQUERY_MILVUS_URI: http://milvus:19530
+      VECTOR_STORE: milvus
+      DATA_DIR: /data
+      MODEL_PROVIDER: mock        # 初始化不需要真实模型
+    volumes:
+      - backend_data:/data
+    entrypoint: ["python", "-c"]
+    command:
+      - |
+        import sys, time
+        from app.core.config import get_settings
+        from app.services.milvus_store import MilvusVectorStore
+
+        s = get_settings()
+        store = MilvusVectorStore(uri=s.milvus_uri, dim=s.embedding_dim)
+        # Milvus 刚 healthy 时端口已开但 collection API 可能还在初始化，
+        # 一次失败不代表起不来，所以要重试
+        for attempt in range(30):
+            try:
+                store.load()
+                print(f"[init] Milvus 集合就绪: {store._collection} ({s.embedding_dim} 维)", flush=True)
+                sys.exit(0)
+            except Exception as exc:
+                print(f"[init] 第 {attempt + 1}/30 次尝试失败: {exc}", flush=True)
+                time.sleep(2)
+        print("[init] 初始化失败：Milvus 30 次重试均未成功", flush=True)
+        sys.exit(1)
+    restart: "no"
+
+  # ---------------------------------------------------------------- 前端
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    image: kquery-frontend:latest
+    container_name: kquery-frontend
+    ports:
+      - "8081:8080"      # 宿主 8081 → 容器 8080（8080 已被本机其它容器占用）
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  etcd_data:
+  milvus_data:
+  backend_data:

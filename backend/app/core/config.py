@@ -1,4 +1,5 @@
 """全局配置：阈值、模型名、路径一律外置（设计原则 5：配置外置）。"""
+import logging
 from functools import lru_cache
 from pathlib import Path
 
@@ -41,6 +42,10 @@ class Settings(BaseSettings):
 
     # ---- 阶段 2：缓存 / 限流 ----
     cache_ttl_s: int = 3600  # 语义缓存 TTL（1 小时）
+    # 语义近似的相似度下限：问题向量余弦 ≥ 该值即视为"同一个问题"，
+    # 从而让"保修政策 vs 保修条款"这类改写也能命中（stage-2 §2.2 语义级缓存）。
+    cache_sim_threshold: float = 0.95
+    cache_max_scan: int = 2000  # 近似检索每请求最多比对的候选条目数
     ratelimit_capacity: int = 60  # 令牌桶容量（突发峰值）
     ratelimit_refill_per_min: float = 60.0  # 令牌补充速率（个/分钟，按租户）
     retrieval_config_apply_delay_s: int = 300  # 检索参数变更延迟生效（秒）
@@ -50,6 +55,17 @@ class Settings(BaseSettings):
     pdf_ocr_dpi: int = 120  # 页面渲染分辨率（VL 模型识别质量与成本的平衡点）
     pdf_ocr_max_pages: int = 200  # 单文档 OCR 页数上限（成本护栏）
     pdf_scan_min_chars: int = 30  # 单页文本层字符数低于此值判定为扫描页
+    # 索引版本化：重新解析生成新版本而非覆盖，历史块保留供引用溯源
+    index_version_keep: int = 3  # 保留的历史索引版本数（不含当前版；超出后按版本号从旧到新下线）
+
+    # ---- 阶段 3：音频转写 ----
+    transcribe_model: str = "paraformer-v2"  # 文档强制基线（千问平台，不引本地模型）
+    audio_max_chunk_s: float = 600.0  # 单次转写提交的最长时长（超出切分后并行提交）
+    audio_min_sample_rate: int = 16000  # 低于此采样率标"转写质量可能不佳"
+    audio_split_on_silence: bool = True  # 切分点优先落在静音段，避免切断词
+    audio_max_workers: int = 4  # 分片并行上限：再高只会加剧平台限流
+    # 业务代码版本（阶段 9 §6.3：评测必须同时记录模型版本与代码版本）
+    code_version: str = ""  # 留空则评测侧读 KQUERY_CODE_VERSION → git 短 SHA → unknown
 
     # ---- 阶段 4：Query 预处理 ----
     preprocess_enabled: bool = True
@@ -87,6 +103,11 @@ class Settings(BaseSettings):
     graph_bfs_depth: int = 2  # 遍历深度（≥3 噪声剧增）
     graph_seed_top_k: int = 3  # 种子实体上限（防子图爆炸）
     community_max: int = 20  # 社区摘要数量上限（成本控制）
+    # 社区层级数：1 = 单层连通分量（默认，成本最低）；
+    # >1 逐级重叠合并出粗粒度主题，摘要成本随层级线性增长（stage-7 §5.2/§5.3）
+    community_levels: int = 1
+    # 层级合并阈值：成员重叠比例 ≥ 该值才合并（调低更粗、调高更细）
+    community_merge_threshold: float = 0.3
     image_caption_model: str = "qwen-vl-max"  # 图像描述模型（换版本需全量重编码）
 
     # ---- 阶段 8：多智能体报告 ----
@@ -100,14 +121,28 @@ class Settings(BaseSettings):
     # ---- 阶段 9：企业护栏 ----
     auth_enabled: bool = False  # 开启后要求 Bearer Token（静态凭证表，仅演示）
     auth_tokens_json: str = ""  # {"token": {user_id, tenant_id, roles, groups}}
-    auth_users_json: str = ""  # 用户目录 [{user_id, tenant_id, roles, groups, enabled}]
+    auth_users_json: str = ""  # 用户目录 JSON；留空则读写 data/users.json（持久化）
+    # 标准令牌档（企业生产）：HS256 JWT，带签发方/受众校验
+    auth_jwt_enabled: bool = False
+    auth_jwt_secret: str = ""  # HS256 签名密钥（生产应由 Secret 注入）
+    auth_jwt_issuer: str = ""
+    auth_jwt_audience: str = ""
     acl_enabled: bool = True  # 文档级 ACL（检索前租户过滤 + 检索后 ACL 双保险）
     quota_per_minute: int = 60  # 租户分钟滑动窗口上限
     quota_per_day: int = 10000  # 租户每日调用上限
+    quota_token_per_day: int = 0  # 租户每日 token 消耗上限（0 = 不限制该维度）
     # 平台侧配额（账号级，所有租户共享的上游约束）：0 = 只统计不拦截
     platform_quota_per_day: int = 0  # 账号每日平台调用预算（LLM+Embedding+Rerank）
     platform_quota_warn_ratio: float = 0.8  # 余量低于该比例进入 warning
     sensitive_scan_enabled: bool = True  # 输出侧敏感词扫描
+
+    # ---- 阶段 6 工具：业务库 / 联网检索（未配置 DSN 时工具不注册）----
+    sql_dsn: str = ""  # 只读业务库 DSN（sqlite/duckdb/postgres），空则不提供 sql_search
+    sql_readonly: bool = True  # 强制只读：禁止 INSERT/UPDATE/DELETE/DDL
+    sql_max_rows: int = 50
+    web_search_endpoint: str = ""  # 联网搜索 HTTP 端点，空则不提供 web_search
+    web_search_api_key: str = ""
+    web_search_timeout_s: float = 10.0
 
     # ---- 存储 ----
     data_dir: Path = BASE_DIR / "data"
@@ -135,6 +170,83 @@ class Settings(BaseSettings):
             return self.model_provider
         return "dashscope" if self.dashscope_api_key else "mock"
 
+    # ---- 启动期校验（stage-10 §5.1：缺项宁可在 boot 时崩，也不要运行期才暴露）----
+
+    def config_items(self) -> list[dict]:
+        """结构化配置声明：驱动启动期校验报告与前端"系统配置"页。
+
+        `required` 的判定依据是"缺了会不会导致功能不可用且不报错"。
+        """
+        return [
+            {"key": "model_provider", "value": self.model_provider, "required": True,
+             "is_secret": False, "effective_scope": "process"},
+            {"key": "dashscope_api_key", "value": "***" if self.dashscope_api_key else "",
+             "required": self.model_provider == "dashscope", "is_secret": True,
+             "effective_scope": "process"},
+            {"key": "llm_model", "value": self.llm_model, "required": True, "is_secret": False,
+             "effective_scope": "request"},
+            {"key": "embedding_model", "value": self.embedding_model, "required": True,
+             "is_secret": False, "effective_scope": "index"},
+            {"key": "rerank_model", "value": self.rerank_model, "required": True,
+             "is_secret": False, "effective_scope": "request"},
+            {"key": "vector_store", "value": self.vector_store, "required": True,
+             "is_secret": False, "effective_scope": "index"},
+            {"key": "milvus_uri", "value": self.milvus_uri,
+             "required": self.vector_store == "milvus", "is_secret": False,
+             "effective_scope": "index"},
+            {"key": "data_dir", "value": str(self.data_dir), "required": True, "is_secret": False,
+             "effective_scope": "process"},
+            {"key": "auth_jwt_secret", "value": "***" if self.auth_jwt_secret else "",
+             "required": self.auth_jwt_enabled, "is_secret": True, "effective_scope": "process"},
+            {"key": "default_tenant_id", "value": self.default_tenant_id, "required": True,
+             "is_secret": False, "effective_scope": "process"},
+            {"key": "cors_origins", "value": self.cors_origins, "required": True,
+             "is_secret": False, "effective_scope": "process"},
+        ]
+
+    def validate_startup(self) -> list[dict]:
+        """返回问题清单；无问题时返回空列表。
+
+        调用方（`create_app`）遇到非空清单必须中止启动并给出可读的诊断，
+        而不是打一条 warning 就带着坏配置对外服务。
+        """
+        issues: list[dict] = []
+
+        def add(field: str, reason: str, hint: str) -> None:
+            issues.append({"field": field, "reason": reason, "hint": hint})
+
+        for item in self.config_items():
+            if item["required"] and not str(item["value"]).strip():
+                add(item["key"], "必填项缺失", "在环境变量或 backend/.env 中显式提供该配置")
+
+        if self.model_provider not in {"auto", "dashscope", "mock"}:
+            add("model_provider", f"非法取值 {self.model_provider}", "只能取 auto | dashscope | mock")
+        if self.model_provider == "dashscope" and not self.dashscope_api_key:
+            # 显式要求走平台却没给凭据：这是配置错误，不该静默降级成 mock
+            add("dashscope_api_key", "model_provider=dashscope 但未提供平台凭证",
+                "补齐 KQUERY_DASHSCOPE_API_KEY，或显式设置 model_provider=mock")
+        if self.vector_store not in {"milvus", "faiss"}:
+            add("vector_store", f"非法取值 {self.vector_store}", "只能取 milvus | faiss")
+        if self.auth_jwt_enabled and len(self.auth_jwt_secret) < 16:
+            add("auth_jwt_secret", "JWT 密钥过短（<16 字符）", "使用至少 32 字节随机串")
+        if self.top_k <= 0:
+            add("top_k", "top_k 必须为正整数", "推荐 4")
+        if self.chunk_overlap >= self.chunk_size:
+            add("chunk_overlap", "重叠长度必须小于块长度", "推荐 chunk_size=300 / overlap=50")
+        if self.rrf_k <= 0:
+            add("rrf_k", "RRF 平滑常数必须为正", "论文默认 60")
+        if not 0.0 <= self.cache_sim_threshold <= 1.0:
+            add("cache_sim_threshold", "语义缓存阈值必须落在 [0,1]", "推荐 0.95")
+        if self.quota_per_minute <= 0:
+            add("quota_per_minute", "分钟配额必须为正整数", "推荐 60")
+        if self.platform_quota_warn_ratio <= 0 or self.platform_quota_warn_ratio >= 1:
+            add("platform_quota_warn_ratio", "告警水位必须落在 (0,1)", "推荐 0.8")
+        if issues:
+            logger = logging.getLogger(__name__)
+            detail = "; ".join(f"{i['field']}（{i['reason']}）" for i in issues)
+            logger.error("启动期配置校验未通过：%s", detail)
+        return issues
+
     @property
     def upload_dir(self) -> Path:
         return self.data_dir / "uploads"
@@ -146,6 +258,10 @@ class Settings(BaseSettings):
     @property
     def metadata_file(self) -> Path:
         return self.data_dir / "metadata.json"
+
+    @property
+    def users_file(self) -> Path:
+        return self.data_dir / "users.json"
 
 
 @lru_cache

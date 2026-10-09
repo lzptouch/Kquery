@@ -11,6 +11,7 @@ import logging
 
 from pydantic import BaseModel, Field
 
+from app.domain.schemas import SelfCheckRecord
 from app.services.llm import LLM
 from app.services.query.jsonutil import JsonParseError, parse_json_model
 
@@ -24,7 +25,7 @@ SELFCHECK_PROMPT = """你是事实校验器。逐句核对答案中的事实性�
 答案：
 {answer}
 
-只输出 JSON：{{"is_hallucination": true/false, "unsupported_claims": ["无据声明1", ...], "reasoning": "一句话结论"}}"""
+只输出 JSON：{{"is_hallucination": true/false, "checked_claims": 送检的事实性声明条数, "unsupported_claims": ["无据声明1", ...], "reasoning": "一句话结论"}}"""
 
 REGENERATE_PROMPT = """你是知识库问答助手。仅根据下面给出的证据片段回答用户问题，不允许使用证据之外的知识。
 上次生成的答案包含以下**无据声明**，本次必须删除或改写它们：{claims}
@@ -43,8 +44,34 @@ REGENERATE_PROMPT = """你是知识库问答助手。仅根据下面给出的证
 
 class SelfCheckResult(BaseModel):
     is_hallucination: bool = False
+    checked_claims: int = 0  # 模型自报的送检声明条数（0 = 模型漏报，退回本地估算）
     unsupported_claims: list[str] = Field(default_factory=list)
     reasoning: str = ""
+
+    def effective_checked_claims(self, answer: str) -> int:
+        """模型漏报条数时用本地启发式兜底估算（句子数下限为 1）。"""
+        if self.checked_claims > 0:
+            return self.checked_claims
+        return max(1, estimate_claims(answer))
+
+
+# 事实性陈述的最小判定：中文断句计数。模型漏报 checked_claims 时兜底用。
+_CLAIM_SEPARATORS = "。！？!?；;\n"
+
+
+def estimate_claims(answer: str) -> int:
+    """粗略估计事实性声明条数（仅在模型未给出 checked_claims 时兜底）。
+
+    句末标点不额外计一条：否则"一句话。"会被算成 2 句，忠实度分母被系统性高估。
+    """
+    text = (answer or "").strip()
+    if not text:
+        return 0
+    breaks = sum(text.count(ch) for ch in _CLAIM_SEPARATORS)
+    # 结尾的标点不开启新句
+    if text[-1] in _CLAIM_SEPARATORS:
+        breaks -= 1
+    return max(1, breaks + 1)
 
 
 def compute_confidence(unsupported_count: int) -> float:
@@ -53,9 +80,10 @@ def compute_confidence(unsupported_count: int) -> float:
 
 
 class HallucinationChecker:
-    def __init__(self, llm: LLM, max_retries: int = 1):
+    def __init__(self, llm: LLM, max_retries: int = 1, model_version: str = ""):
         self._llm = llm
         self._max_retries = max_retries
+        self.model_version = model_version
 
     def check(self, answer: str, evidence_block: str) -> SelfCheckResult:
         """失败抛 JsonParseError/LLMError，由上层降级（不阻断答案返回）。"""
@@ -69,6 +97,18 @@ class HallucinationChecker:
                 last_error = exc
                 logger.warning("幻觉自检重试: %s", exc)
         raise JsonParseError(f"幻觉自检失败: {last_error}")
+
+    def to_record(self, result: SelfCheckResult, answer: str, removed: int, passed: bool) -> SelfCheckRecord:
+        """转成可落库 / 可回传的 SELF_CHECK 实体（stage-5 §8.2）。"""
+        return SelfCheckRecord(
+            method="llm_claim_review",
+            checked_claims=result.effective_checked_claims(answer),
+            removed_claims=removed,
+            passed=passed,
+            unsupported_claims=list(result.unsupported_claims),
+            reasoning=result.reasoning,
+            model_version=self.model_version,
+        )
 
     def regenerate(self, question: str, evidence_block: str, claims: list[str]) -> str:
         """受限重生成：显式列出无据声明，强制删除或改写。只重生成一次。"""

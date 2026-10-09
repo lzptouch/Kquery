@@ -46,6 +46,9 @@ class CacheEntry:
     ttl_seconds: float
     hit_count: int = 0
     last_hit_at: float = field(default=0.0)
+    # 语义近似检索用：问题向量 + 规范化后的问题文本
+    vector: list = field(default_factory=list)
+    question: str = ""
 
 
 class SemanticCache(Protocol):
@@ -57,12 +60,28 @@ class SemanticCache(Protocol):
 
 
 class InMemorySemanticCache:
-    """进程内存实现（开发/单实例）；生产换 Redis 并保持同一接口。"""
+    """进程内存实现（开发/单实例）；生产换 Redis 并保持同一接口。
 
-    def __init__(self, max_entries: int = 10000):
+    真正的**语义级**缓存：除了按键精确命中，还支持"问题向量余弦 ≥ 阈值"的近似命中，
+    这样"保修政策 vs 保修条款"这类改写也能省下一次模型调用。文档把它写成
+    "语义级缓存 / 命中率 ≥30%"，只做 SHA256 精确哈希是达不到的。
+    """
+
+    def __init__(
+        self,
+        max_entries: int = 10000,
+        embeddings=None,
+        sim_threshold: float = 0.95,
+        max_scan: int = 2000,
+    ):
         self._entries: dict[str, CacheEntry] = {}
         self._lock = threading.Lock()
         self._max_entries = max_entries
+        self._embeddings = embeddings
+        self._threshold = sim_threshold
+        self._max_scan = max_scan
+
+    # ---- 过期清理 ----
 
     def get(self, key: str) -> CacheEntry | None:
         with self._lock:
@@ -76,18 +95,69 @@ class InMemorySemanticCache:
             entry.last_hit_at = time.time()
             return entry
 
-    def set(self, key: str, payload: dict, ttl_seconds: float) -> None:
+    def set(
+        self,
+        key: str,
+        payload: dict,
+        ttl_seconds: float,
+        question: str = "",
+        vector: list | None = None,
+    ) -> None:
         with self._lock:
             if len(self._entries) >= self._max_entries:
                 # 简单逐出：删最早创建且命中最少的一批
                 victims = sorted(
                     self._entries.items(), key=lambda kv: (kv[1].hit_count, kv[1].created_at)
-                )[: self._max_entries // 10]
+                )[: max(1, self._max_entries // 10)]
                 for k, _ in victims:
                     self._entries.pop(k, None)
             self._entries[key] = CacheEntry(
-                payload=payload, created_at=time.time(), ttl_seconds=ttl_seconds
+                payload=payload,
+                created_at=time.time(),
+                ttl_seconds=ttl_seconds,
+                vector=list(vector or []),
+                question=question or str(payload.get("question", "")),
             )
+
+    def lookup(
+        self,
+        question: str,
+        exact_key: str,
+        vector: list | None = None,
+    ) -> tuple[CacheEntry | None, str]:
+        """语义级查找：先按键精确命中，再退回向量近似命中。
+
+        返回 (entry, hit_kind)，hit_kind ∈ {"exact", "semantic", "miss"}。
+        近似命中会把候选按余弦从高到低扫描一遍，只认**同一租户**的条目。
+        """
+        exact = self.get(exact_key)
+        if exact is not None:
+            return exact, "exact"
+        # 只要求调用方给得出问题向量：是否持有编码器是调用侧的职责，
+        # 缓存自己不该把"没装编码器"等同于"不能近似命中"
+        if not vector:
+            return None, "miss"
+        now = time.time()
+        best: CacheEntry | None = None
+        best_sim = self._threshold
+        with self._lock:
+            scanned = 0
+            for entry in self._entries.values():
+                if now - entry.created_at > entry.ttl_seconds:
+                    continue
+                if not entry.vector:
+                    continue
+                scanned += 1
+                if scanned > self._max_scan:
+                    break
+                sim = _cosine(vector, entry.vector)
+                if sim >= best_sim:
+                    best_sim, best = sim, entry
+        if best is None:
+            return None, "miss"
+        best.hit_count += 1
+        best.last_hit_at = now
+        return best, "semantic"
 
     def stats(self) -> dict:
         with self._lock:
@@ -96,9 +166,31 @@ class InMemorySemanticCache:
             return {
                 "entries": len(alive),
                 "total_hits": sum(e.hit_count for e in alive),
+                "semantic_ready": self._embeddings is not None,
+                "sim_threshold": self._threshold,
             }
 
 
-def build_cache(provider: str = "memory") -> SemanticCache:
+def _cosine(a: list, b: list) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def build_cache(
+    provider: str = "memory",
+    settings=None,
+    embeddings=None,
+    tenant_id: str = "",
+) -> SemanticCache:
     # 预留：生产接 Redis 时在此按 provider 分支
-    return InMemorySemanticCache()
+    return InMemorySemanticCache(
+        embeddings=embeddings,
+        sim_threshold=getattr(settings, "cache_sim_threshold", 0.95) if settings else 0.95,
+        max_scan=getattr(settings, "cache_max_scan", 2000) if settings else 2000,
+    )

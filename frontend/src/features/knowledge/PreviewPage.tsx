@@ -4,9 +4,14 @@
  * 切块器色板：Recursive 灰 / ParentChild 蓝 / RAPTOR 紫 / Semantic 青。
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { DataState } from "../../components/DataState";
+import { WindowedList } from "../../components/WindowedList";
 import { useParams } from "react-router-dom";
 import { fetchChunkDetail, fetchPreview } from "../../lib/api-client";
 import type { ChunkDetail, ChunkListItem, DocPreview } from "../../types";
+
+/** 切块行高（虚拟滚动的前提：定高）。改这里要同步改 .windowed-row 的 CSS。 */
+const CHUNK_ROW_HEIGHT = 96;
 
 const CHUNKER_STYLE: Record<string, { label: string; color: string }> = {
   recursive: { label: "递归", color: "#64748b" },
@@ -59,10 +64,13 @@ export function PreviewPage() {
   const [preview, setPreview] = useState<DocPreview | null>(null);
   const [detail, setDetail] = useState<ChunkDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const [collapsedParents, setCollapsedParents] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     void (async () => {
+      setLoading(true);
+      setError(null);
       try {
         const envelope = await fetchPreview(docId);
         if (envelope.data) {
@@ -74,6 +82,8 @@ export function PreviewPage() {
         }
       } catch {
         setError("网络异常");
+      } finally {
+        setLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,10 +122,23 @@ export function PreviewPage() {
   }, [preview, collapsedParents]);
 
   if (error) {
-    return <div className="page"><div className="page-inner"><div className="error-inline" role="alert">⚠ {error}</div></div></div>;
+    return (
+      <div className="page">
+        <div className="page-inner">
+          <div className="error-inline" role="alert">⚠ {error}</div>
+        </div>
+      </div>
+    );
   }
-  if (!preview) {
-    return <div className="page"><div className="page-inner"><div className="skeleton" style={{ height: 300 }} /></div></div>;
+  // 四态：加载中不能渲染成空页面（用户会误以为"这个文档没有块"）
+  if (loading || !preview) {
+    return (
+      <div className="page">
+        <div className="page-inner">
+          <DataState loading emptyText="该文档尚未解析出任何切块" />
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -169,17 +192,22 @@ export function PreviewPage() {
           )}
         </aside>
 
-        {/* 中栏：切块列表 */}
+        {/* 中栏：切块列表。stage-3 §11 要求 500+ 块走虚拟滚动，
+            否则一次性创建上千个 DOM 节点，页签切换直接卡住。 */}
         <section className="preview-mid card" aria-label="切块列表">
           <div className="nav-section" style={{ paddingTop: 0 }}>切块列表（{organizedChunks.length}）</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
-            {organizedChunks.map(({ item, indent }) => (
+          <WindowedList
+            items={organizedChunks}
+            itemHeight={CHUNK_ROW_HEIGHT}
+            height="100%"
+            itemKey={(row) => row.item.chunk_id}
+            renderItem={(row) => (
               <ChunkRow
-                key={item.chunk_id}
-                item={item}
-                indent={indent}
-                selected={detail?.chunk_id === item.chunk_id}
+                item={row.item}
+                indent={row.indent}
+                selected={detail?.chunk_id === row.item.chunk_id}
                 onClick={() => {
+                  const { item } = row;
                   if (item.level > 0 && preview.chunks.some((x) => x.parent_id === item.chunk_id)) {
                     setCollapsedParents((prev) => {
                       const next = new Set(prev);
@@ -191,8 +219,8 @@ export function PreviewPage() {
                   void selectChunk(item.chunk_id);
                 }}
               />
-            ))}
-          </div>
+            )}
+          />
         </section>
 
         {/* 右栏：单块详情 */}

@@ -1,0 +1,31 @@
+# 构建镜像时忽略：本地状态、虚拟环境、缓存
+# 原则：镜像要能复现构建，就不能把任何"这台机器上才有"的东西打进去
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 数据目录：容器里是挂载进来的绝对路径 /data，
+# 绝不能把本地跑出来的索引/日志打进镜像（既臃肿又会让镜像行为依赖开发机状态）
+data/
+*.log
+
+# 密钥：.env 里是真实 API Key。打进镜像等于把密钥发到镜像仓库里——
+# compose 通过 env_file 注入，不经过镜像层
+.env
+.env.*
+!.env.example
+
+tests/
+*.md
+.git/
+.gitignore
+
+# 前端产物同理
+frontend/dist/
+frontend/node_modules/

@@ -18,7 +18,15 @@ import { askStream } from "../../lib/sse-client";
 import { ChatInput } from "./components/ChatInput";
 import { MessageBubble } from "./components/MessageBubble";
 import { SessionSidebar } from "./components/SessionSidebar";
-import type { ChatMessage, Evidence, SessionSummary, TraceNode } from "../../types";
+import type {
+  ChatMessage,
+  CragRound,
+  Evidence,
+  RefusalReason,
+  RetrievalStats,
+  SessionSummary,
+  TraceNode,
+} from "../../types";
 
 const SAMPLE_QUESTIONS = ["什么是机会成本？请举例说明", "货币市场工具主要有哪些类型？", "价格在资源配置中起什么作用？"];
 
@@ -129,11 +137,47 @@ export function ChatPage() {
           setMessages((prev) =>
             prev.map((m) => (m.id === assistantId ? { ...m, evidence: [...m.evidence, ev] } : m)),
           ),
-        onRetrievalStats: () => undefined,
+        // ---- 检索过程与自反思（阶段 2/5）----
+// 这四个 handler 此前一律写成空函数，导致 RetrievalTracePanel / 缓存徽章 /
+// CRAG 分支高亮 / ConfidenceBar 在真实问答中全部拿不到数据（死代码）。
+        onRetrievalStats: (stats) =>
+          patchMessage(assistantId, { retrieval: stats as RetrievalStats }),
         onQueryAnalysis: (analysis) => patchMessage(assistantId, { analysis }),
-        onCragBranch: () => undefined,
-        onRefine: () => undefined,
-        onConfidence: () => undefined,
+        onCragBranch: ({ branch, avg_score, round }) =>
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId) return m;
+              const rounds: NonNullable<ChatMessage["crag"]>["rounds"] = [
+                ...(m.crag?.rounds ?? []),
+                {
+                  round,
+                  // 后端 branch 是自由字符串，收敛到前端枚举：
+                  // 未知值按 ambiguous 处理（比当成 correct 更保守）
+                  branch: (["correct", "ambiguous", "incorrect"].includes(branch)
+                    ? branch
+                    : "ambiguous") as CragRound["branch"],
+                  avg_score,
+                  evidence_count: 0,
+                  refined_query: "",
+                },
+              ];
+              return { ...m, crag: { branch: rounds[rounds.length - 1].branch, rounds } };
+            }),
+          ),
+        onRefine: ({ before, after }) =>
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId ? { ...m, refineFrom: before, refineTo: after } : m,
+            ),
+          ),
+        onConfidence: ({ score, unsupported_claims_count, regenerated, unvalidated, removed_claims }) =>
+          patchMessage(assistantId, {
+            confidence: score ?? undefined,
+            unsupportedClaimsCount: unsupported_claims_count,
+            regenerated,
+            unvalidated,
+            removedClaims: removed_claims ?? [],
+          }),
         // ---- Agent 轨迹事件 ----
         onPlan: ({ steps, replan }) =>
           pushNode({
@@ -180,7 +224,7 @@ export function ChatPage() {
           patchMessage(assistantId, {
             verdict: "refused", refusalReason: reason, confidence: 0,
           }),
-        onDone: ({ trace_id, agent, incomplete, fuse_reason, session_id, evidence, verdict, confidence, acl_filtered }) => {
+        onDone: ({ trace_id, agent, incomplete, fuse_reason, session_id, evidence, verdict, confidence, acl_filtered, retrieval, crag, from_cache, refusal_reason, regenerated, unsupported_claims_count }) => {
           patchMessage(assistantId, {
             streaming: false, traceId: trace_id,
             agent: agent ?? null, incomplete, fuseReason: fuse_reason,
@@ -188,6 +232,13 @@ export function ChatPage() {
             ...(evidence ? { evidence } : {}),
             ...(verdict ? { verdict: verdict as ChatMessage["verdict"], confidence } : {}),
             ...(acl_filtered ? { aclFiltered: acl_filtered } : {}),
+            // 缓存命中徽章：此前 Agent 路径硬编码 false，徽章永不出现
+            fromCache: from_cache === true,
+            retrieval: retrieval ?? undefined,
+            crag: crag ?? undefined,
+            refusalReason: (refusal_reason as RefusalReason) || undefined,
+            regenerated: regenerated === true,
+            unsupportedClaimsCount: unsupported_claims_count,
           });
           if (session_id && session_id !== activeSession) setActiveSession(session_id);
           void refreshSessions();

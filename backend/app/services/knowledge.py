@@ -36,6 +36,7 @@ from app.services.llm import LLM
 from app.services.parsers.base import ParseResult
 from app.services.parsers.router import SUPPORTED_EXTENSIONS, ParserRouter
 from app.services.retrieval.bm25 import BM25Retriever
+from app.services.vectorstore import chunk_version, is_current_version, with_version
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class KnowledgeService:
         parser_router: ParserRouter,
     ):
         self._settings = settings
+        self._post_index = None  # 入库后置钩子（stage-7 §5.1），由 main.py 装配
         self._embeddings = embeddings
         self._llm = llm
         self._store = store
@@ -138,7 +140,24 @@ class KnowledgeService:
         return []
 
     def chunks_of(self, doc_id: str) -> list[Chunk]:
-        return [c for c in self._store.all_chunks() if c.doc_id == doc_id]
+        """文档**当前版本**的块（预览页用）。
+
+        历史版本块仍留在向量库里服务引用溯源，但不出现在预览/检索里——
+        预览的语义是"现在被索引了什么"，混入历史块会让用户以为切块坏了。
+        """
+        record = self._docs.get(doc_id)
+        current = record.version if record else 1
+        chunks = [c for c in self._store.all_chunks() if c.doc_id == doc_id]
+        visible = [c for c in chunks if is_current_version(c.chunk_id, doc_id, current)]
+        # 存量数据没有版本标记（全为 0），此时不过滤，避免升级后预览突然空白
+        return visible or chunks
+
+    def chunks_of_version(self, doc_id: str, version: int) -> list[Chunk]:
+        """指定版本的块（历史溯源用；版本号 0 表示无版本标记的存量数据）。"""
+        return [
+            c for c in self._store.all_chunks()
+            if c.doc_id == doc_id and chunk_version(c.chunk_id) == version
+        ]
 
     def tables_of(self, doc_id: str):
         return self._docstore.tables_of_doc(doc_id)
@@ -185,84 +204,146 @@ class KnowledgeService:
 
     # ---- 入库：解析 ----
 
-    def parse_document(self, record: DocumentRecord, parse_policy: dict | None = None) -> ParseResult:
+    def parse_document(
+        self,
+        record: DocumentRecord,
+        parse_policy: dict | None = None,
+        progress=None,
+    ) -> ParseResult:
+        """解析。`progress(done, total)` 由解析器调用以推进阶段内进度。
+
+        进度回调是可选参数：不传时解析器内部全部退化为无进度上报，
+        因此既有调用方（单文件同步入库、测试替身）不受影响。
+        """
         return self._router.parse(
-            Path(record.source_path), record.doc_id, record.tenant_id, parse_policy or {}
+            Path(record.source_path), record.doc_id, record.tenant_id,
+            parse_policy or {}, progress=progress,
         )
 
-    # ---- 入库：切块 + 索引 ----
+    # ---- 入库：切块 ----
+
+    def apply_chunking(
+        self,
+        record: DocumentRecord,
+        parsed: ParseResult,
+        chunk_policy: dict | None = None,
+    ):
+        """只做切块（含表格单独成块），把结果挂到 `_pending_chunks` 上等索引阶段取用。
+
+        切块与索引拆成两步，是为了让任务视图能给出真实的"切块中"阶段——
+        合并成一步时，这一步里 90% 的时间其实花在嵌入调用上。
+        """
+        policy = chunk_policy or DEFAULT_POLICY
+        settings = self._settings
+        # 表格段与文本段分离：表格单独成块，不被切块器切断
+        text_segments = [s for s in parsed.segments if TABLE_SOURCE_MARK not in s[0]]
+        table_segments = [s for s in parsed.segments if TABLE_SOURCE_MARK in s[0]]
+
+        result = apply_chunk_policy(
+            record.doc_id, text_segments, record.tenant_id, policy,
+            self._embeddings, self._llm,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            min_chars=settings.min_chunk_chars,
+        )
+        chunks = list(result.chunks)
+        # 表格块：正文即表格 Markdown，modality=table
+        seq = len(chunks)
+        for source, markdown in table_segments:
+            seq += 1
+            chunks.append(
+                Chunk(
+                    chunk_id=f"{record.doc_id}#{seq}",
+                    doc_id=record.doc_id,
+                    seq=seq,
+                    content=markdown,
+                    tenant_id=record.tenant_id,
+                    source=source,
+                    chunker="table",
+                    modality="table",
+                )
+            )
+        if not chunks:
+            raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, "切块结果为 0 块，请检查文件是否加密或损坏")
+        object.__setattr__(record, "_pending_chunks", chunks)
+        object.__setattr__(record, "_pending_parents", result.parents)
+        object.__setattr__(record, "_pending_chunker", result.chunker)
+        object.__setattr__(record, "_pending_parsed", parsed)
+        return chunks
+
+    # ---- 入库：索引 ----
 
     def index_parsed(
         self,
         record: DocumentRecord,
         parsed: ParseResult,
         chunk_policy: dict | None = None,
+        progress=None,
     ) -> None:
-        """切块 → Embedding → 向量库 / BM25 / DocStore。索引临界区：不可中途取消。"""
-        policy = chunk_policy or DEFAULT_POLICY
+        """切块 → Embedding → 向量库 / BM25 / DocStore。索引临界区：不可中途取消。
+
+        未先调 `apply_chunking` 时本方法内部自行切块（保持既有调用方兼容）。
+        """
         settings = self._settings
+        chunks = getattr(record, "_pending_chunks", None)
+        parents = getattr(record, "_pending_parents", None)
+        chunker_name = getattr(record, "_pending_chunker", "recursive")
+        if not chunks:
+            chunks = self.apply_chunking(record, parsed, chunk_policy)
+            parents = getattr(record, "_pending_parents", None)
+            chunker_name = getattr(record, "_pending_chunker", "recursive")
+
         with self._lock:
-            self._purge_chunks(record.doc_id)
-
-            # 表格段与文本段分离：表格单独成块，不被切块器切断
-            text_segments = [s for s in parsed.segments if TABLE_SOURCE_MARK not in s[0]]
-            table_segments = [s for s in parsed.segments if TABLE_SOURCE_MARK in s[0]]
-
-            result = apply_chunk_policy(
-                record.doc_id, text_segments, record.tenant_id, policy,
-                self._embeddings, self._llm,
-                chunk_size=settings.chunk_size,
-                chunk_overlap=settings.chunk_overlap,
-                min_chars=settings.min_chunk_chars,
-            )
-            chunks = result.chunks
-            # 表格块：正文即表格 Markdown，modality=table
-            seq = len(chunks)
-            for source, markdown in table_segments:
-                seq += 1
-                page_info = source.split("·")[0]
-                chunks.append(
-                    Chunk(
-                        chunk_id=f"{record.doc_id}#{seq}",
-                        doc_id=record.doc_id,
-                        seq=seq,
-                        content=markdown,
-                        tenant_id=record.tenant_id,
-                        source=source,
-                        chunker="table",
-                        modality="table",
-                    )
-                )
-            if not chunks:
-                raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, "切块结果为 0 块，请检查文件是否加密或损坏")
-
+            if not getattr(record, "_skip_purge", False):
+                self._purge_chunks(record.doc_id)
             try:
                 vectors = self._embeddings.embed_texts([c.content for c in chunks])
             except Exception as exc:
                 raise ApiError(
                     ErrCode.INDEX_BUILD_FAILED, f"索引构建中断（Embedding 失败）: {exc}"
                 ) from exc
+            # 索引质量红线（§6.2）：向量条数必须严格等于块条数，不等即拒绝发布。
+            # 少了这条断言，"块与向量不一致"会表现为检索静默漏召回，而不是报错。
+            if len(vectors) != len(chunks):
+                raise ApiError(
+                    ErrCode.INDEX_BUILD_FAILED,
+                    f"索引发布中止：向量条数 {len(vectors)} 与块条数 {len(chunks)} 不一致",
+                )
             self._store.add(chunks, vectors)
             self._store.save()
             if self._bm25 is not None:
                 self._bm25.add(chunks)
-            if result.parents:
-                self._docstore.put_parents(result.parents)
+            if parents:
+                self._docstore.put_parents(parents)
             if parsed.tables:
                 self._docstore.put_tables(parsed.tables)
             if parsed.assets:
-                self._docstore.put_assets(parsed.assets)
+                # 跨文档去重：同一张图只入一次（§4.5）。此前方法实现了却零调用。
+                self._docstore.put_assets(
+                    parsed.assets, dedupe_by_hash=self._store.total > 0
+                )
+            if progress:
+                progress(len(chunks), len(chunks))
 
             record.chunk_count = len(chunks)
+            record.short_chunk_count = sum(1 for c in chunks if c.is_short)
             record.status = DOC_STATUS_INDEXED
             record.error = None
             record.outline = parsed.outline
+            record.chunker = chunker_name
             self._bump_version()
             self._save_metadata()
             logger.info(
-                "文档入库完成: %s（%d 块, 表格=%d, 资源=%d, chunker=%s）",
-                record.doc_id, len(chunks), len(parsed.tables), len(parsed.assets), result.chunker,
+                "文档入库完成: %s（%d 块, 表格=%d, 资源=%d, chunker=%s, 超短块=%d）",
+                record.doc_id, len(chunks), len(parsed.tables), len(parsed.assets),
+                chunker_name, record.short_chunk_count,
             )
+        for name in (
+            "_pending_chunks", "_pending_parents", "_pending_chunker",
+            "_pending_parsed", "_skip_purge",
+        ):
+            if hasattr(record, name):
+                object.__delattr__(record, name)
 
     def _purge_chunks(self, doc_id: str) -> None:
         if self._store.doc_chunk_ids(doc_id):
@@ -292,6 +373,7 @@ class KnowledgeService:
         try:
             parsed = self.parse_document(record, parse_policy)
             self.index_parsed(record, parsed, chunk_policy)
+            self._run_post_index(record, parsed)
         except ApiError as exc:
             record.status = DOC_STATUS_FAILED
             record.error = exc.message
@@ -303,6 +385,26 @@ class KnowledgeService:
             self._save_metadata()
             logger.exception("文档索引构建中断: %s", record.doc_id)
         return record
+
+    def set_post_index(self, hook) -> None:
+        """注册入库后置钩子（图谱构建 + 图像索引，stage-7 §5.1）。
+
+        同步上传（`POST /knowledge/upload`）与异步任务（`TaskManager`）是两条
+        入库路径，钩子必须挂在服务层，两条路径才会一致生效——只挂一边的话，
+        "上传完去图谱页看看"在另一条路径上永远是空的。
+        """
+        self._post_index = hook
+
+    def _run_post_index(self, record, parsed) -> None:
+        """执行后置钩子。失败只记日志：图谱是增强层，不能让文档入库跟着失败。"""
+        if self._post_index is None:
+            return
+        try:
+            stats = self._post_index(record, parsed)
+            if stats:
+                logger.info("图谱/图像索引联动完成 %s: %s", record.doc_id, stats)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("图谱/图像索引联动失败（不影响入库）: %s", exc)
 
     # ---- 高级操作 ----
 
@@ -322,19 +424,65 @@ class KnowledgeService:
         return record
 
     def reparse(self, doc_id: str, chunk_policy: dict, parse_policy: dict | None = None) -> DocumentRecord:
-        """用新策略重新解析（生成新版本块集合替换旧索引）。"""
+        """用新策略重新解析：**生成新版本块集合，旧版本下线但保留块**（stage-3 §4.4）。
+
+        旧实现先物理删除旧块再重建，且 chunk_id 复用同一序号空间——结果���所有历史答案
+        里的引用编号全部指向不存在的块，溯源链在"重新解析"这个动作上静默断裂。
+
+        现在的做法：
+        1. 旧块的 chunk_id 加 `@v{旧版本}` 后缀落到"历史版本"区，**不删除**；
+        2. 新版本块的 chunk_id 带 `@v{新版本}`，与旧版本天然不冲突；
+        3. 检索侧按 `is_short`/doc_id 过滤，历史块不参与召回，只服务溯源；
+        4. 保留最近 `index_version_keep` 个版本，更早的才真删。
+        """
         record = self.get(doc_id)
         record.status = DOC_STATUS_PARSING
         record.error = None
         self._save_metadata()
         try:
             parsed = self.parse_document(record, parse_policy)
+            self.apply_chunking(record, parsed, chunk_policy)
+            old_version = record.version or 1
+            new_version = old_version + 1
+            chunks = getattr(record, "_pending_chunks", [])
+            # 先把当前版本的块改名为历史版本（保留供溯源），再给新块打新版本号
+            self._retire_version(record.doc_id, old_version)
+            for chunk in chunks:
+                chunk.chunk_id = with_version(chunk.chunk_id, new_version)
+            object.__setattr__(record, "_pending_chunks", chunks)
+            record.version = new_version
+            # reparse 不再走 _purge_chunks：旧块已改名下线，新块直接叠加
+            object.__setattr__(record, "_skip_purge", True)
             self.index_parsed(record, parsed, chunk_policy)
         except ApiError as exc:
             record.status = DOC_STATUS_FAILED
             record.error = exc.message
             self._save_metadata()
         return record
+
+    def _retire_version(self, doc_id: str, old_version: int) -> int:
+        """把当前版本的块改名为"历史版本"并从检索索引中下线（**不删除**）。
+
+        历史答案里的引用编号靠 chunk_id 回溯，删掉就再也对不上原文了。改名后：
+        - 与新版本的序号空间隔离，不会撞号；
+        - 仍可在 `/knowledge/preview/.../chunk/{chunk_id}` 中被直接查到；
+        - 超出 `index_version_keep` 份数的更早版本才真正删除。
+        """
+        renamed = 0
+        if hasattr(self._store, "rename_doc_version"):
+            renamed = len(self._store.rename_doc_version(doc_id, old_version))
+        else:
+            logger.warning("向量库不支持 rename_doc_version，历史块可能被覆盖: %s", doc_id)
+        keep = max(1, self._settings.index_version_keep)
+        removed = 0
+        if hasattr(self._store, "delete_doc_versions"):
+            removed = self._store.delete_doc_versions(doc_id, keep_versions=keep)
+        self._bump_version()
+        logger.info(
+            "文档 %s 索引版本 → v%d（历史块改名 %d 条保留供溯源，超保留份数删除 %d 条）",
+            doc_id, old_version, renamed, removed,
+        )
+        return renamed
 
     def offline(self, doc_id: str) -> DocumentRecord:
         """删除索引（临时下架）：块从检索消失，源文件与记录保留。"""

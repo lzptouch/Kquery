@@ -5,7 +5,9 @@
 - /admin/audit：审计查询（过滤 + trace 聚合）与 CSV 导出（不含原文）；
 - /admin/quota：配额总览与单租户配置；
 - /admin/sensitive：敏感词表 CRUD（按租户隔离）；
-- /admin/eval/*：评测集与运行（结果绑定评测集版本 + 模型版本）。
+- /admin/eval/*：评测集与运行（结果绑定评测集版本 + 模型版本 + 业务代码版本）
+  以及两次运行的逐指标对比；
+- /admin/users/permission-matrix：角色 × 能力矩阵（前端 PermissionMatrix 组件的数据源）。
 
 管理操作本身写审计（admin.action）——审计查询者也留痕。
 """
@@ -38,7 +40,9 @@ def list_users(request: Request) -> Envelope:
     set_trace_id(trace_id)
     started = now_ms()
     _audit_admin(request, trace_id, "users.list", {})
-    return ok_envelope(request.app.state.user_directory, trace_id, elapsed_ms_since(started))
+    directory = request.app.state.user_directory
+    users = directory.all() if hasattr(directory, "all") else list(directory)
+    return ok_envelope(users, trace_id, elapsed_ms_since(started))
 
 
 class UserEditRequest(BaseModel):
@@ -52,13 +56,23 @@ def edit_user(user_id: str, req: UserEditRequest, request: Request) -> Envelope:
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    users: list[dict] = request.app.state.user_directory
-    for u in users:
-        if u["user_id"] == user_id:
-            u.update({"roles": req.roles, "groups": req.groups, "enabled": req.enabled})
-            _audit_admin(request, trace_id, "users.edit", {"user_id": user_id})
-            return ok_envelope(u, trace_id, elapsed_ms_since(started))
-    raise ApiError(ErrCode.FORBIDDEN, f"用户不存在: {user_id}", http_status=404)
+    directory = request.app.state.user_directory
+    patch = {"roles": req.roles, "groups": req.groups, "enabled": req.enabled}
+    if hasattr(directory, "upsert"):
+        existing = directory.get(user_id)
+        if existing is None:
+            # 防探测：不存在与无权限统一为 12xx + 同一句文案
+            raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
+        updated = directory.upsert(user_id, patch)
+    else:  # 兼容旧静态目录
+        users: list[dict] = directory
+        target = next((u for u in users if u["user_id"] == user_id), None)
+        if target is None:
+            raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
+        target.update(patch)
+        updated = target
+    _audit_admin(request, trace_id, "users.edit", {"user_id": user_id})
+    return ok_envelope(updated, trace_id, elapsed_ms_since(started))
 
 
 # ---------- 文档 ACL ----------
@@ -144,8 +158,18 @@ def quota_overview(request: Request) -> Envelope:
     set_trace_id(trace_id)
     started = now_ms()
     quota = request.app.state.quota_service
-    tenants = list({u["tenant_id"] for u in request.app.state.user_directory} | {"default"})
+    directory = request.app.state.user_directory
+    known = (
+        directory.tenants()
+        if hasattr(directory, "tenants")
+        else {u["tenant_id"] for u in directory}
+    )
+    tenants = sorted(set(known) | {settings_default_tenant(request)})
     return ok_envelope(quota.overview(tenants), trace_id, elapsed_ms_since(started))
+
+
+def settings_default_tenant(request: Request) -> str:
+    return request.app.state.settings.default_tenant_id
 
 
 @router.get("/admin/quota/platform", response_model=Envelope)
@@ -256,6 +280,19 @@ class EvalRunRequest(BaseModel):
     dataset_version: str
 
 
+# 运行摘要字段：三个版本（评测集/模型/业务代码）缺一，指标变化就无法归因（§6.3）。
+# 用 .get 而非下标：存量 run-*.json 里没有 code_version / coverage，硬取会 500。
+_EVAL_RUN_FIELDS = (
+    "run_id", "dataset", "dataset_version", "model_version", "code_version", "path",
+    "sample_count", "faithfulness", "citation_accuracy", "refusal_accuracy", "coverage",
+    "created_at",
+)
+
+
+def _eval_summary(run: dict) -> dict:
+    return {key: run.get(key) for key in _EVAL_RUN_FIELDS}
+
+
 @router.post("/admin/eval/run", response_model=Envelope)
 def run_eval(req: EvalRunRequest, request: Request) -> Envelope:
     """触发评测（同步执行轻量指标；样本量大时应异步，此处演示规模同步即可）。"""
@@ -266,13 +303,11 @@ def run_eval(req: EvalRunRequest, request: Request) -> Envelope:
         run = request.app.state.eval_runner.run(req.dataset, req.dataset_version)
     except FileNotFoundError as exc:
         raise ApiError(ErrCode.INVALID_REQUEST, str(exc), http_status=404) from exc
-    _audit_admin(request, trace_id, "eval.run", {"run_id": run["run_id"], "dataset": req.dataset})
-    return ok_envelope(
-        {k: run[k] for k in ("run_id", "dataset", "dataset_version", "model_version",
-                             "sample_count", "faithfulness", "citation_accuracy",
-                             "refusal_accuracy", "created_at")},
-        trace_id, elapsed_ms_since(started),
-    )
+    _audit_admin(request, trace_id, "eval.run", {
+        "run_id": run["run_id"], "dataset": req.dataset,
+        "code_version": run.get("code_version"),
+    })
+    return ok_envelope(_eval_summary(run), trace_id, elapsed_ms_since(started))
 
 
 @router.get("/admin/eval/runs", response_model=Envelope)
@@ -281,12 +316,29 @@ def list_runs(request: Request) -> Envelope:
     set_trace_id(trace_id)
     started = now_ms()
     runs = request.app.state.eval_store.list_runs()
-    return ok_envelope(
-        [{k: r[k] for k in ("run_id", "dataset", "dataset_version", "model_version",
-                            "sample_count", "faithfulness", "citation_accuracy",
-                            "refusal_accuracy", "created_at")} for r in runs],
-        trace_id, elapsed_ms_since(started),
-    )
+    return ok_envelope([_eval_summary(r) for r in runs], trace_id, elapsed_ms_since(started))
+
+
+@router.get("/admin/eval/compare", response_model=Envelope)
+def compare_eval_runs(
+    request: Request,
+    a: str = Query(min_length=1, max_length=64),
+    b: str = Query(min_length=1, max_length=64),
+) -> Envelope:
+    """两次运行的逐指标对比 + 失败样本差异（前端"v1.0 vs v1.2.0 ↑+3.5%"的数据源）。
+
+    单独一个端点而不是让前端拉两次 run 自己算：差值口径（样本对齐、失败判定阈值）
+    必须只有一份实现，否则两次"对比"会给出不同结论。
+    """
+    trace_id = new_trace_id()
+    set_trace_id(trace_id)
+    started = now_ms()
+    try:
+        result = request.app.state.eval_store.compare(a, b)
+    except FileNotFoundError as exc:
+        raise ApiError(ErrCode.INVALID_REQUEST, str(exc), http_status=404) from exc
+    _audit_admin(request, trace_id, "eval.compare", {"a": a, "b": b})
+    return ok_envelope(result, trace_id, elapsed_ms_since(started))
 
 
 @router.get("/admin/eval/runs/{run_id}", response_model=Envelope)
@@ -298,3 +350,83 @@ def get_run(run_id: str, request: Request) -> Envelope:
     if run is None:
         raise ApiError(ErrCode.INVALID_REQUEST, f"评测运行不存在: {run_id}", http_status=404)
     return ok_envelope(run, trace_id, elapsed_ms_since(started))
+
+
+# ---------- 权限矩阵 ----------
+
+# 能力清单：enforced 说明这一列到底由谁把守。
+#   backend  = 后端端点/护栏真正强制；
+#   acl      = 由文档 ACL 身份表达式（role:/group:/user:）决定；
+#   declared = 管理台声明的约定，当前后端未做角色门禁，接上门禁后才是 backend。
+# 如实标注而不是一律写成"已强制"：运维看到 declared 才会知道哪些是纸面权限。
+CAPABILITIES: list[dict] = [
+    {"key": "ask", "label": "提问", "enforced": "backend"},
+    {"key": "view_own_data", "label": "看自己数据", "enforced": "backend"},
+    {"key": "view_all_tenant_data", "label": "看全员数据", "enforced": "acl"},
+    {"key": "ingest_document", "label": "文档入库", "enforced": "backend"},
+    {"key": "manage_acl", "label": "文档 ACL 管理", "enforced": "declared"},
+    {"key": "manage_users", "label": "用户管理", "enforced": "declared"},
+    {"key": "manage_quota", "label": "配额管理", "enforced": "declared"},
+    {"key": "view_audit", "label": "审计查询", "enforced": "declared"},
+    {"key": "manage_sensitive", "label": "敏感词管理", "enforced": "declared"},
+    {"key": "run_eval", "label": "评测运行", "enforced": "declared"},
+]
+_ALL_CAPABILITIES = tuple(c["key"] for c in CAPABILITIES)
+_ASK_CAPABILITIES = ("ask", "view_own_data")
+ROLE_CAPABILITIES: dict[str, tuple[str, ...]] = {
+    "admin": _ALL_CAPABILITIES,
+    "hr": _ASK_CAPABILITIES + ("view_all_tenant_data", "ingest_document"),
+    "finance": _ASK_CAPABILITIES + ("view_all_tenant_data",),
+    "sales": _ASK_CAPABILITIES,
+}
+DEFAULT_CAPABILITIES = _ASK_CAPABILITIES  # 未分配角色的账号：只有提问与看自己数据
+DEFAULT_ROLE_LABEL = "(未分配角色)"
+
+
+@router.get("/admin/users/permission-matrix", response_model=Envelope)
+def permission_matrix(request: Request) -> Envelope:
+    """角色 × 能力矩阵（前端设计 §2.3 / PermissionMatrix 组件的数据源）。
+
+    为什么必须由后端给：角色与能力是一份策略声明，写在前端就等于让界面自己定义权限，
+    改权限要改两处且必然不同步。矩阵同时回带每个角色下的真实用户数——
+    管理员对着一个零成员角色做授权决策，本身就是错的。
+    """
+    trace_id = new_trace_id()
+    set_trace_id(trace_id)
+    started = now_ms()
+    directory = request.app.state.user_directory
+    users = directory.all() if hasattr(directory, "all") else list(directory)
+    counts: dict[str, int] = {}
+    for user in users:
+        if not user.get("enabled", True):
+            continue
+        roles = user.get("roles") or []
+        for role in roles:
+            counts[role] = counts.get(role, 0) + 1
+        if not roles:
+            counts[DEFAULT_ROLE_LABEL] = counts.get(DEFAULT_ROLE_LABEL, 0) + 1
+
+    matrix = []
+    for role in sorted({*ROLE_CAPABILITIES, *counts}):
+        granted = ROLE_CAPABILITIES.get(role, DEFAULT_CAPABILITIES)
+        matrix.append({
+            "role": role,
+            "user_count": counts.get(role, 0),
+            # 可访问性要求（前端设计 §12）：可/不可不能只靠颜色区分，
+            # 必须同时给文字标记，granted/denied 就是给渲染用的第二通道。
+            "capabilities": {c["key"]: c["key"] in granted for c in CAPABILITIES},
+            "granted": [c["key"] for c in CAPABILITIES if c["key"] in granted],
+            "denied": [c["key"] for c in CAPABILITIES if c["key"] not in granted],
+        })
+    _audit_admin(request, trace_id, "users.permission_matrix", {})
+    return ok_envelope(
+        {
+            "capabilities": CAPABILITIES,
+            "roles": [row["role"] for row in matrix],
+            "matrix": matrix,
+            "default_role": DEFAULT_ROLE_LABEL,
+            "unassigned_capabilities": list(DEFAULT_CAPABILITIES),
+        },
+        trace_id,
+        elapsed_ms_since(started),
+    )

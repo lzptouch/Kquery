@@ -12,6 +12,7 @@ from app.services.agent.runner import AgentRunner
 from app.services.agent.sessions import SessionStore
 from app.services.knowledge import KnowledgeService
 from app.services.pipeline import RagPipeline
+from app.services.ratelimit import resolve_bucket_limits
 from app.services.security.auth import Principal
 
 
@@ -47,14 +48,20 @@ def get_principal(request: Request) -> Principal:
     auth = request.app.state.auth_provider
     authorization = request.headers.get("authorization", "")
     token = authorization[7:] if authorization.lower().startswith("bearer ") else None
-    return auth.authenticate(token, dict(request.headers))
+    principal = auth.authenticate(token, dict(request.headers))
+    # 限流依赖按认证租户分桶，必须在配额判定之前就把主体挂到 request 上
+    request.state.principal = principal
+    return principal
 
 
 def enforce_rate_limit(request: Request) -> None:
-    """配额：租户滑动窗口（分钟 + 每日双维度）。超额 429 + Retry-After。
+    """配额：租户滑动窗口（分钟 + 每日 + token 三维度）。超额 429 + Retry-After。
 
     令牌桶（阶段 2 突发控制）与滑动窗口（阶段 9 平稳流量）并存：
     任一超限即拒绝。
+
+    租户取**认证结果**而非请求头——按请求头分桶意味着任何人改一个 header
+    就能换一个桶，配额形同虚设。认证关闭时才回落到 header（开发兼容）。
     """
     settings: Settings = request.app.state.settings
     limiter = request.app.state.limiter
@@ -72,14 +79,28 @@ def enforce_rate_limit(request: Request) -> None:
             retry_after=platform.seconds_until_reset(),
         )
 
-    # 滑动窗口（租户维度，分钟+每日）
-    tenant = request.headers.get("X-Tenant-Id", settings.default_tenant_id)
+    # 租户：以认证主体为准；未开启认证时回落到 header / 默认租户。
+    # 注意路由级 dependencies 先于端点形参依赖求值，拿不到 request.state.principal，
+    # 因此这里主动解析一次（认证失败会在这里就抛出，端点不会再被调用）。
+    principal = get_principal(request)
+    request.state.principal = principal
+    tenant = principal.tenant_id or request.headers.get("X-Tenant-Id", settings.default_tenant_id)
+    request.state.tenant_id = tenant
+
+    # 滑动窗口（租户维度：分钟 + 每日 + token）
     allowed, retry_after, dimension = quota.check_and_consume(tenant)
     if not allowed:
         if dimension == "daily":
             raise ApiError(
                 ErrCode.QUOTA_EXCEEDED,
-                f"租户今日调用次数已用尽，次日恢复或联系管理员扩容",
+                "租户今日调用次数已用尽，次日恢复或联系管理员扩容",
+                http_status=429,
+                retry_after=retry_after,
+            )
+        if dimension == "token_daily":
+            raise ApiError(
+                ErrCode.QUOTA_EXCEEDED,
+                "租户今日 token 消耗已用尽，次日恢复或联系管理员扩容",
                 http_status=429,
                 retry_after=retry_after,
             )
@@ -90,10 +111,9 @@ def enforce_rate_limit(request: Request) -> None:
             retry_after=retry_after,
         )
 
-    # 令牌桶（突发控制，保持阶段 2 语义）
-    allowed, retry_after = limiter.allow(
-        settings.default_tenant_id, config.ratelimit_per_min, config.ratelimit_capacity
-    )
+    # 令牌桶（突发控制，保持阶段 2 语义；**按真实租户**分桶）
+    rate, capacity = resolve_bucket_limits(config, settings)
+    allowed, retry_after = limiter.allow(tenant, rate, capacity)
     if not allowed:
         raise ApiError(
             ErrCode.RATE_LIMITED,

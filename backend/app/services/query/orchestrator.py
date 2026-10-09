@@ -19,6 +19,8 @@ from app.services.query.intent import IntentClassifier
 from app.services.query.jsonutil import JsonParseError
 from app.services.query.schemas import (
     DECOMPOSE_INTENTS,
+    ESTIMATED_TOKENS_PER_CALL,
+    INTENT_TOKEN_PRICE_YUAN,
     REWRITE_ORIGINAL,
     IntentResult,
     QueryAnalysis,
@@ -57,6 +59,7 @@ class QueryPreprocessor:
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         llm_calls = 0
+        prompt_tokens = 0
 
         if not self._enabled:
             analysis.degraded.append("disabled")
@@ -140,6 +143,11 @@ class QueryPreprocessor:
 
         analysis.elapsed_ms = int((time.perf_counter() - started) * 1000)
         analysis.llm_calls = llm_calls
+        # 费用估算：按"每次预处理调用约 600 输入 token + 200 输出 token"折算。
+        # 拿不到真实 usage 时给估算值，比只给调用次数有用——"关掉 HyDE 省多少钱"
+        # 才是调参时真正要回答的问题（stage-4 §7）。
+        prompt_tokens = llm_calls * ESTIMATED_TOKENS_PER_CALL
+        analysis.cost = round(prompt_tokens * INTENT_TOKEN_PRICE_YUAN, 6)
         logger.info(
             "预处理完成: intent=%s(%.2f) 改写=%d 子问题=%d 源=%s 降级=%s 耗时=%dms",
             analysis.intent, analysis.intent_confidence, len(analysis.rewrites),

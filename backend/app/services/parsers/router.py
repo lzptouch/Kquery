@@ -2,6 +2,7 @@
 
 不支持的扩展名 → 明确报错（上传前前端已拦截，此处为兜底）。
 """
+import inspect
 import logging
 from pathlib import Path
 
@@ -46,6 +47,10 @@ class ParserRouter:
         self._ocr = ocr_parser
         self._audio = audio_parser
 
+    def supported_extensions(self) -> set[str]:
+        """已注册且可路由的扩展名集合（健康检查探针用）。"""
+        return set(SUPPORTED_EXTENSIONS)
+
     def route(self, path: Path) -> str:
         ext = path.suffix.lower()
         if ext in self._parsers:
@@ -55,11 +60,16 @@ class ParserRouter:
         if ext in TYPE_GROUPS["audio"]:
             return "audio"
         raise ApiError(
-            ErrCode.UNSUPPORTED_FILE,
+            ErrCode.UNSUPPORTED_FILE_TYPE,
             f"不支持的文件类型 {ext}（支持：{sorted(SUPPORTED_EXTENSIONS)}）",
         )
 
-    def parse(self, path: Path, doc_id: str, tenant_id: str, policy: dict) -> ParseResult:
+    def parse(self, path: Path, doc_id: str, tenant_id: str, policy: dict, progress=None) -> ParseResult:
+        """路由解析。`progress(done, total)` 为可选的阶段内进度回调。
+
+        只在解析器**显式支持**时透传（用签名探测）：给所有解析器硬塞一个
+        `progress=` 会让既有实现与测试替身全部因签名不匹配而崩。
+        """
         ext = path.suffix.lower()
         if ext in self._parsers:
             parser = self._parsers[ext]
@@ -69,13 +79,25 @@ class ParserRouter:
             parser = self._audio
         else:
             raise ApiError(
-                ErrCode.UNSUPPORTED_FILE,
+                ErrCode.UNSUPPORTED_FILE_TYPE,
                 f"不支持的文件类型 {ext}（支持：{sorted(SUPPORTED_EXTENSIONS)}）",
             )
-        result = parser.parse(path, doc_id, tenant_id, policy)
+        result = self._invoke(parser, path, doc_id, tenant_id, policy, progress)
         logger.info(
             "解析完成: %s（parser=%s, 段=%d, 表格=%d, 资源=%d, 警告=%d）",
             path.name, parser.name, len(result.segments), len(result.tables),
             len(result.assets), len(result.warnings),
         )
         return result
+
+    @staticmethod
+    def _invoke(parser, path: Path, doc_id: str, tenant_id: str, policy: dict, progress):
+        if progress is None:
+            return parser.parse(path, doc_id, tenant_id, policy)
+        try:
+            params = inspect.signature(parser.parse).parameters
+        except (TypeError, ValueError):
+            return parser.parse(path, doc_id, tenant_id, policy)
+        if "progress" in params:
+            return parser.parse(path, doc_id, tenant_id, policy, progress=progress)
+        return parser.parse(path, doc_id, tenant_id, policy)

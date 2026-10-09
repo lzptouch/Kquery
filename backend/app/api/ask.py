@@ -10,8 +10,15 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.core.config import Settings
-from app.core.envelope import ApiError, Envelope, ErrCode, error_envelope, ok_envelope
-from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
+from app.core.envelope import (
+    ApiError,
+    Envelope,
+    ErrCode,
+    error_envelope,
+    ok_envelope,
+    warn_envelope,
+)
+from app.core.tracing import elapsed_ms_since, get_trace_id, now_ms, set_trace_id
 from app.dependencies import (
     enforce_rate_limit,
     get_agent_runner,
@@ -64,6 +71,31 @@ def _acl_filter_of(request: Request, principal: Principal):
     return check
 
 
+def _validate_question(req: AskRequest) -> None:
+    """空问题兜底（AskRequest 有 min_length=1，这里防的是纯空白）。"""
+    if not (req.question or "").strip():
+        raise ApiError(ErrCode.QUESTION_EMPTY, "问题不能为空", http_status=400)
+
+
+def _degraded_warning(result: dict) -> tuple[int, str] | None:
+    """降级语义 → warn 信封。
+
+    重排不可用是用户该知道的事（44xx 轻提示）；缓存不可用不是——它无感降级，
+    只上报指标（stage-2 §错误码）。
+    """
+    if result.get("reranked") is False:
+        return (int(ErrCode.RERANK_DEGRADED), "本次未进行精排，结果可能不够精确")
+    return None
+
+
+def _envelope_for(result: dict, trace_id: str, elapsed_ms: int) -> Envelope:
+    """按降级语义选择 ok / warn 信封。"""
+    warning = _degraded_warning(result)
+    if warning:
+        return warn_envelope(result, warning[1], trace_id, elapsed_ms, code=warning[0])
+    return ok_envelope(result, trace_id, elapsed_ms)
+
+
 @router.post("/ask", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def ask(
     req: AskRequest,
@@ -72,9 +104,10 @@ def ask(
     pipeline: RagPipeline = Depends(get_pipeline),
     settings: Settings = Depends(get_app_settings),
 ) -> Envelope:
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
+    _validate_question(req)
     try:
         if _use_agent(req, settings):
             runner: AgentRunner = request.app.state.agent_runner
@@ -89,17 +122,19 @@ def ask(
                 if event == "_final":
                     final = payload
             result = {
-                **final,
+                **(final or {"answer": "", "evidence": [], "verdict": "refused"}),
                 "trace_id": trace_id,
                 "elapsed_ms": elapsed_ms_since(started),
-                "from_cache": False,
-                "reranked": True,
-                "retrieval": None,
                 "session_id": session_id or None,
             }
-            return ok_envelope(result, trace_id, result["elapsed_ms"])
-        result = pipeline.ask(req.question, settings.default_tenant_id, trace_id, req.top_k)
-        return ok_envelope(result.model_dump(), trace_id, result.elapsed_ms)
+            return _envelope_for(result, trace_id, result["elapsed_ms"])
+        # 线性路径同样挂 ACL 与认证主体（此前固定 default_tenant_id 且无 ACL，是越权缺口）
+        tenant, user, _ = _agent_identity(req, principal)
+        scoped = pipeline.bind_principal(tenant, user)
+        scoped._acl_filter = _acl_filter_of(request, principal)
+        result = scoped.ask(req.question, tenant, trace_id, req.top_k)
+        payload = result.model_dump()
+        return _envelope_for(payload, trace_id, result.elapsed_ms)
     except LLMError as exc:
         return error_envelope(exc.code, exc.message, trace_id, elapsed_ms_since(started))
     except ApiError:
@@ -117,12 +152,17 @@ def ask_stream(
     pipeline: RagPipeline = Depends(get_pipeline),
     settings: Settings = Depends(get_app_settings),
 ) -> StreamingResponse:
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
+    _validate_question(req)
     use_agent = _use_agent(req, settings)
     runner: AgentRunner | None = request.app.state.agent_runner if use_agent else None
     tenant, user, session_id = _agent_identity(req, principal)
     acl_filter = _acl_filter_of(request, principal)
+    # 线性路径的主体绑定与 ACL 与 Agent 路径对齐
+    scoped = None if runner is not None else pipeline.bind_principal(tenant, user)
+    if scoped is not None:
+        scoped._acl_filter = acl_filter
 
     def event_source():
         try:
@@ -139,8 +179,8 @@ def ask_stream(
                     else:
                         yield _sse(event, payload)
             else:
-                for event, data in pipeline.ask_stream(
-                    req.question, settings.default_tenant_id, trace_id, req.top_k
+                for event, data in scoped.ask_stream(
+                    req.question, tenant, trace_id, req.top_k
                 ):
                     yield _sse(event, data)
         except ApiError as exc:

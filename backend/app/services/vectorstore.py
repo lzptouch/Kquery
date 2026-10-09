@@ -7,6 +7,7 @@
 """
 import json
 import logging
+import re
 import threading
 from pathlib import Path
 
@@ -19,6 +20,29 @@ logger = logging.getLogger(__name__)
 
 INDEX_FILE = "index.faiss"
 META_FILE = "chunks.json"
+
+# 索引版本化：chunk_id 形如 `{doc_id}@v{n}#{seq}`，序号空间按版本隔离，
+# 因此重新解析不会与历史版本的块撞号，历史答案里的引用仍能命中旧块做溯源。
+_VERSION_RE = re.compile(r"@v(\d+)#")
+
+
+def chunk_version(chunk_id: str) -> int:
+    """从 chunk_id 解析版本号；无版本标记（存量数据）返回 0。"""
+    match = _VERSION_RE.search(chunk_id or "")
+    return int(match.group(1)) if match else 0
+
+
+def with_version(chunk_id: str, version: int) -> str:
+    """给 chunk_id 打上版本号（已带版本号的先剥掉，避免叠加）。"""
+    base = _VERSION_RE.sub("#", chunk_id)
+    doc_id, _, seq = base.rpartition("#")
+    return f"{doc_id}@v{version}#{seq}" if doc_id else base
+
+
+def is_current_version(chunk_id: str, doc_id: str, version: int) -> bool:
+    """块是否属于文档的当前版本（历史版本不参与召回，只服务溯源）。"""
+    found = chunk_version(chunk_id)
+    return found == 0 or found == version
 
 
 class VectorStore:
@@ -127,6 +151,67 @@ class VectorStore:
 
     def doc_chunk_ids(self, doc_id: str) -> list[str]:
         return [cid for cid in self._order if self._chunks[cid].doc_id == doc_id]
+
+    def doc_versions(self, doc_id: str) -> list[int]:
+        """文档已存在的索引版本号（从 chunk_id 里的 `@v{n}` 解析）。"""
+        versions: set[int] = set()
+        for cid in self.doc_chunk_ids(doc_id):
+            version = chunk_version(cid)
+            if version:
+                versions.add(version)
+        return sorted(versions)
+
+    def delete_doc_versions(self, doc_id: str, keep_versions: int = 3) -> int:
+        """删除该文档**最旧的**若干历史版本块，只保留最近 `keep_versions` 版。
+
+        阶段 3 §6.3 的"保留 3 版可回滚"落点。返回删除条数。
+        """
+        versions = self.doc_versions(doc_id)
+        if len(versions) <= keep_versions:
+            return 0
+        drop = set(versions[: len(versions) - keep_versions])
+        return self._delete_ids({
+            cid for cid in self.doc_chunk_ids(doc_id)
+            if chunk_version(cid) in drop
+        })
+
+    def rename_doc_version(self, doc_id: str, version: int) -> list[str]:
+        """把该文档的无版本 chunk_id 改写成带版本号的形式，返回新 id 列表。
+
+        供 reparse 使用：旧块改名为"历史版本"后既不与新版本撞号，又仍留在索引里
+        服务引用溯源。向量本身不动（FAISS 行号随 _order 一起重建）。
+        """
+        renamed: list[str] = []
+        with self._lock:
+            for cid in list(self._order):
+                chunk = self._chunks.get(cid)
+                if chunk is None or chunk.doc_id != doc_id or chunk_version(cid) != 0:
+                    continue
+                new_id = with_version(cid, version)
+                if new_id in self._chunks:
+                    continue  # 目标已存在：保留原样，避免覆盖
+                self._chunks.pop(cid)
+                chunk.chunk_id = new_id
+                self._chunks[new_id] = chunk
+                self._order[self._order.index(cid)] = new_id
+                renamed.append(new_id)
+        return renamed
+
+    def _delete_ids(self, drop: set[str]) -> int:
+        if not drop:
+            return 0
+        with self._lock:
+            keep_ids = [cid for cid in self._order if cid not in drop]
+            for cid in drop:
+                self._chunks.pop(cid, None)
+            new_index = faiss.IndexFlatIP(self._dim)
+            if keep_ids:
+                old_rows = [self._order.index(cid) for cid in keep_ids]
+                vecs = np.vstack([self._index.reconstruct(r) for r in old_rows]).astype(np.float32)
+                new_index.add(vecs)
+            self._index = new_index
+            self._order = keep_ids
+            return len(drop)
 
     def get_chunk(self, chunk_id: str) -> Chunk | None:
         return self._chunks.get(chunk_id)

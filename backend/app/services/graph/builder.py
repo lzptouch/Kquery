@@ -11,10 +11,10 @@ from pathlib import Path
 
 from app.domain.schemas import Chunk, Community, EntityNode, RelationEdge
 from app.services.embeddings import Embeddings
-from app.services.graph.community import build_communities
+from app.services.graph.community import CommunityDetector, HierarchicalCommunityDetector, build_communities
 from app.services.graph.extractor import Extractor
 from app.services.graph.resolver import EntityResolver
-from app.services.graph.store import InMemoryGraphStore
+from app.services.graph.store import BaseGraphStore
 from app.services.llm import LLM
 from app.services.vectorstore import VectorStore
 
@@ -28,13 +28,16 @@ class GraphBuilder:
         self,
         extractor: Extractor,
         resolver: EntityResolver,
-        store: InMemoryGraphStore,
+        store: BaseGraphStore,
         embeddings: Embeddings,
         vector_store: VectorStore,
         llm: LLM | None,
         tenant_id: str = "default",
         resolver_path: Path | None = None,
         model_version: str = "",
+        max_communities: int = 20,
+        community_levels: int = 1,
+        community_merge_threshold: float = 0.3,
     ):
         self._extractor = extractor
         self._resolver = resolver
@@ -45,6 +48,17 @@ class GraphBuilder:
         self._tenant = tenant_id
         self._resolver_path = resolver_path
         self._model_version = model_version
+        # 社区数量上限来自配置（成本护栏：每个社区都要调一次摘要模型）
+        self._max_communities = max(1, int(max_communities))
+        # 层级数 = 1 时退化为单层连通分量，与旧行为完全一致；
+        # >1 时逐级重叠合并出粗粒度主题（stage-7 §5.2/§5.3）
+        self._community_levels = max(1, int(community_levels))
+        self._community_detector = (
+            HierarchicalCommunityDetector(
+                merge_threshold=community_merge_threshold, max_level=self._community_levels
+            )
+            if self._community_levels > 1 else None
+        )
 
     def build_from_chunks(self, chunks: list[Chunk], rebuild_doc_id: str | None = None) -> dict:
         """对块集合做抽取与归并。rebuild_doc_id 指定时先删除该文档块的旧关系。"""
@@ -94,7 +108,9 @@ class GraphBuilder:
     def rebuild_communities(self) -> dict:
         """社区重算 + 摘要入向量库（图更新后触发，防摘要过时）。"""
         communities = build_communities(
-            self._store, self._llm, model_version=self._model_version, tenant_id=self._tenant
+            self._store, self._llm, model_version=self._model_version,
+            tenant_id=self._tenant, max_communities=self._max_communities,
+            detector=self._community_detector,
         )
         # 摘要入统一向量空间（同 text-embedding-v3，不另起索引）
         self._vector_store.delete_doc(COMMUNITY_DOC_ID)

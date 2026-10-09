@@ -1,21 +1,57 @@
 """图存储抽象与内存实现（阶段 7 §2.3）。
 
-- 接口抽象：测试用内存图，生产可换 Neo4j，互不污染；
+- 接口抽象：测试用内存图，生产可换 Neo4j / Redis，互不污染；
 - 内存实现 + JSON 落盘（重启可恢复）；
 - neighbors 为 BFS（先近后远，§6.2），关系按强度降序截断；
 - 关系有方向：in_edges / out_edges 分开维护，遍历时保留方向信息。
+
+关于换存储引擎：此前 `InMemoryGraphStore` 是唯一实现，且 `builder` / `query` /
+`community` 三处直接把它写进类型签名，换引擎要同时改三个文件。现在抽出
+`BaseGraphStore` 抽象，只要新引擎满足该协议，这三处无需改动。
 """
 import json
 import logging
 import threading
 from collections import deque
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from app.domain.schemas import Community, EntityNode, RelationEdge
 
 logger = logging.getLogger(__name__)
 
 MAX_BFS_EDGES = 50  # 子图爆炸护栏：单次遍历最多返回的关系数
+
+
+@runtime_checkable
+class BaseGraphStore(Protocol):
+    """图存储契约。
+
+    抽出这层不是为了"看起来像有架构"，而是为了让 `GraphBuilder` / `GraphQuery` /
+    `CommunityDetector` 三个消费者只依赖契约——它们的类型签名里出现的是这个
+    Protocol，而不是某个具体引擎。
+
+    语义约定（实现方必须遵守，否则上层的社区摘要与溯源会失效）：
+    - `upsert_entity` / `upsert_relation` 按 `name` / `(source, relation, target)`
+      幂等，重复写入是合并而非追加；
+    - `neighbors` 返回的每条边必须带 `direction`（out / in），否则前端画不出箭头方向；
+    - `delete_doc_chunks` 只删"当前版本"的块对应实体，历史版本块仍需留在图里（§6.3）；
+    - 线程安全：所有写操作内部加锁。
+    """
+
+    def upsert_entity(self, entity: EntityNode) -> None: ...
+    def upsert_relation(self, rel: RelationEdge) -> None: ...
+    def delete_doc_chunks(self, chunk_ids: set[str]) -> int: ...
+    def get_entity(self, name: str) -> EntityNode | None: ...
+    def neighbors(
+        self, name: str, depth: int = 2, max_edges: int = MAX_BFS_EDGES
+    ) -> list[dict]: ...
+    def all_entities(self) -> list[EntityNode]: ...
+    def all_relations(self) -> list[RelationEdge]: ...
+    def set_community(self, community: Community) -> None: ...
+    def communities(self) -> list[Community]: ...
+    def stats(self) -> dict: ...
+    def save(self) -> None: ...
 
 
 class InMemoryGraphStore:

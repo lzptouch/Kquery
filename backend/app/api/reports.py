@@ -9,9 +9,11 @@
 
 核心契约：accepted=false 不是错误，走成功状态码（与阶段 5 拒答约定一致）。
 """
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
@@ -23,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["reports"])
 
+#: 阶段 8 §4 的 8 类进度事件（顺序即编排器的执行顺序）
+REPORT_STREAM_EVENTS = (
+    "plan_ready", "task_start", "task_end", "evidence_added",
+    "validate_done", "draft_ready", "critique_done", "finished",
+)
+
 
 class CreateReportRequest(BaseModel):
     goal: str = Field(min_length=5, max_length=2000)
@@ -33,6 +41,74 @@ def _get_report(request: Request, report_id: str) -> dict:
     if report is None:
         raise ApiError(ErrCode.REPORT_NOT_FOUND, f"报告不存在: {report_id}", http_status=404)
     return report
+
+
+@router.get("/reports/{report_id}/stream")
+def stream_report(
+    report_id: str,
+    request: Request,
+    orchestrator: Orchestrator = Depends(get_orchestrator),
+) -> StreamingResponse:
+    """报告生成进度流（stage-8 §4 的 8 类事件）。
+
+    与 `POST /reports?sync=true` 的区别：那个跑完才返回一个完整结果，
+    这里的每个阶段都实时推一条。前端据此渲染"规划中 → 检索中 → 校验中 →
+    撰写中 → 评审中 → 完成"的时间轴，而不是每 1.5s 轮询一次。
+
+    契约：
+    - 报告已存在且处于终态时，先补一条 `finished` 再结束连接（幂等重连）；
+    - `finished` 之后连接关闭——客户端据此停止重连；
+    - 客户端断开时编排器继续跑完（事件 sink 被摘掉），不中断报告生成。
+    """
+    report = _get_report(request, report_id)
+    terminal = {"accepted", "capped", "unreviewed", "failed"}
+
+    def sse(event: str, payload: dict) -> str:
+        return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+    if report["status"] in terminal:
+        # 已经是终态：补发一次 finished 后立即关闭，避免前端空等
+        def replay():
+            yield sse("finished", {
+                "report_id": report_id, "status": report["status"],
+                "accepted": report.get("accepted"),
+                "critic_score": report.get("critic_score"),
+                "rounds": report.get("rounds"),
+                "unresolved_issues": report.get("unresolved_issues", []),
+                "replayed": True,
+            })
+        return StreamingResponse(
+            replay(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    tenant = report.get("tenant_id") or request.headers.get("X-Tenant-Id", "default")
+
+    def event_source():
+        try:
+            for event, payload in orchestrator.run_stream(report_id, tenant):
+                yield sse(event, payload)
+        except ApiError as exc:
+            yield sse("error", {
+                "report_id": report_id, "code": int(exc.code), "message": exc.message,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("报告 %s 进度流异常", report_id)
+            yield sse("error", {
+                "report_id": report_id,
+                "code": int(ErrCode.INTERNAL_ERROR),
+                "message": "报告生成异常，请查看报告详情",
+            })
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/reports", response_model=Envelope)

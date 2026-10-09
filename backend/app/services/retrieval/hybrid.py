@@ -6,6 +6,7 @@ BM25 取前 20 + 向量取前 20 → RRF 融合取前 20 → gte-rerank-v2 精�
 降级语义：重排失败 → 跳过重排使用融合结果，reranked=False 显式标记，
 绝不让重排阻断整次检索。
 """
+import inspect
 import logging
 import time
 from dataclasses import dataclass, field
@@ -16,6 +17,22 @@ from app.services.retrieval.fusion import rrf_fuse
 from app.services.retrieval.rerank import RerankError, Reranker
 
 logger = logging.getLogger(__name__)
+
+
+def _rerank(reranker, query: str, candidates, top_n: int, model: str) -> list[FusedCandidate]:
+    """调用重排器，按签名决定是否传 `model`。
+
+    新增热更新参数后若直接硬传 `model=`，所有既有 `Reranker` 实现
+    （含测试替身与第三方实现）都会因签名不匹配而直接崩——把"可选能力"
+    实现成"必选契约"是典型的破坏性变更。这里做签名探测后优雅降级。
+    """
+    try:
+        params = inspect.signature(reranker.rerank).parameters
+    except (TypeError, ValueError):  # 内建/C 实现无法探测
+        params = {}
+    if "model" in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
+        return reranker.rerank(query, candidates, top_n, model=model)
+    return reranker.rerank(query, candidates, top_n)
 
 
 @dataclass
@@ -35,12 +52,23 @@ class HybridRetriever:
         per_route_top_n: int = 20,
         fused_top_n: int = 20,
         rrf_k: int = 60,
+        settings=None,
     ):
         self._retrievers = retrievers
         self._reranker = reranker
         self._per_route_top_n = per_route_top_n
         self._fused_top_n = fused_top_n
         self._rrf_k = rrf_k
+        # 构造参数只是"没有运行时配置时的兜底"；实际生效值以 RetrievalConfig 为准，
+        # 这样 /admin/retrieval-config 改 RRF 常数与两级召回数才能真正生效
+        self._settings = settings
+
+    def _limits(self, config: RetrievalConfig) -> tuple[int, int, int]:
+        """召回条数 / 融合候选数 / RRF 常数：运行时配置优先，零值回落构造默认。"""
+        per_route = config.per_route_top_n or self._per_route_top_n
+        fused = config.fused_top_n or self._fused_top_n
+        rrf_k = config.rrf_k or self._rrf_k
+        return max(1, per_route), max(1, fused), max(1, rrf_k)
 
     def search(
         self,
@@ -64,6 +92,7 @@ class HybridRetriever:
         """多查询混合检索（阶段 4）：每条查询（原文/改写/子问题）分别双路召回，
         全部路结果进同一 RRF 融合（来源标注随路传递），重排以用户原话为基准。"""
         stats = RetrievalStats()
+        per_route_top_n, fused_top_n, rrf_k = self._limits(config)
 
         # ① 双路召回（按开关选择启用路）× 每条查询
         route_results: list[tuple] = []
@@ -77,7 +106,7 @@ class HybridRetriever:
             for route_name, prefix in enabled:
                 started = time.perf_counter()
                 candidates = self._retrievers[route_name].search(
-                    text, self._per_route_top_n, tenant_id, doc_id=doc_id
+                    text, per_route_top_n, tenant_id, doc_id=doc_id
                 )
                 ms = int((time.perf_counter() - started) * 1000)
                 setattr(stats, f"{prefix}_ms", getattr(stats, f"{prefix}_ms") + ms)
@@ -90,7 +119,7 @@ class HybridRetriever:
         # ② RRF 融合（只用排名不用分数，跨路比较的唯一合法位置）
         started = time.perf_counter()
         weights = {"keyword": config.bm25_weight, "vector": config.vector_weight}
-        fused = rrf_fuse(route_results, k=self._rrf_k, weights=weights, top_n=self._fused_top_n)
+        fused = rrf_fuse(route_results, k=rrf_k, weights=weights, top_n=fused_top_n)
         stats.fusion_ms = int((time.perf_counter() - started) * 1000)
         stats.fused_count = len(fused)
 
@@ -99,7 +128,9 @@ class HybridRetriever:
         if config.rerank_enabled and fused:
             started = time.perf_counter()
             try:
-                final = self._reranker.rerank(rerank_query, fused, config.top_k)
+                final = _rerank(
+                    self._reranker, rerank_query, fused, config.top_k, config.rerank_model
+                )
                 stats.rerank_ms = int((time.perf_counter() - started) * 1000)
                 stats.reranked_count = len(final)
                 reranked = True

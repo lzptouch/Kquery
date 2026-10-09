@@ -17,11 +17,20 @@ from langgraph.graph.state import CompiledStateGraph
 from app.domain.schemas import Evidence
 from app.services.agent.sessions import SessionStore
 from app.services.agent.state import initial_state
-from app.services.pipeline import NO_INFO_ANSWER, PROMPT_TEMPLATE, build_evidence_block
+from app.services.pipeline import (
+    NO_INFO_ANSWER,
+    PROMPT_TEMPLATE,
+    REFUSAL_TEXT,
+    build_evidence_block,
+)
+from app.services.validation.history import CRAG_KIND
 
 logger = logging.getLogger(__name__)
 
 _DONE = object()  # 事件流终止哨兵
+
+# 参与"检索耗时/召回数"聚合的工具（calculator 不计入，否则统计无意义）
+RETRIEVAL_TOOLS = frozenset({"vector_search", "graph_search", "image_search", "sql_search", "web_search"})
 
 
 def agent_prompt_builder(question: str, evidence_dicts: list[dict]) -> str:
@@ -78,6 +87,9 @@ class AgentRunner:
         top_k: int = 4,
         audit=None,  # AuditStore（阶段 9：三事件审计）
         scanner=None,  # SensitiveScanner（输出侧扫描）
+        crag_router=None,  # CragRouter：与线性路径同一阈值口径，产 crag_branch
+        history_store=None,  # ValidationHistoryStore：CRAG 轮次落库
+        score_top_n: int = 2,  # 证据充分度聚合的 Top-N（与 crag_score_top_n 对齐）
     ):
         self._graph = graph
         self._sessions = sessions
@@ -85,6 +97,9 @@ class AgentRunner:
         self._top_k = top_k
         self._audit = audit
         self._scanner = scanner
+        self._crag = crag_router
+        self._history = history_store
+        self._score_top_n = max(1, score_top_n)
 
     # ---- 对外主入口：事件流 ----
 
@@ -198,8 +213,27 @@ class AgentRunner:
 
         # ---- 结果归一 ----
         result = self._build_result(
-            final_state or {}, question, doc_name_resolver, int((time.monotonic() - started) * 1000)
+            final_state or {}, question, doc_name_resolver,
+            int((time.monotonic() - started) * 1000), trace_id,
         )
+
+        # ---- 可观测事件（此前 Agent 路径不发这三个，前端面板拿不到任何数据）----
+        yield "retrieval_stats", result["retrieval"]
+        if result.get("crag"):
+            yield "crag_branch", {
+                "branch": result["crag"]["branch"],
+                "avg_score": result["evidence_score"],
+                "round": 1,
+            }
+        yield "confidence", {
+            "verdict": result["verdict"],
+            "score": result["confidence"],
+            "unsupported_claims_count": result["unsupported_claims_count"],
+            "regenerated": result["regenerated"],
+            # Agent 路径未做逐句自检（幻觉自检只在线性路径执行），如实标未知
+            "unvalidated": True,
+            "removed_claims": [],
+        }
         # 快照回写（同会话串行由 store 保证）
         if session_id and final_state is not None:
             try:
@@ -236,8 +270,77 @@ class AgentRunner:
 
     # ---- 结果归一 ----
 
+    def _retrieval_stats(self, state: dict, evidence_count: int) -> dict:
+        """由工具调用记录聚合检索统计。
+
+        Agent 路径此前完全不产 `retrieval`，导致前端 `RetrievalTracePanel`
+        拿不到数据、指标 `rag_retrieval_stage_ms` 恒无数据。这里用 tool_calls
+        的耗时与命中数聚合出与线性路径同构的形状，前端无需分支处理。
+        """
+        calls = state.get("tool_calls", []) or []
+        retrieval_calls = [c for c in calls if c.get("tool_name") in RETRIEVAL_TOOLS]
+        keyword = [c for c in retrieval_calls if c.get("tool_name") == "graph_search"]
+        vector = [c for c in retrieval_calls if c.get("tool_name") != "graph_search"]
+        return {
+            "from_cache": False,
+            "reranked": True,  # Agent 路径的精排在工具内部完成，不额外降级标记
+            "keyword_candidates": sum(int(c.get("result_count", 0) or 0) for c in keyword),
+            "vector_candidates": sum(int(c.get("result_count", 0) or 0) for c in vector),
+            "fused_count": evidence_count,
+            "reranked_count": evidence_count,
+            "into_context_count": evidence_count,
+            "keyword_ms": sum(int(c.get("elapsed_ms", 0) or 0) for c in keyword),
+            "vector_ms": sum(int(c.get("elapsed_ms", 0) or 0) for c in vector),
+            "fusion_ms": 0,  # 融合在工具内部完成，无独立耗时口径
+            "rerank_ms": 0,
+            "latency_ms": {
+                "keyword": sum(int(c.get("elapsed_ms", 0) or 0) for c in keyword),
+                "vector": sum(int(c.get("elapsed_ms", 0) or 0) for c in vector),
+                "fusion": 0,
+                "rerank": 0,
+            },
+            "candidates": {
+                "keyword": sum(int(c.get("result_count", 0) or 0) for c in keyword),
+                "vector": sum(int(c.get("result_count", 0) or 0) for c in vector),
+                "fused": evidence_count,
+                "reranked": evidence_count,
+                "into_context": evidence_count,
+            },
+            "tool_calls": len(retrieval_calls),
+            "tool_errors": sum(1 for c in retrieval_calls if c.get("error")),
+            "acl_filtered": sum(
+                int(e.get("acl_filtered_count", 0) or 0)
+                for e in state.get("evidence", [])
+                if e.get("modality") == "acl_notice"
+            ),
+        }
+
+    def _crag_payload(self, score: float, evidence_count: int, trace_id: str) -> dict | None:
+        """用与线性路径**同一** CRAG 阈值口径给 Agent 路径的证据定级。
+
+        分支只用于前端检索面板高亮，不改判答/拒答——拒答判定在 answer 节点
+        已由 evidence 是否为空完成，这里再拒一次会变成两套拒答口径。
+        """
+        if self._crag is None:
+            return None
+        branch = self._crag.decide(score) if evidence_count else "incorrect"
+        round_data = {
+            "round": 1,
+            "branch": branch,
+            "avg_score": round(score, 4),
+            "evidence_count": evidence_count,
+            "refined_query": "",
+        }
+        if self._history is not None and trace_id:
+            self._history.append(
+                CRAG_KIND,
+                {"trace_id": trace_id, "round": 1, "branch": branch,
+                 "avg_score": round(score, 4), "evidence_count": evidence_count},
+            )
+        return {"branch": branch, "rounds": [round_data], "source": "agent"}
+
     def _build_result(
-        self, state: dict, question: str, doc_name_resolver, elapsed_ms: int
+        self, state: dict, question: str, doc_name_resolver, elapsed_ms: int, trace_id: str = ""
     ) -> dict:
         answer = state.get("final_answer", "")
         all_evidence = state.get("evidence", [])
@@ -275,15 +378,23 @@ class AgentRunner:
             for i, e in enumerate(top)
         ]
 
-        # 拒答归一：无证据 / 提示词级拒答
+        # 拒答归一：无证据 / 提示词级拒答 / 敏感词整体拒答
         refusal = state.get("refusal", False) or answer.strip().startswith(NO_INFO_ANSWER)
         if refusal:
-            verdict, answer_out, confidence = "refused", "知识库中没有足够证据回答该问题", 0.0
+            verdict, answer_out, confidence = "refused", REFUSAL_TEXT, 0.0
+            refusal_reason = "no_content"
             evidence = []
         else:
             verdict = "answered"
             answer_out = answer
             confidence = round(min(0.95, state.get("evidence_score", 0.5)), 4)
+            refusal_reason = ""
+
+        # 证据充分度：Top-N 均值（与线性路径 crag_score_top_n 同口径）
+        top_scores = sorted(
+            (e.get("score") for e in top if e.get("score") is not None), reverse=True
+        )[: self._score_top_n]
+        avg_score = sum(top_scores) / len(top_scores) if top_scores else 0.0
 
         agent_payload = {
             "plan": state.get("plan", []),
@@ -300,11 +411,17 @@ class AgentRunner:
             "answer": answer_out,
             "evidence": evidence,
             "verdict": verdict,
-            "refusal_reason": "no_content" if refusal else "",
+            "refusal_reason": refusal_reason,
             "confidence": confidence,
             "incomplete": incomplete,
             "fuse_reason": state.get("fuse_reason", ""),
             "agent": agent_payload,
             "elapsed_ms": elapsed_ms,
             "acl_filtered": acl_filtered,
+            "from_cache": False,
+            "retrieval": self._retrieval_stats(state, len(evidence)),
+            "crag": self._crag_payload(avg_score, len(evidence), trace_id),
+            "evidence_score": round(avg_score, 4),
+            "regenerated": False,
+            "unsupported_claims_count": 0,
         }

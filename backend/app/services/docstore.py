@@ -80,11 +80,29 @@ class DocStore:
 
     # ---- 媒体资源 ----
 
-    def put_assets(self, assets: list[MediaAsset]) -> None:
+    def put_assets(self, assets: list[MediaAsset], dedupe_by_hash: bool = False) -> int:
+        """写入媒体资源。`dedupe_by_hash=True` 时跳过内容哈希已存在的资源。
+
+        去重的口径是**内容哈希**：同一张图出现在多个文档里只应占一份存储与一次
+        描述生成调用。但要保留本次文档自己的 asset_id——否则引用溯源会指向别的文档。
+        返回实际写入条数（供调用方核对去重效果）。
+        """
+        written = 0
         with self._lock:
             for a in assets:
+                if dedupe_by_hash and a.hash:
+                    existing = self.find_asset_by_hash(a.hash)
+                    if existing is not None and existing.asset_id != a.asset_id:
+                        # 复用已有资源的物理路径，但归属本次文档
+                        a.uri = existing.uri
                 self._assets[a.asset_id] = a
+                written += 1
             self._save()
+        if dedupe_by_hash:
+            deduped = written - len({a.hash for a in assets if a.hash})
+            if deduped:
+                logger.info("媒体资源跨文档去重：%d 条命中已有内容哈希", deduped)
+        return written
 
     def assets_of_doc(self, doc_id: str) -> list[MediaAsset]:
         return [a for a in self._assets.values() if a.doc_id == doc_id]

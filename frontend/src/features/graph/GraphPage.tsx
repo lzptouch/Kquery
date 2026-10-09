@@ -6,6 +6,7 @@
  * - 表格视图切换（键盘可达的可访问性兜底）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DataState } from "../../components/DataState";
 import { fetchEntityDetail, fetchGraphEntities, fetchSubgraph } from "../../lib/api-client";
 import type { EntityDetail, GraphEntity, GraphLink, GraphNode, Subgraph } from "../../types";
 
@@ -90,16 +91,21 @@ export function GraphPage() {
   const [relFilter, setRelFilter] = useState<Set<string>>(new Set(RELATION_TYPES));
   const [tableView, setTableView] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const svgRef = useRef<SVGSVGElement>(null);
 
   const load = useCallback(async (seed = "") => {
     setError(null);
+    setLoading(true);
     try {
       const [ents, sub] = await Promise.all([fetchGraphEntities(), fetchSubgraph(seed, seed ? 2 : 1)]);
       if (ents.data) setEntities(ents.data);
+      else if (!seed) setError(ents.error?.message ?? "图谱数据加载失败");
       if (sub.data) setSubgraph(sub.data);
     } catch {
       setError("图谱数据加载失败");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -232,18 +238,25 @@ export function GraphPage() {
                   ))}
                 </tbody>
               </table>
-            ) : positioned.length === 0 ? (
-              <div className="empty-state" style={{ padding: 48 }}>
-                图谱为空。先在知识库上传文档，然后调用"构建图谱"。
-              </div>
             ) : (
+              <DataState
+                loading={loading}
+                error={error}
+                empty={positioned.length === 0}
+                emptyText="图谱为空"
+                emptyHint="在知识库上传文档并等待入库完成，图谱会自动构建（也可手动调用「构建图谱」）。"
+              >
+              <div />
               <svg ref={svgRef} viewBox="0 0 640 420" className="graph-canvas" role="img" aria-label="知识图谱画布">
                 <defs>
                   <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
                     <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-secondary)" />
                   </marker>
                 </defs>
-                {filtered!.links.map((l, i) => {
+                {/* 不用 filtered! 非空断言：subgraph 未加载时 filtered 就是 null，
+                    断言骗过了 TS，运行时直接抛 "Cannot read properties of null"，
+                    整页白屏。这里显式兜底，加载/失败/空态由外层 DataState 负责。 */}
+                {(filtered?.links ?? []).map((l, i) => {
                   const s = posMap.get(l.source);
                   const t = posMap.get(l.target);
                   if (!s || !t) return null;
@@ -290,6 +303,7 @@ export function GraphPage() {
                   </g>
                 ))}
               </svg>
+              </DataState>
             )}
           </div>
 

@@ -11,7 +11,7 @@ import numpy as np
 
 from app.services.embeddings import Embeddings
 from app.services.graph.resolver import EntityResolver, normalize_name
-from app.services.graph.store import InMemoryGraphStore
+from app.services.graph.store import BaseGraphStore
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +22,18 @@ SEED_VECTOR_TH = 0.5  # 向量召回种子的最低相似度（召回宁宽，BF
 class GraphQueryService:
     def __init__(
         self,
-        store: InMemoryGraphStore,
+        store: BaseGraphStore,
         resolver: EntityResolver,
         embeddings: Embeddings,
         bfs_depth: int = 2,
+        seed_top_k: int = SEED_TOP_K,
     ):
         self._store = store
         self._resolver = resolver
         self._embeddings = embeddings
         self._depth = bfs_depth
+        # 种子上限来自配置（防子图爆炸的成本护栏），写死则改配置不生效
+        self._seed_top_k = max(1, int(seed_top_k))
 
     def find_seeds(self, question: str) -> list[str]:
         """混合种子：精确/别名命中 ∪ 实体向量召回，Top-3。"""
@@ -41,7 +44,7 @@ class GraphQueryService:
             if any(n and n in question for n in names):
                 if info["name"] not in seeds:
                     seeds.append(info["name"])
-            if len(seeds) >= SEED_TOP_K:
+            if len(seeds) >= self._seed_top_k:
                 return seeds
         # 2. 向量召回（问题未出现确切实体名时；复用消歧器已存向量，不重复编码）
         if not seeds:
@@ -56,10 +59,10 @@ class GraphQueryService:
                     if sim >= SEED_VECTOR_TH:
                         scored.append((info["name"], sim))
                 scored.sort(key=lambda x: -x[1])
-                seeds = [name for name, _ in scored[:SEED_TOP_K]]
+                seeds = [name for name, _ in scored[: self._seed_top_k]]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("种子向量召回失败: %s", exc)
-        return seeds[:SEED_TOP_K]
+        return seeds[: self._seed_top_k]
 
     def search(self, question: str, tenant_id: str = "default") -> dict:
         """图检索主入口。返回 {seeds, paths, evidence_items}。"""

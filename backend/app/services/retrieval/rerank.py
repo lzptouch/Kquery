@@ -22,8 +22,17 @@ class RerankError(Exception):
 class Reranker(Protocol):
     model: str
 
-    def rerank(self, query: str, candidates: list[FusedCandidate], top_n: int) -> list[FusedCandidate]:
-        """为候选填充 rerank_score 并返回按相关度排序的前 top_n 个。"""
+    def rerank(
+        self,
+        query: str,
+        candidates: list[FusedCandidate],
+        top_n: int,
+        model: str | None = None,
+    ) -> list[FusedCandidate]:
+        """为候选填充 rerank_score 并返回按相关度排序的前 top_n 个。
+
+        `model` 为运行时热配置的重排模型名；为空时用实例默认模型。
+        """
         ...
 
 
@@ -35,20 +44,30 @@ class DashScopeReranker:
         self.model = model
         self._max_retries = max_retries
 
-    def rerank(self, query: str, candidates: list[FusedCandidate], top_n: int) -> list[FusedCandidate]:
+    def rerank(
+        self,
+        query: str,
+        candidates: list[FusedCandidate],
+        top_n: int,
+        model: str | None = None,
+    ) -> list[FusedCandidate]:
         if not candidates:
             return []
         import dashscope
 
         from app.services.security.platform_quota import get_monitor
 
+        # 运行时热配置优先：此前 rerank_model 只影响缓存键，实际调用模型不变
+        effective_model = model or self.model
+        if effective_model != self.model:
+            logger.info("重排模型热切换：%s → %s", self.model, effective_model)
         documents = [c.chunk.content for c in candidates]
         last_error: Exception | None = None
         for attempt in range(self._max_retries):
             try:
-                get_monitor().record_call(self.model)
+                get_monitor().record_call(effective_model)
                 resp = dashscope.TextReRank.call(
-                    model=self.model,
+                    model=effective_model,
                     query=query,
                     documents=documents,
                     top_n=min(top_n, len(documents)),
@@ -96,7 +115,14 @@ class MockReranker:
             if (len(t) >= 2 or t.isascii()) and t not in self._STOP and t.isalnum()
         }
 
-    def rerank(self, query: str, candidates: list[FusedCandidate], top_n: int) -> list[FusedCandidate]:
+    def rerank(
+        self,
+        query: str,
+        candidates: list[FusedCandidate],
+        top_n: int,
+        model: str | None = None,
+    ) -> list[FusedCandidate]:
+        # Mock 不区分模型名（词重叠度打分是纯本地计算）
         q_tokens = self._content_tokens(query)
         for cand in candidates:
             d_tokens = self._content_tokens(cand.chunk.content)

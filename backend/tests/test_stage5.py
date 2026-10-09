@@ -192,7 +192,9 @@ class TestFeedbackAndQuality:
 
     def test_feedback_requires_trace_id_and_valid_type(self, client):
         resp = client.post("/feedback/refusal", json={"feedback_type": "bad", "trace_id": "x"})
-        assert resp.status_code == 422
+        # 契约从 422 修正为 400：校验失败也是业务错误，走统一信封
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] is not None
 
     def test_quality_metrics_endpoint(self, client):
         client.post("/knowledge/upload", files={"file": ("白皮书.md", LONG_MD.encode(), "text/markdown")})

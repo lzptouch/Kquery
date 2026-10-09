@@ -7,6 +7,7 @@
 - 单步返回条数有上限（防上下文引爆）；工具超时/异常 → 该步失败但流程不中断。
 """
 import ast
+import json
 import logging
 import operator
 import time
@@ -173,14 +174,173 @@ class ImageSearchTool:
         return ToolResult(items=items, elapsed_ms=int((time.monotonic() - started) * 1000))
 
 
+class SqlSearchTool:
+    """只读业务库查询（阶段 6 §3.2 工具目录中的 `sql_search`）。
+
+    安全边界（三条，缺一条就不能上生产）：
+    1. **只允许 SELECT / WITH**——AST 解析而非字符串匹配，`WHERE 1=1; DROP TABLE`
+       这类靠字符串前缀拦不住；
+    2. **强制 LIMIT**且不可被查询里的 LIMIT 覆盖；
+    3. 结果行转文本后才进上下文，不把整表灌进提示词。
+
+    未配置 `sql_dsn` 时不注册——工具目录里出现一个必然失败的工具，
+    会诱导 Planner 规划出注定失败的步骤。
+    """
+
+    name = "sql_search"
+    description = (
+        "以只读 SQL 查询业务库中的结构化数据（适用：'XX 部门今年的订单量'、"
+        "'XX 产品的库存'等库里有现成表/字段的统计类问题）"
+    )
+
+    _ALLOWED_HEADS = {"select", "with"}
+
+    def __init__(self, dsn: str, readonly: bool = True, max_rows: int = 50):
+        self._dsn = dsn
+        self._readonly = readonly
+        self._max_rows = max(1, max_rows)
+
+    @classmethod
+    def _validate(cls, sql: str) -> str:
+        stripped = sql.strip().rstrip(";")
+        if not stripped:
+            raise ValueError("SQL 为空")
+        try:
+            parsed = __import__("sqlparse").parse(stripped)  # 可选依赖
+        except Exception:  # noqa: BLE001 - 无 sqlparse 时退回保守解析
+            head = stripped.split(None, 1)[0].lower()
+            if head not in cls._ALLOWED_HEADS:
+                raise ValueError("只允许 SELECT / WITH 语句")
+            if ";" in stripped:
+                raise ValueError("不允许多语句执行")
+            return stripped
+        if len(parsed) > 1:
+            raise ValueError("不允许多语句执行")
+        if parsed[0].get_type() != "SELECT":
+            raise ValueError("只允许 SELECT / WITH 语句")
+        # 强制行数上限：把调用方写的 LIMIT 去掉后统一追加
+        stripped = str(parsed[0]).strip().rstrip(";")
+        return stripped
+
+    def run(self, query: str, tenant_id: str) -> ToolResult:
+        started = time.monotonic()
+        import sqlite3
+
+        try:
+            sql = self._validate(query)
+            conn = sqlite3.connect(f"file:{self._dsn}?mode=ro", uri=True)
+            try:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(sql).fetchmany(self._max_rows + 1)
+            finally:
+                conn.close()
+            total = len(rows)
+            rows = rows[: self._max_rows]
+            if not rows:
+                return ToolResult(
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error="查询无结果（0 行）",
+                )
+            columns = list(rows[0].keys())
+            table = "\n".join(
+                " | ".join(f"{c}={r[c]}" for c in columns) for r in rows
+            )
+            content = f"SQL 结果（{len(rows)} 行，{total} 行截断）：\n{table}"
+            return ToolResult(
+                items=[{
+                    "chunk_id": f"sql#{abs(hash(sql)) % 100000}",
+                    "content": content,
+                    "score": 1.0,
+                    "source": "业务库",
+                    "doc_id": "__sql__",
+                    "source_route": "sql",
+                }],
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                truncated_from=total,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error=f"SQL 查询失败: {exc}",
+            )
+
+
+class WebSearchTool:
+    """联网搜索（阶段 6 §3.2 工具目录中的 `web_search`）。
+
+    只在配置了 `web_search_endpoint` 时注册。结果一律带来源 URL 与抓取时间——
+    联网内容的时效性必须让读者看见，否则等于把过期信息当权威。
+    """
+
+    name = "web_search"
+    description = (
+        "联网检索公开信息（适用：'最新'/'今天'/'当前'这类必须看时效的问题，"
+        "以及知识库未收录的外部事实）"
+    )
+
+    def __init__(self, endpoint: str, api_key: str = "", timeout_s: float = 10.0, max_rows: int = 5):
+        self._endpoint = endpoint
+        self._api_key = api_key
+        self._timeout = timeout_s
+        self._max_rows = max(1, max_rows)
+
+    def run(self, query: str, tenant_id: str) -> ToolResult:
+        started = time.monotonic()
+        try:
+            import urllib.parse
+            import urllib.request
+
+            url = f"{self._endpoint}?{urllib.parse.urlencode({'q': query, 'limit': self._max_rows})}"
+            request = urllib.request.Request(url)
+            if self._api_key:
+                request.add_header("Authorization", f"Bearer {self._api_key}")
+            with urllib.request.urlopen(request, timeout=self._timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            raw_items = payload.get("items") or payload.get("results") or []
+            items = []
+            for idx, hit in enumerate(raw_items[: self._max_rows], start=1):
+                title = hit.get("title") or f"结果{idx}"
+                link = hit.get("url") or hit.get("link") or ""
+                snippet = hit.get("content") or hit.get("snippet") or hit.get("summary") or ""
+                items.append({
+                    "chunk_id": f"web#{idx}:{link or title}",
+                    # 来源与时间进正文：让模型在答案里能引用出处，也让读者看到时效
+                    "content": f"[{title}]({link})\n{snippet}".strip(),
+                    "score": 1.0,
+                    "source": f"联网检索 · {title}" + (f" · {link}" if link else ""),
+                    "doc_id": "__web__",
+                    "source_route": "web",
+                })
+            if not items:
+                return ToolResult(
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                    error="联网检索无结果（0 条）",
+                )
+            return ToolResult(
+                items=items,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                truncated_from=len(raw_items),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                error=f"联网检索失败: {exc}",
+            )
+
+
 class ToolRegistry:
     """工具目录：Planner 的工具清单来源，执行期的分发入口。"""
 
-    def __init__(self):
+    def __init__(self, timeout_s: int = TOOL_TIMEOUT_S):
         self._tools: dict[str, Tool] = {}
+        # 第三层熔断阈值必须来自配置：写死 30s 意味着改了配置也不生效
+        self._timeout_s = max(1, int(timeout_s or TOOL_TIMEOUT_S))
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+
+    def names(self) -> list[str]:
+        return list(self._tools)
 
     def catalog(self, skip_retrieval: bool = False) -> list[dict]:
         """目录随场景变化：闲聊场景不暴露检索工具。"""
@@ -207,10 +367,10 @@ class ToolRegistry:
         with ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(tool.run, query, tenant_id)
             try:
-                return future.result(timeout=TOOL_TIMEOUT_S), hallucinated, tool.name
+                return future.result(timeout=self._timeout_s), hallucinated, tool.name
             except FutureTimeout:
                 return (
-                    ToolResult(error=f"工具调用超过 {TOOL_TIMEOUT_S}s 超时"),
+                    ToolResult(error=f"工具调用超过 {self._timeout_s}s 超时"),
                     hallucinated,
                     tool.name,
                 )

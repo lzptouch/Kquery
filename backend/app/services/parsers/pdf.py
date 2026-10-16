@@ -13,6 +13,7 @@
 """
 import hashlib
 import logging
+import os
 import re
 import tempfile
 from pathlib import Path
@@ -117,7 +118,10 @@ class PdfParser:
     ) -> None:
         """渲染整页 → VL OCR → 清洗 → 剥离表格块 → 段落与表格分别入结果。"""
         pix = page.get_pixmap(dpi=self._ocr_dpi)
-        tmp = Path(tempfile.mkstemp(suffix=".png")[1])
+        # mkstemp 返回的 fd 必须关闭：Windows 下句柄独占会让后续写入该文件失败
+        fd, tmp_path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        tmp = Path(tmp_path)
         try:
             pix.save(str(tmp))
             raw = self._ocr_engine.recognize(tmp)

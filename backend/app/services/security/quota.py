@@ -58,7 +58,8 @@ class SlidingWindowQuota:
         请求结束后应再用 record_tokens 按实际用量补记，预估值必然有偏差。
         """
         now = time.time()
-        today = time.strftime("%Y-%m-%d", time.gmtime(now))
+        # 按本地时区分桶：UTC 会让「每日配额」在用户时区的中途重置，与预期不符
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
         with self._lock:
             policy = self._policy(tenant_id)
             window = self._windows[tenant_id]
@@ -89,7 +90,7 @@ class SlidingWindowQuota:
         """请求结束后按实际 token 用量补记。"""
         if tokens <= 0:
             return
-        today = time.strftime("%Y-%m-%d", time.gmtime(time.time()))
+        today = time.strftime("%Y-%m-%d", time.localtime(time.time()))
         with self._lock:
             window = self._windows[tenant_id]
             tok_date, tok_count = window.token_bucket
@@ -97,12 +98,12 @@ class SlidingWindowQuota:
 
     @staticmethod
     def _seconds_until_midnight():
-        now = time.gmtime()
+        now = time.localtime()
         return int((24 - now.tm_hour - 1) * 3600 + (59 - now.tm_min) * 60 + (60 - now.tm_sec))
 
     def overview(self, tenants):
         now = time.time()
-        today = time.strftime("%Y-%m-%d", time.gmtime(now))
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
         with self._lock:
             rows = []
             for tenant in tenants:

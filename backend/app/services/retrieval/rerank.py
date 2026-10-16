@@ -9,7 +9,6 @@ import logging
 import time
 from typing import Protocol
 
-from app.services.embeddings import _tokenize
 from app.services.retrieval.base import FusedCandidate
 
 logger = logging.getLogger(__name__)

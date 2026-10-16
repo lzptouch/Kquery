@@ -5,7 +5,7 @@
 """
 import json
 
-from tests.conftest import SAMPLE_MD, upload_sample
+from tests.conftest import upload_sample
 
 
 def test_health(client):

@@ -8,7 +8,6 @@ trace 聚合、只追加）/ 敏感词（长词优先、词形覆盖、掩码/�
 版本绑定）/ API 契约。
 """
 import json
-import time
 
 import pytest
 
@@ -74,8 +73,6 @@ class TestACL:
         return ACLService(tmp_path / "acl.json", USERS)
 
     def test_deny_by_default(self):
-        acl = self._acl(None) if False else ACLService.__new__(ACLService)
-        # 用真实构造
         import tempfile
         from pathlib import Path
         with tempfile.TemporaryDirectory() as tmp:
@@ -156,7 +153,11 @@ class TestAudit:
 
     def test_append_only_no_mutation_api(self, tmp_path):
         store = AuditStore(tmp_path / "a.jsonl")
+        store.log_request("t1", "tenant-a", "u1", "机密问题")
+        # 审计只追加：既无删除/修改方法，写入的记录也保持完整可读（无篡改途径）
         assert not hasattr(store, "delete") and not hasattr(store, "update")
+        records = store.query()
+        assert len(records) == 1 and records[0]["payload"]["question_hash"]
 
     def test_filters(self, tmp_path):
         store = AuditStore(tmp_path / "a.jsonl")
@@ -165,7 +166,8 @@ class TestAudit:
         assert len(store.query(tenant_id="tenant-a")) == 1
         assert len(store.query(user_id="u2")) == 1
         csv = store.export_csv()
-        assert "q1" not in csv and "hash" not in csv.split("\n")[0] or True
+        # 审计不存原文：CSV 里只有 question_hash，绝不能出现用户原话
+        assert "q1" not in csv
         assert "tenant-a" in csv
 
 

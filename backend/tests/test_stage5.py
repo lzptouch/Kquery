@@ -9,7 +9,7 @@
 import pytest
 
 from app.services.validation.selfcheck import SelfCheckResult, compute_confidence
-from tests.conftest import SAMPLE_MD, upload_sample
+from tests.conftest import upload_sample
 
 LONG_MD = """# 电池产品白皮书
 
@@ -74,7 +74,7 @@ class TestCragRefusal:
         class MidReranker:
             model = "mid"
 
-            def rerank(self, query, candidates, top_n):
+            def rerank(self, query, candidates, top_n, model=None):
                 for c in candidates:
                     c.rerank_score = 0.2  # 落在 (0.1, 0.3) 中间区间
                 return candidates[:top_n]

@@ -9,7 +9,7 @@
 """
 import logging
 
-from app.services.llm import LLM, LLMError
+from app.services.llm import LLM
 from app.services.query.jsonutil import JsonParseError, parse_json
 from app.services.query.schemas import SubQuestion
 

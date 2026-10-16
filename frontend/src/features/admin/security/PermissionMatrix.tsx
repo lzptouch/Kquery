@@ -11,6 +11,7 @@
  *   不标出来，管理员会把"纸面权限"当成"已强制"。
  */
 import { useEffect, useState } from "react";
+import { authHeaders } from "../../../lib/auth";
 
 export interface PermissionCapability {
   key: string;
@@ -49,7 +50,10 @@ export function PermissionMatrix() {
     let alive = true;
     (async () => {
       try {
-        const resp = await fetch("/admin/users/permission-matrix");
+        // TASK-160：/admin/* 需要管理员身份；裸 fetch 会 403
+        const resp = await fetch("/admin/users/permission-matrix", {
+          headers: authHeaders(),
+        });
         const body = await resp.json();
         if (!alive) return;
         if (body?.status === "ok" && body.data) {

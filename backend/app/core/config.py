@@ -96,16 +96,80 @@ class Settings(BaseSettings):
     agent_session_ttl_s: int = 30 * 86400  # 会话快照 30 天自动过期
     agent_tool_timeout_s: int = 30  # 单步工具超时（第三层熔断）
     agent_no_progress_limit: int = 3  # 无效进展熔断窗口
+    # ---- TASK-115：checkpointer（断点续跑 / 多轮状态继承 / 回放 / HITL 前提）----
+    # sqlite：单文件、事务安全、跨进程可读（推荐生产）
+    # memory：进程内、不落盘（测试与单机轻量部署）
+    # none  ：显式关闭，等价于不启用续跑与 HITL
+    agent_checkpointer: str = "sqlite"
+    agent_checkpoint_path: str = ""  # 空则用 {data_dir}/agent_checkpoints.db
+    # ---- TASK-121：三预算治理（0 = 不限）----
+    # 预算耗尽**不报错**，降级为「基于已有证据作答 + incomplete 标记」。
+    agent_token_budget: int = 20000      # 单次 Agent 运行的 token 上限
+    agent_cost_limit_yuan: float = 0.5   # 单次运行成本上限（元）
+    agent_deadline_ms: int = 60000       # 单次运行墙钟上限（毫秒）
+    # 每千 token 单价（元），按模型名配置；缺省则成本记为 0 且前端标「未知」。
+    # 显式配置而非内置：内置价格会过期，过期价格比没有价格更危险。
+    agent_price_per_1k_json: str = '{"qwen-plus": 0.0008, "qwen-max": 0.02, "qwen-turbo": 0.0003}'
+    # ---- TASK-124：人在环（HITL）----
+    # 默认关闭：HITL 对用户是**打断**，需要前端配合渲染"待补充"卡片才能用，
+    # 在后端单方面打开会让所有低置信问题都变成空答案。
+    # 启用前提：agent_checkpointer != none（否则无法挂起）。
+    agent_hitl_enabled: bool = False
+    agent_hitl_score_threshold: float = 0.5  # 低于此充分度触发人工介入
+    # ---- TASK-116 / TASK-150：上下文组装治理 ----
+    # 0 = 不限制（按条数控制）。默认给明确预算：条数相同不代表长度相同，
+    # 一段 3000 字的表格块能直接撑爆上下文。
+    context_token_budget: int = 6000
+    # MMR 相关性权重：1.0 = 纯按相关分（关闭多样性）；0.7 = 兼顾多样性
+    context_mmr_lambda: float = 0.7
+    # ---- TASK-133：结构化日志 ----
+    log_level: str = "INFO"
+    log_format: str = "text"  # text（本地开发友好）/ json（生产，日志平台可索引）
+    log_debug_sample_rate: float = 0.1  # 仅对 DEBUG 生效；INFO 及以上不采样
+    # ---- TASK-113：答案校验节点 ----
+    # 默认关闭：它多花一次 LLM 调用，且会把"先答后发"变成"可能答两次"。
+    # 与 reflect 互补——reflect 评证据够不够，verify 评答案站不站得住。
+    # ---- TASK-101：ReAct 单步决策循环 ----
+    # 默认仍走 plan_execute：ReAct 每轮多一次 LLM 调用、行为变化大，
+    # 在检索评测集（TASK-130）落地前贸然切换等于无法验证的改动。
+    agent_mode: str = "plan_execute"  # plan_execute | react
+    # ---- TASK-117：长期记忆 ----
+    memory_enabled: bool = True
+    memory_max_per_tenant: int = 500  # 上限：记忆不能无限增长（注入成本会失控）
+    # ---- TASK-165：共享状态后端 ----
+    # 空 = 进程内（单副本）。多副本必须配 Redis，否则限流/配额实际额度 × 副本数
+    redis_url: str = ""
+    redis_key_prefix: str = "kquery:"
+    agent_verify_enabled: bool = False
+    agent_max_verify_rounds: int = 1  # 最多回退重做几轮（防"改了还是不通过"死循环）
 
     # ---- 阶段 7：GraphRAG 与多模态 ----
     graph_enabled: bool = True
+    # TASK-180：图存储后端（sqlite = 增量持久化且原子；memory = 旧的内存 + JSON 全量落盘）
+    graph_store_backend: str = "sqlite"
+    # ---- TASK-132：OpenTelemetry ----
+    # 默认关闭：未部署 collector 时开启只会白占内存与 CPU。
+    # 启用但未配 endpoint 会明确告警并降级为 NoOp（不阻断启动）。
+    otel_enabled: bool = False
+    otel_exporter_endpoint: str = ""  # 如 http://localhost:4318/v1/traces
+    otel_service_name: str = "kquery"
+    otel_sample_ratio: float = 1.0  # 无上游 trace 时的本地采样比例
+    # ---- TASK-181：后台任务队列 ----
+    # workers=0 时同步执行（测试与单机轻量部署的降级路径）
+    report_workers: int = 2
+    # 排队上限：超出即背压拒绝并明确告知用户，避免内存无界增长（拒绝优于 OOM）
+    report_queue_size: int = 100
+    graph_path: str = ""  # 空则用 {data_dir}/graph/graph.json（sqlite 时自动换 .db 后缀）
     entity_sim_threshold: float = 0.85  # 实体消歧向量相似度阈值（经验值，需按数据调优）
     graph_bfs_depth: int = 2  # 遍历深度（≥3 噪声剧增）
     graph_seed_top_k: int = 3  # 种子实体上限（防子图爆炸）
     community_max: int = 20  # 社区摘要数量上限（成本控制）
     # 社区层级数：1 = 单层连通分量（默认，成本最低）；
     # >1 逐级重叠合并出粗粒度主题，摘要成本随层级线性增长（stage-7 §5.2/§5.3）
-    community_levels: int = 1
+    # TASK-158：默认 2 层（原为 1 = 层级关闭）。1 层只有连通分量级别的社区，
+    # GraphRAG 论文里的"层级摘要"（社区套社区）完全没启用；2 层能覆盖
+    # "全局问题用粗粒度摘要、局部问题用细粒度"这一核心用法。
+    community_levels: int = 2
     # 层级合并阈值：成员重叠比例 ≥ 该值才合并（调低更粗、调高更细）
     community_merge_threshold: float = 0.3
     image_caption_model: str = "qwen-vl-max"  # 图像描述模型（换版本需全量重编码）
@@ -119,7 +183,10 @@ class Settings(BaseSettings):
     report_max_subtasks: int = 8
 
     # ---- 阶段 9：企业护栏 ----
-    auth_enabled: bool = False  # 开启后要求 Bearer Token（静态凭证表，仅演示）
+    # 默认开启认证（TASK-161：拒绝静默裸奔）。无凭证来源时启动校验失败——
+    # 要么给静态凭证表（auth_tokens_json），要么启用 JWT（auth_jwt_enabled + secret），
+    # 要么显式 auth_enabled=false 承认开发/测试模式。
+    auth_enabled: bool = True
     auth_tokens_json: str = ""  # {"token": {user_id, tenant_id, roles, groups}}
     auth_users_json: str = ""  # 用户目录 JSON；留空则读写 data/users.json（持久化）
     # 标准令牌档（企业生产）：HS256 JWT，带签发方/受众校验
@@ -140,6 +207,9 @@ class Settings(BaseSettings):
     sql_dsn: str = ""  # 只读业务库 DSN（sqlite/duckdb/postgres），空则不提供 sql_search
     sql_readonly: bool = True  # 强制只读：禁止 INSERT/UPDATE/DELETE/DDL
     sql_max_rows: int = 50
+    # 租户隔离列（TASK-143）：配置后 sql_search 强制「单表查询 + 表白名单 + 谓词包装」。
+    # 空 = 不做租户过滤（仅限单租户业务库，多租户下启用 sql_search 必须配置）
+    sql_tenant_column: str = ""
     web_search_endpoint: str = ""  # 联网搜索 HTTP 端点，空则不提供 web_search
     web_search_api_key: str = ""
     web_search_timeout_s: float = 10.0
@@ -225,8 +295,17 @@ class Settings(BaseSettings):
             # 显式要求走平台却没给凭据：这是配置错误，不该静默降级成 mock
             add("dashscope_api_key", "model_provider=dashscope 但未提供平台凭证",
                 "补齐 KQUERY_DASHSCOPE_API_KEY，或显式设置 model_provider=mock")
+        if self.model_provider == "auto" and not self.dashscope_api_key:
+            # auto + 无凭据会静默解析为 mock（resolved_provider），生产漏配变量时
+            # 全面接管且仅打 INFO 日志——宁可启动失败，也不要静默裸奔
+            add("dashscope_api_key", "model_provider=auto 但未提供平台凭证，将静默降级为 mock",
+                "补齐 KQUERY_DASHSCOPE_API_KEY，或显式设置 model_provider=mock 以承认测试环境")
         if self.vector_store not in {"milvus", "faiss"}:
             add("vector_store", f"非法取值 {self.vector_store}", "只能取 milvus | faiss")
+        if self.auth_enabled and not self.auth_jwt_enabled and not self.auth_tokens_json.strip():
+            add("auth_tokens_json", "auth_enabled=true 但无静态凭证表，认证将无人可通过",
+                "提供 KQUERY_AUTH_TOKENS_JSON（静态凭证表），或启用 auth_jwt_enabled 走标准令牌，"
+                "或显式设置 auth_enabled=false 承认开发/测试模式")
         if self.auth_jwt_enabled and len(self.auth_jwt_secret) < 16:
             add("auth_jwt_secret", "JWT 密钥过短（<16 字符）", "使用至少 32 字节随机串")
         if self.top_k <= 0:

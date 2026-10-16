@@ -14,15 +14,14 @@ import logging
 import queue
 import threading
 from typing import Callable
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 
+from app.core.tracing import spawn_thread
 from app.core.envelope import ApiError, ErrCode
 from app.services.agent.tools import TOOL_TIMEOUT_S, ToolRegistry
 from app.services.multiagent.blackboard import Blackboard, Critique
 from app.services.multiagent.roles import (
-    LLMCritic,
     LLMWriter,
     Planner,
     Validator,
@@ -48,36 +47,77 @@ class Orchestrator:
         pass_score: float = 8.0,
         max_rounds: int = MAX_CRITIC_ROUNDS,
         adopt_threshold: float = 0.14,
+        background=None,  # BackgroundQueue（TASK-181）：None 时惰性建一个
     ):
         self._planner = planner
         self._validator = validator
         self._writer = writer
         self._critic = critic
         self._registry = registry
+        # TASK-181：有界后台队列（None 时惰性创建，保持既有构造调用兼容）
+        self._background = background
         self._reports = reports
         self._pass_score = pass_score
         self._max_rounds = max_rounds
         self._adopt_threshold = adopt_threshold
         # 进度事件回调：(事件名, 载荷) -> None。默认 None（同步跑批不产出事件）。
         # SSE 端点传入自己的推送函数后，8 类事件就实时到前端（stage-8 §4）。
+        # TASK-168：由**单个槽位**改为**按 report_id 路由的注册表**。
+        # 原实现是 `self._on_event = sink`（一个槽），注释也承认"同一编排器实例
+        # 同时只服务一个 SSE 连接"——但编排器是 lifespan 单例，两个用户同时看
+        # 两条报告的 SSE 会互相覆盖 sink：B 连上来之后 A 的事件全推给 B，前端串流。
+        self._sinks: dict[str, Callable[[str, dict], None]] = {}
+        self._sinks_lock = threading.Lock()
+        # 兼容旧接口：未带 report_id 的兜底槽（`set_event_sink` 的调用方）
         self._on_event: Callable[[str, dict], None] | None = None
 
-    def set_event_sink(self, sink: Callable[[str, dict], None] | None) -> None:
-        """注册进度事件回调（同一编排器实例同时只服务一个 SSE 连接）。"""
-        self._on_event = sink
+    def set_event_sink(
+        self,
+        sink: Callable[[str, dict], None] | None,
+        report_id: str = "",
+    ) -> None:
+        """注册进度事件回调。
+
+        传 `report_id` 时按报告路由（**推荐**，多连接互不干扰）；
+        不传时退化为全局兜底槽（兼容既有调用方与测试）。
+        """
+        if not report_id:
+            self._on_event = sink
+            return
+        with self._sinks_lock:
+            if sink is None:
+                self._sinks.pop(report_id, None)
+            else:
+                self._sinks[report_id] = sink
+
+    def _sink_for(self, report_id: str):
+        if report_id:
+            with self._sinks_lock:
+                sink = self._sinks.get(report_id)
+            if sink is not None:
+                return sink
+        return self._on_event
+
+    @property
+    def _background_queue(self):
+        if self._background is None:
+            from app.core.tasks import BackgroundQueue
+            self._background = BackgroundQueue(name="reports")
+        return self._background
 
     def _emit(self, event: str, payload: dict) -> None:
         """发进度事件。推送失败绝不打断报告生成——事件是增强，不是主流程。"""
-        if self._on_event is None:
+        sink = self._sink_for(str(payload.get("report_id") or ""))
+        if sink is None:
             return
         try:
-            self._on_event(event, payload)
+            sink(event, payload)
         except Exception as exc:  # noqa: BLE001
             logger.debug("报告进度事件推送失败（已忽略）: %s", exc)
 
     # ---- 主流程 ----
 
-    def run(self, report_id: str, tenant_id: str) -> dict:
+    def run(self, report_id: str, tenant_id: str, acl_filter=None) -> dict:
         report = self._reports.get(report_id)
         goal = report["goal"]
         role_calls = {"planner": 0, "researcher": 0, "validator": 0, "writer": 0, "critic": 0}
@@ -107,7 +147,7 @@ class Orchestrator:
             # ---- 2. 检索（同层并行、跨层串行、失败不阻塞）----
             self._reports.update(report_id, status="researching")
             for layer in layers:
-                self._run_layer(bb, layer, tenant_id, bump, report_id)
+                self._run_layer(bb, layer, tenant_id, bump, report_id, acl_filter)
                 self._reports.update(report_id, blackboard=bb.snapshot(), role_calls=role_calls)
                 self._emit("evidence_added", {
                     "report_id": report_id,
@@ -167,7 +207,7 @@ class Orchestrator:
 
     # ---- 分层检索 ----
 
-    def _run_layer(self, bb: Blackboard, layer, tenant_id: str, bump, report_id: str = "") -> None:
+    def _run_layer(self, bb: Blackboard, layer, tenant_id: str, bump, report_id: str = "", acl_filter=None) -> None:
         def work(task) -> None:
             bb.update_task(task.task_id, "running")
             bump("researcher")
@@ -177,7 +217,8 @@ class Orchestrator:
                 "status": "running",
             })
             result, _, actual_tool = self._registry.run_with_timeout(
-                task.tool_name, task.description, tenant_id
+                task.tool_name, task.description, tenant_id, acl_filter=acl_filter,
+                run_id=report_id,  # TASK-126：取消标志按 report_id 归属
             )
             if result.error:
                 bb.update_task(task.task_id, "failed", f"工具异常: {result.error}")
@@ -205,7 +246,10 @@ class Orchestrator:
             })
 
         workers = min(len(layer), LAYER_MAX_WORKERS)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        # 与 agent/tools.py 同一问题（TASK-119）：`with` 退出会 join 全部工作线程，
+        # as_completed 的 timeout 只让迭代器停止，并不会让请求返回。
+        pool = ThreadPoolExecutor(max_workers=workers)
+        try:
             futures = {pool.submit(work, t): t for t in layer}
             for future in as_completed(futures, timeout=TOOL_TIMEOUT_S * len(layer) + 10):
                 task = futures[future]
@@ -217,26 +261,44 @@ class Orchestrator:
                         "report_id": report_id, "task_id": task.task_id,
                         "status": "failed", "hits": 0, "error": f"执行异常: {exc}",
                     })
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     # ---- 校验 ----
 
     def _validate(self, bb: Blackboard, bump, report_id: str = "") -> None:
+        """校验（TASK-175：按 query 分组批量打分）。
+
+        此前是「每条证据一次 rerank 调用」的串行循环。同一个子任务的证据共享
+        同一个 query，天然可以合并成一次批量调用——N 次网络往返压成每 query 一次。
+        """
         task_by_id = {t.task_id: t for t in bb.get_plan()}
-        for record in bb.list_evidence(adopted=None):
-            bump("validator")
+        records = bb.list_evidence(adopted=None)
+        if not records:
+            return
+
+        # 按 query 分组（同子任务的证据共用查询串）
+        groups: dict[str, list] = {}
+        for record in records:
             task = task_by_id.get(record.task_id)
             query = task.description if task else bb.goal
+            groups.setdefault(query, []).append(record)
+
+        for query, items in groups.items():
+            bump("validator")
             try:
-                score = self._validator.score(query, record.content)
+                from app.services.multiagent.roles import score_many
+
+                scores = score_many(self._validator, query, [r.content for r in items])
             except Exception as exc:  # noqa: BLE001
-                logger.warning("校验评分失败 %s: %s", record.evidence_id, exc)
-                bb.update_evidence(record.evidence_id, 0.0, False, f"评分异常: {exc}")
-                continue
-            adopted = score >= self._adopt_threshold
-            bb.update_evidence(
-                record.evidence_id, round(score, 4), adopted,
-                "" if adopted else f"相关分 {score:.3f} 低于阈值 {self._adopt_threshold}",
-            )
+                logger.warning("校验评分失败 query=%s: %s", query[:40], exc)
+                scores = [0.0] * len(items)
+            for record, score in zip(items, scores):
+                adopted = score >= self._adopt_threshold
+                bb.update_evidence(
+                    record.evidence_id, round(score, 4), adopted,
+                    "" if adopted else f"相关分 {score:.3f} 低于阈值 {self._adopt_threshold}",
+                )
 
     # ---- Writer↔Critic 循环 ----
 
@@ -325,21 +387,33 @@ class Orchestrator:
 
     # ---- 异步入口 ----
 
-    def submit(self, goal: str, tenant_id: str, created_by: str) -> dict:
+    def submit(self, goal: str, tenant_id: str, created_by: str, acl_filter=None) -> dict:
+        """提交报告生成任务（TASK-181：走有界后台队列，不再裸起线程）。
+
+        此前每次提交都 `threading.Thread(...).start()`——无上限、无背压、不可观测，
+        且 daemon 线程在进程退出时被掐断（报告写一半留下残文件）。
+        """
         report = self._reports.create(goal, tenant_id, created_by)
-        thread = threading.Thread(
-            target=self.run, args=(report["report_id"], tenant_id), daemon=True
+        rid = report["report_id"]
+        accepted = self._background_queue.submit(
+            f"report:{rid}", lambda: self.run(rid, tenant_id, acl_filter)
         )
-        thread.start()
+        if not accepted:
+            # 背压拒绝：明确告知调用方，而不是让用户以为任务在跑
+            self._reports.update(rid, status="rejected", error="后台任务队列已满，请稍后重试")
+            report["rejected"] = True
+            report["status"] = "rejected"
         return report
 
-    def run_stream(self, report_id: str, tenant_id: str):
+    def run_stream(self, report_id: str, tenant_id: str, acl_filter=None):
         """同步产出 8 类进度事件（生成器），供 SSE 端点逐条转发。
 
         与 `submit`（后台线程）的区别：这里由调用方在自己的线程里消费生成器，
         事件边产生边发，客户端能看到实时进度；`submit` 之后只能轮询。
         """
-        sink = self._on_event
+        # TASK-168：按 report_id 注册 sink（而非占用全局单槽），
+        # 这样两个报告同时流式时各自的事件只进自己的队列。
+        previous = self._sinks.get(report_id)
         # 局部变量不能叫 queue：会遮蔽同名模块，queue.Queue() 直接抛
         # UnboundLocalError（import 了却用不了，最难查的一类错）
         events: queue.Queue = queue.Queue()
@@ -348,7 +422,7 @@ class Orchestrator:
         def push(event: str, payload: dict) -> None:
             events.put((event, payload))
 
-        self._on_event = push
+        self.set_event_sink(push, report_id)
 
         def work() -> None:
             """跑报告并保证一定会往队列里放终止标记。
@@ -360,7 +434,7 @@ class Orchestrator:
             """
             error: str | None = None
             try:
-                self.run(report_id, tenant_id)
+                self.run(report_id, tenant_id, acl_filter)
             except Exception as exc:  # noqa: BLE001
                 error = f"{type(exc).__name__}: {exc}"
                 logger.exception("报告流式生成失败 report_id=%s", report_id)
@@ -373,7 +447,7 @@ class Orchestrator:
                     }))
                 events.put(done)
 
-        worker = threading.Thread(target=work, daemon=True)
+        worker = spawn_thread(work, name="agent-resume")
         worker.start()
         try:
             while True:
@@ -382,6 +456,8 @@ class Orchestrator:
                     return
                 yield item
         finally:
-            # 无论消费方是否断开，都要摘掉 sink，否则下一次 run 会往死信队列推
-            self._on_event = sink
+            # 无论消费方是否断开，都要摘掉自己的 sink，否则下一次 run 会往死信队列推。
+            # 恢复为**本次进入前的那个**（而非无脑置 None）：若同一 report 有重叠消费，
+            # 清掉别人的 sink 会让对方静默丢事件。
+            self.set_event_sink(previous, report_id)
             worker.join(timeout=0.1)

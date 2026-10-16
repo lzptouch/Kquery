@@ -65,6 +65,9 @@ class ACLService:
         # doc_id → {allow, deny, is_public, updated_at, updated_by}
         self._acl: dict[str, dict] = {}
         self._directory = users if hasattr(users, "all") else _StaticDirectory(users or [])
+        # ACL 全局版本（DEF-R-1）：任何 ACL 写操作递增，供缓存键携带——
+        # 否则权限被撤销后旧缓存仍命中（缓存命中路径跳过检索与 ACL 过滤）
+        self._version = 0
         if acl_path.exists():
             try:
                 self._acl = json.loads(acl_path.read_text(encoding="utf-8"))
@@ -101,10 +104,29 @@ class ACLService:
         visible = [d for d in docs if self.check(principal, d)]
         return visible, len(docs) - len(visible)
 
+    def visible_doc_ids(self, principal: Principal, docs: list[DocumentRecord]) -> set[str] | None:
+        """当前主体在给定文档集内的可见文档 ID 集合（TASK-142 ACL 下推的输入）。
+
+        用于把 ACL 下推到向量库/关键词检索，让不可见文档**不参与 top-k 竞争**
+        （此前是后过滤，不可见文档会占满名额，DEF-R-6）。
+
+        **代价说明**：这是 O(文档数) 的枚举，因此调用方应对大库保持克制——
+        返回 None 表示"不建议下推"（此时退回 tenant 粗过滤 + 应用层后过滤）。
+        阈值取 5000：再大时 Milvus 表达式也会因超长而降级，枚举本身也变贵。
+        """
+        if len(docs) > 5000:
+            return None
+        return {d.doc_id for d in docs if self.check(principal, d)}
+
     # ---- 管理 ----
 
     def get_acl(self, doc_id: str) -> dict:
         return self._acl.get(doc_id, {"allow": [], "deny": [], "is_public": None})
+
+    @property
+    def version(self) -> int:
+        """ACL 全局版本（缓存键维度之一）。"""
+        return self._version
 
     def set_acl(
         self, doc_id: str, allow: list[str], deny: list[str], is_public: bool, updated_by: str
@@ -117,6 +139,7 @@ class ACLService:
                 "updated_at": time.time(), "updated_by": updated_by,
             }
             self._acl[doc_id] = new
+            self._version += 1
             self._save()
         return {
             "before": old,
@@ -139,9 +162,10 @@ class ACLService:
     def _impact(self, old: dict, new: dict) -> dict:
         old_users = self._identities_to_users(old.get("allow", []))
         new_users = self._identities_to_users(new.get("allow", []))
-        if old.get("is_public", True):
+        # 未设 is_public 时与判定树保持同方向（默认拒绝）：不并入全量 enabled 用户
+        if old.get("is_public", False):
             old_users |= self._enabled_user_ids()
-        if new.get("is_public", True):
+        if new.get("is_public", False):
             new_users |= self._enabled_user_ids()
         denied_users = self._identities_to_users(new.get("deny", []))
         new_users -= denied_users

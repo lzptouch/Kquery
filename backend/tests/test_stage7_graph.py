@@ -4,15 +4,13 @@
 图存储 BFS（方向/深度/强度剪枝/按块删除）/ 社区编号稳定性 / 图检索种子策略 /
 图像索引（去重/检索/元数据）/ API 契约。
 """
-import json
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from app.domain.schemas import Chunk, EntityNode, RelationEdge
 from app.services.graph.community import ConnectedComponentsDetector, build_communities
-from app.services.graph.extractor import ScriptedExtractor, parse_extraction
+from app.services.graph.extractor import parse_extraction
 from app.services.graph.images import ImageIndex, MockCaptioner, _parse_caption
 from app.services.graph.query import GraphQueryService
 from app.services.graph.resolver import EntityResolver, normalize_name

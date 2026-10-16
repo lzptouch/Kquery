@@ -14,9 +14,7 @@ import uuid
 from datetime import datetime, timezone
 
 from app.services.query.decomposer import Decomposer, SourceRouter, mark_inactive_sources_skipped
-from app.services.query.expanders import FusionExpander, HydeExpander, StepBackExpander
 from app.services.query.intent import IntentClassifier
-from app.services.query.jsonutil import JsonParseError
 from app.services.query.schemas import (
     DECOMPOSE_INTENTS,
     ESTIMATED_TOKENS_PER_CALL,

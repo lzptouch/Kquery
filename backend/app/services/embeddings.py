@@ -8,7 +8,6 @@
 """
 import hashlib
 import logging
-import math
 import time
 from typing import Protocol
 

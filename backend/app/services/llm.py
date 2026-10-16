@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass
 from typing import Iterator, Protocol
 
 from app.core.envelope import ErrCode
@@ -26,10 +27,40 @@ class LLMError(Exception):
         self.message = message
 
 
+@dataclass
+class TokenUsage:
+    """单次调用的 token 用量（TASK-120）。
+
+    `estimated=True` 表示供应商未返回 usage、按字符数估算——**必须显式标注**，
+    否则成本看板会把估算值当真值做归集与告警。
+    """
+    input_tokens: int = 0
+    output_tokens: int = 0
+    estimated: bool = True
+
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    @classmethod
+    def estimate(cls, prompt: str, text: str = "") -> "TokenUsage":
+        """字符数粗估：中英混排按 ~2 字符/token 折中，宁可高估也不低估成本。"""
+        return cls(
+            input_tokens=max(1, len(prompt) // 2),
+            output_tokens=max(0, len(text) // 2),
+            estimated=True,
+        )
+
+
 class LLM(Protocol):
     def generate(self, prompt: str) -> str: ...
 
     def stream(self, prompt: str) -> Iterator[str]: ...
+
+    # 最近一次调用的 token 用量（TASK-120）。刻意**不改 generate/stream 签名**：
+    # 那是 6 处调用方的公共契约，改返回值会让所有适配器一起返工；改为在实例上
+    # 暴露只读属性，调用方用 getattr(llm, "last_usage", None) 兜底即可。
+    last_usage: TokenUsage
 
 
 class QwenLLM:
@@ -48,14 +79,38 @@ class QwenLLM:
         self.temperature = temperature
         self._max_retries = max_retries
         self._timeout_s = timeout_s
+        # 最近一次调用的 token 用量（TASK-120），由 _call_stream 在流结束时刷新
+        self._last_usage = TokenUsage()
+
+    @property
+    def last_usage(self) -> TokenUsage:
+        return self._last_usage
+
+    @staticmethod
+    def _extract_usage(resp, prompt: str, produced: str) -> TokenUsage:
+        """从供应商响应读 usage；流式响应只在**末块**携带，读不到则按字符估算。"""
+        raw = getattr(resp, "usage", None)
+        if raw:
+            data = raw if isinstance(raw, dict) else {
+                k: getattr(raw, k, None) for k in ("prompt_tokens", "completion_tokens")
+            }
+            try:
+                inp = int(data.get("prompt_tokens") or 0)
+                out = int(data.get("completion_tokens") or 0)
+            except (TypeError, ValueError):
+                inp = out = 0
+            if inp or out:
+                return TokenUsage(input_tokens=inp, output_tokens=out, estimated=False)
+        return TokenUsage.estimate(prompt, produced)
 
     def _call_stream(self, prompt: str) -> Iterator[str]:
-        import dashscope
         from dashscope import Generation
 
         from app.services.security.platform_quota import get_monitor
 
         last_error: Exception | None = None
+        produced: list[str] = []
+        self._last_usage = TokenUsage.estimate(prompt)
         for attempt in range(self._max_retries):
             try:
                 get_monitor().record_call(self.model)
@@ -74,7 +129,20 @@ class QwenLLM:
                         self._raise_for(resp.status_code, resp.message)
                     chunk = resp.output.choices[0].message.content
                     if chunk:
+                        produced.append(chunk)
                         yield chunk
+                # TASK-120：流式末块才带 usage；读不到则用累计文本估算
+                self._last_usage = self._extract_usage(resp, prompt, "".join(produced))
+                # 平台配额此前只记调用次数（record_call 的 tokens 形参从未被使用），
+                # 现在把真实 token 补记上去，成本才能按模型归集。
+                try:
+                    get_monitor().record_call(
+                        self.model,
+                        tokens=self._last_usage.total,
+                        estimated=self._last_usage.estimated,
+                    )
+                except TypeError:
+                    pass  # 兼容未升级的 monitor 签名
                 return
             except LLMError:
                 raise
@@ -115,6 +183,10 @@ class MockLLM:
     """确定性假模型：从 prompt 中解析证据编号，生成带引用的可预期答案。"""
 
     _NO_INFO = "知识库无相关内容"
+
+    def __init__(self):
+        # Mock 模式也要有 usage，否则配额结算路径在测试里走不通（TASK-120）
+        self._last_usage = TokenUsage()
 
     @staticmethod
     def _parse(prompt: str) -> tuple[str, list[tuple[str, str]]]:
@@ -257,14 +329,21 @@ class MockLLM:
         return "\n".join(answer_lines)
 
     def generate(self, prompt: str) -> str:
-        return self._answer(prompt)
+        text = self._answer(prompt)
+        self._last_usage = TokenUsage.estimate(prompt, text)
+        return text
 
     def stream(self, prompt: str) -> Iterator[str]:
         text = self._answer(prompt)
+        self._last_usage = TokenUsage.estimate(prompt, text)
         # 按小片段吐出，模拟流式
         step = 12
         for i in range(0, len(text), step):
             yield text[i : i + step]
+
+    @property
+    def last_usage(self) -> TokenUsage:
+        return self._last_usage
 
 
 def build_llm(provider: str, api_key: str, model: str, temperature: float, max_retries: int, timeout_s: float) -> LLM:

@@ -13,11 +13,13 @@ from pydantic import BaseModel
 
 from app.core.envelope import Envelope, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
+from app.dependencies import require_role
 from app.domain.schemas import RetrievalConfig
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+# 管理面端点：整 router 挂 admin 门禁（认证 + 角色校验，缺一不可）
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(require_role("admin"))])
 
 
 @router.get("/metrics/summary", response_model=Envelope)

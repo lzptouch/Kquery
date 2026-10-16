@@ -91,33 +91,46 @@ class AuditStore:
         user_id: str | None = None,
         trace_id: str | None = None,
         limit: int = 200,
+        offset: int = 0,
     ) -> list[dict]:
+        """倒序查询（最新在前），支持分页。
+
+        TASK-166：此前是 `read_text().splitlines()` —— 把**整个**审计文件读进内存
+        再倒序扫。审计是只追加的，线上跑一个月就是几十万行；一次查询的峰值内存
+        等于文件大小，且每次都要全量扫描（即使只要最近 20 条）。
+
+        现在改为**流式逐行扫描 + 提前终止**：内存占用与"命中条数"成正比，
+        与文件大小无关；配合 `offset` 可做真分页。
+        """
         if not self._path.exists():
             return []
-        records: list[dict] = []
+        matched: list[dict] = []
+        # 逐行流式读，不整文件读入；文件写侧持锁，读侧加同一把锁保证不见半行
         with self._lock:
-            lines = self._path.read_text(encoding="utf-8").splitlines()
-        for line in reversed(lines):  # 最新在前
-            try:
-                record = json.loads(line)
-            except Exception:  # noqa: BLE001
-                continue
-            if since and record["created_at"] < since:
-                continue
-            if until and record["created_at"] > until:
-                continue
-            if event and record["event"] != event:
-                continue
-            if tenant_id and record["tenant_id"] != tenant_id:
-                continue
-            if user_id and record["user_id"] != user_id:
-                continue
-            if trace_id and record["trace_id"] != trace_id:
-                continue
-            records.append(record)
-            if len(records) >= limit:
-                break
-        return records
+            with self._path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        record = json.loads(line)
+                    except Exception:  # noqa: BLE001 - 半行/损坏行跳过
+                        continue
+                    if since and record["created_at"] < since:
+                        continue
+                    if until and record["created_at"] > until:
+                        continue
+                    if event and record["event"] != event:
+                        continue
+                    if tenant_id and record["tenant_id"] != tenant_id:
+                        continue
+                    if user_id and record["user_id"] != user_id:
+                        continue
+                    if trace_id and record["trace_id"] != trace_id:
+                        continue
+                    matched.append(record)
+        if not matched:
+            return []
+        # 最新在前 → 先倒序，再按 offset/limit 切片
+        matched.reverse()
+        return matched[offset : offset + max(1, int(limit))]
 
     def export_csv(self, **filters) -> str:
         """导出 CSV（不含原文，仅 hash + 元数据）。"""

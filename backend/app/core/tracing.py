@@ -12,6 +12,10 @@ trace_id"，漏一处就断链，而漏掉的地方在代码里完全看不出�
 import contextvars
 import time
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # 仅类型检查期需要，避免为注解引入运行时依赖
+    from threading import Thread
 
 _current_trace_id: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="")
 
@@ -43,6 +47,33 @@ def get_trace_id() -> str:
 
 # 语义化别名：强调"读当前请求的追踪号"而不是"造一个新的"
 current_trace_id = get_trace_id
+
+
+def spawn_thread(target, *, name: str, daemon: bool = True, args: tuple = (), kwargs: dict | None = None) -> "Thread":
+    """创建线程并**继承当前上下文**（TASK-132：修 trace 断链）。
+
+    `contextvars` 不随 `threading.Thread` 传播——这是 Python 的既定行为，不是 bug。
+    后果是：图内所有日志的 trace_id 为空（`get_trace_id()` 会**新生成**一个），
+    于是"一次请求的日志"在日志平台上被切成两段互不相关的记录，排障时根本串不起来。
+
+    DEF-A-7 记录了这个缺陷。这里用 `contextvars.copy_context().run(...)` 把当前
+    上下文快照带进新线程——注意必须 `copy_context()`（快照）而不是共享同一 context
+    对象，否则两个线程会互相覆盖 trace_id。
+
+    **所有后台线程都应通过本函数创建**，直接 `threading.Thread(...).start()`
+    会让 trace 链再次断裂。
+    """
+    import contextvars as _cv
+    import threading
+
+    ctx = _cv.copy_context()
+    call_kwargs = dict(kwargs or {})
+
+    def _runner() -> None:
+        # 在新线程里以主线程的上下文快照为起点执行
+        ctx.run(target, *args, **call_kwargs)
+
+    return threading.Thread(target=_runner, name=name, daemon=daemon)
 
 
 def now_ms() -> float:

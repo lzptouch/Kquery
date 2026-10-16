@@ -5,16 +5,17 @@
 """
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
+from app.dependencies import get_principal
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.services.validation.feedback import FEEDBACK_TYPES
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/feedback", tags=["feedback"])
+router = APIRouter(prefix="/feedback", tags=["feedback"], dependencies=[Depends(get_principal)])
 
 
 class RefusalFeedbackRequest(BaseModel):

@@ -20,6 +20,16 @@ ACTION_MASK = "mask"
 ACTION_REFUSE = "refuse"
 ACTION_TAG = "tag"
 
+# PII 正则（TASK-169）：此前只有词表匹配，无租户配词时身份证/手机/邮箱/卡号
+# 完全不检测——而 PII 泄露与"是否配置了敏感词"无关，必须内置兜底。
+# 顺序有意义：身份证优先，避免被后面的银行卡规则重复/误判。
+PII_PATTERNS: dict[str, re.Pattern] = {
+    "pii_id_card": re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)"),
+    "pii_phone": re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"),
+    "pii_email": re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"),
+    "pii_bank_card": re.compile(r"(?<!\d)\d{16,19}(?!\d)"),
+}
+
 
 class SensitiveScanner:
     def __init__(self, words_path: Path):
@@ -58,12 +68,24 @@ class SensitiveScanner:
         text = unicodedata.normalize("NFKC", text)
         return re.sub(r"[\s\-_\.]+", "", text).lower()
 
+    @staticmethod
+    def _scan_pii(text: str) -> list[tuple[str, re.Pattern]]:
+        """内置 PII 命中检测（与词表无关）。"""
+        if not text:
+            return []
+        return [(cat, pat) for cat, pat in PII_PATTERNS.items() if pat.search(text)]
+
     def scan(self, text: str, tenant_id: str = "default") -> dict:
-        """扫描输出文本。返回 {safe, categories, action, masked_text}。"""
+        """扫描输出文本。返回 {safe, categories, action, masked_text}。
+
+        PII 与词表是**两条独立的检测线**：即使租户未配置任何敏感词，
+        PII 仍然会被掩码（否则「没配词表 = PII 全放行」是个致命缺口）。
+        """
         self._reload()  # 热更新
         with self._lock:
             words = list(self._words.get(tenant_id, []))
-        if not words or not text:
+
+        if not text:
             return {"safe": True, "categories": [], "action": "none", "masked_text": text}
 
         normalized = self._normalize(text)
@@ -73,10 +95,11 @@ class SensitiveScanner:
             if pattern and pattern in normalized:
                 hits.append(w)
 
-        if not hits:
+        pii_hits = self._scan_pii(text)
+        categories = sorted({w["category"] for w in hits} | {cat for cat, _ in pii_hits})
+        if not categories:
             return {"safe": True, "categories": [], "action": "none", "masked_text": text}
 
-        categories = sorted({w["category"] for w in hits})
         # 动作取最高强度：refuse > mask > tag
         actions = {w.get("action", ACTION_MASK) for w in hits}
         if ACTION_REFUSE in actions:
@@ -84,11 +107,14 @@ class SensitiveScanner:
                 "safe": False, "categories": categories, "action": ACTION_REFUSE,
                 "masked_text": "该回答涉及受限内容，无法展示",
             }
-        if ACTION_TAG in actions and ACTION_MASK not in actions:
+        # PII 恒掩码（不因词表是 tag 而放行）
+        if ACTION_TAG in actions and ACTION_MASK not in actions and not pii_hits:
             return {"safe": True, "categories": categories, "action": ACTION_TAG, "masked_text": text}
 
-        # 掩码：在原文上按词逐个替换（大小写/分隔符容忍用正则）
+        # 掩码：先 PII（按声明顺序，身份证先于银行卡）再词表
         masked = text
+        for _, pattern in pii_hits:
+            masked = pattern.sub(lambda m: "*" * len(m.group()), masked)
         for w in hits:
             if w.get("action", ACTION_MASK) == ACTION_MASK:
                 pattern = self._flexible_regex(w["word"])

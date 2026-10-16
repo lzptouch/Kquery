@@ -10,12 +10,16 @@ import ast
 import json
 import logging
 import operator
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from pydantic import BaseModel, Field
+
 from app.domain.schemas import RetrievalConfig
+from app.services.agent.tool_spec import spec_of, validate_arguments
 from app.services.retrieval.hybrid import HybridRetriever
 
 logger = logging.getLogger(__name__)
@@ -30,6 +34,7 @@ class ToolResult:
     elapsed_ms: int = 0
     error: str = ""  # 异常摘要，成功为空
     truncated_from: int = 0  # 截断前条数
+    acl_filtered: int = 0  # 被 ACL 过滤掉的条数（DEF-A-3：仅 ToolResult 显式携带，不泄漏被过滤文档元信息）
 
 
 class Tool(Protocol):
@@ -44,14 +49,25 @@ class VectorSearchTool:
 
     name = "vector_search"
     description = "在文档知识库中检索与 query 相关的文本片段（适用：产品/政策/教材等已入库文档的事实型问题）"
+    returns = "相关文本片段（含来源文档与页码）"
+
+    # TASK-104：结构化入参——模型可以显式表达"要几条""限定哪篇文档"，
+    # 而不是把这些意图塞进 query 句子里靠下游猜
+    class arguments_model(BaseModel):
+        query: str = Field(description="检索用的查询语句，应是对目标信息的自然语言描述")
+        doc_id: str | None = Field(default=None, description="限定在某一篇文档内检索（可选）")
+        top_k: int | None = Field(default=None, ge=1, le=50, description="返回条数上限（可选，默认 4）")
 
     def __init__(self, hybrid: HybridRetriever, config: RetrievalConfig):
         self._hybrid = hybrid
         self._config = config
 
-    def run(self, query: str, tenant_id: str) -> ToolResult:
+    def run(self, query: str, tenant_id: str, **kwargs) -> ToolResult:
         started = time.monotonic()
-        result = self._hybrid.search(query, tenant_id, self._config)
+        # TASK-104：结构化入参优先（doc_id 限定文档、top_k 覆盖默认条数）
+        result = self._hybrid.search(
+            query, tenant_id, self._config, doc_id=kwargs.get("doc_id")
+        )
         elapsed = int((time.monotonic() - started) * 1000)
         total = len(result.candidates)
         items = [
@@ -81,6 +97,7 @@ class CalculatorTool:
     """数学表达式求值（AST 白名单解析，拒绝任意代码执行）。"""
 
     name = "calculator"
+    returns = "数值结果"
     description = "数学表达式求值（适用：四则运算、百分比、汇率换算等确定性计算）"
 
     def run(self, query: str, tenant_id: str) -> ToolResult:
@@ -195,10 +212,14 @@ class SqlSearchTool:
 
     _ALLOWED_HEADS = {"select", "with"}
 
-    def __init__(self, dsn: str, readonly: bool = True, max_rows: int = 50):
+    def __init__(self, dsn: str, readonly: bool = True, max_rows: int = 50,
+                 tenant_column: str | None = None):
         self._dsn = dsn
         self._readonly = readonly
         self._max_rows = max(1, max_rows)
+        # 租户隔离列（TASK-143）：配置后强制「单表查询 + 表白名单 + 谓词包装」。
+        # 不设则保持兼容（但生产启用 sql_search 应配置，否则跨租户越权）。
+        self._tenant_column = tenant_column or None
 
     @classmethod
     def _validate(cls, sql: str) -> str:
@@ -218,20 +239,74 @@ class SqlSearchTool:
             raise ValueError("不允许多语句执行")
         if parsed[0].get_type() != "SELECT":
             raise ValueError("只允许 SELECT / WITH 语句")
-        # 强制行数上限：把调用方写的 LIMIT 去掉后统一追加
         stripped = str(parsed[0]).strip().rstrip(";")
         return stripped
+
+    def _force_limit(self, sql: str) -> str:
+        """强制行数上限（兑现 _validate 注释承诺）：剥掉调用方写的 LIMIT，统一追加。
+
+        此前 _validate 只 rstrip(";") 而未真正追加 LIMIT，调用方写 LIMIT 100000 即可绕过——
+        唯一防线是 fetchmany 在 Python 侧截断，全表仍会被扫描读出。
+        """
+        import re as _re
+        stripped = _re.sub(r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*;?\s*$", "", sql, flags=_re.IGNORECASE)
+        return f"{stripped} LIMIT {self._max_rows}"
+
+    @staticmethod
+    def _single_table_name(sql: str) -> str | None:
+        """租户模式专用：仅当是单表 SELECT 时返回表名，否则 None。
+
+        拒绝 JOIN / UNION / 子查询 / 集合运算——子查询包装对它们存在绕过（JOIN 的
+        租户列歧义会把外层过滤引到错误的表上），因此租户隔离只允许单表查询。
+        """
+        import re as _re
+        upper = f" {sql.upper()} "
+        for kw in (" JOIN ", " UNION ", "(SELECT", " INTERSECT ", " EXCEPT "):
+            if kw in upper:
+                return None
+        m = _re.search(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_.`]*)", sql, _re.IGNORECASE)
+        if not m:
+            return None
+        return m.group(1).strip("`").split(".")[-1]
+
+    def _tenant_scoped_tables(self, conn) -> set[str]:
+        """探测业务库中含租户隔离列的表（白名单）。"""
+        scoped: set[str] = set()
+        for (tname,) in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')"):
+            try:
+                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tname})")}
+            except Exception:  # noqa: BLE001
+                continue
+            if self._tenant_column in cols:
+                scoped.add(tname)
+        return scoped
 
     def run(self, query: str, tenant_id: str) -> ToolResult:
         started = time.monotonic()
         import sqlite3
 
         try:
-            sql = self._validate(query)
+            sql = self._force_limit(self._validate(query))
             conn = sqlite3.connect(f"file:{self._dsn}?mode=ro", uri=True)
             try:
                 conn.row_factory = sqlite3.Row
-                rows = conn.execute(sql).fetchmany(self._max_rows + 1)
+                params: tuple = ()
+                if self._tenant_column:
+                    table = self._single_table_name(sql)
+                    if table is None:
+                        return ToolResult(
+                            elapsed_ms=int((time.monotonic() - started) * 1000),
+                            error="租户隔离模式仅支持单表查询（不允许 JOIN / 子查询 / 集合运算）",
+                        )
+                    if table not in self._tenant_scoped_tables(conn):
+                        return ToolResult(
+                            elapsed_ms=int((time.monotonic() - started) * 1000),
+                            error=f"表 '{table}' 不含租户隔离列 '{self._tenant_column}'，对 Agent 不可见",
+                        )
+                    # 外层包装强制过滤：无论内层 WHERE 怎么写，只放行 tenant_id = 当前租户的行
+                    sql = f"SELECT * FROM ({sql}) AS _kquery_tenant_scope WHERE {self._tenant_column} = ?"
+                    params = (tenant_id,)
+                rows = conn.execute(sql, params).fetchmany(self._max_rows + 1)
             finally:
                 conn.close()
             total = len(rows)
@@ -328,6 +403,34 @@ class WebSearchTool:
             )
 
 
+# TASK-125：工具危险级。`write` 级工具在执行前必须经人工审批——
+# 只读工具出错最多是答错，写工具出错会改到外部系统（发请求、写文件、改库）。
+DANGER_SAFE = "safe"
+DANGER_READ_ONLY = "read_only"
+DANGER_WRITE = "write"
+
+_DANGER_BY_NAME: dict[str, str] = {
+    "calculator": DANGER_SAFE,
+    "datetime_calc": DANGER_SAFE,
+    "vector_search": DANGER_READ_ONLY,
+    "graph_search": DANGER_READ_ONLY,
+    "image_search": DANGER_READ_ONLY,
+    "sql_search": DANGER_READ_ONLY,
+    "sql_schema": DANGER_READ_ONLY,
+    "list_documents": DANGER_READ_ONLY,
+    "web_search": DANGER_READ_ONLY,  # 只读检索（非 GET 类外部写操作见 http_request）
+    "http_request": DANGER_WRITE,
+    "python_sandbox": DANGER_WRITE,
+    # MCP 外部工具一律按 write 处理：来源不可控，不能默认可信（TASK-127）
+    "mcp": DANGER_WRITE,
+}
+
+# TASK-109：工具健康熔断参数
+HEALTH_WINDOW = 50            # 滑动窗口大小
+HEALTH_FAIL_THRESHOLD = 5     # 连续失败摘除阈值
+HEALTH_RECOVER_SUCCESS = 3    # 恢复窗口内成功次数阈值（半开恢复）
+
+
 class ToolRegistry:
     """工具目录：Planner 的工具清单来源，执行期的分发入口。"""
 
@@ -335,44 +438,269 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         # 第三层熔断阈值必须来自配置：写死 30s 意味着改了配置也不生效
         self._timeout_s = max(1, int(timeout_s or TOOL_TIMEOUT_S))
+        # TASK-109：每工具健康度（滑动窗口成败 + 连续失败数 + 摘除状态）
+        self._health: dict[str, dict] = {}
+        self._health_lock = threading.Lock()
+        # TASK-126：取消标志。run/ref 层在每轮工具调用前检查——
+        # 取消是"不再产生新的模型/工具调用"，而不是"立刻掐断正在跑的那一个"
+        # （后者需要子进程才能做到，见 TASK-119 的技术边界）。
+        self._cancel_flags: set[str] = set()
+        self._cancel_lock = threading.Lock()
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+        with self._health_lock:
+            self._health.setdefault(
+                tool.name,
+                {"ok": 0, "fail": 0, "consecutive_fail": 0, "tripped": False,
+                 "recent": [], "recover_ok": 0},
+            )
 
     def names(self) -> list[str]:
         return list(self._tools)
 
+    # ---- TASK-126：取消 ----
+
+    def cancel(self, run_id: str) -> None:
+        """置取消标志（`/ask/runs/{id}/cancel` 调用）。"""
+        with self._cancel_lock:
+            self._cancel_flags.add(run_id)
+
+    def is_cancelled(self, run_id: str) -> bool:
+        if not run_id:
+            return False
+        with self._cancel_lock:
+            return run_id in self._cancel_flags
+
+    def clear_cancel(self, run_id: str) -> None:
+        """清掉取消标志（run 结束后调用，避免标志集合无界增长）。"""
+        with self._cancel_lock:
+            self._cancel_flags.discard(run_id)
+
+    # ---- TASK-125：危险级 ----
+
+    @staticmethod
+    def danger_of(tool) -> str:
+        """工具危险级：工具自带 `danger` 属性优先，否则按名字查表，未知按 write 保守处理。"""
+        declared = getattr(tool, "danger", "")
+        if declared in (DANGER_SAFE, DANGER_READ_ONLY, DANGER_WRITE):
+            return declared
+        name = getattr(tool, "name", "") or ""
+        if name in _DANGER_BY_NAME:
+            return _DANGER_BY_NAME[name]
+        if name.startswith("mcp__") or name.startswith("mcp_"):
+            return DANGER_WRITE
+        # 未知工具按最危险处理：默认放行未知来源工具是权限事故的常见成因
+        return DANGER_WRITE
+
+    # ---- TASK-109：健康熔断 ----
+
+    def _record_health(self, name: str, ok: bool) -> None:
+        with self._health_lock:
+            h = self._health.setdefault(
+                name,
+                {"ok": 0, "fail": 0, "consecutive_fail": 0, "tripped": False,
+                 "recent": [], "recover_ok": 0},
+            )
+            h["recent"].append(1 if ok else 0)
+            del h["recent"][: max(0, len(h["recent"]) - HEALTH_WINDOW)]
+            if ok:
+                h["ok"] += 1
+                h["consecutive_fail"] = 0
+                if h["tripped"]:
+                    # 半开恢复：连续成功若干次才重新挂载，避免抖动工具反复上下线
+                    h["recover_ok"] += 1
+                    if h["recover_ok"] >= HEALTH_RECOVER_SUCCESS:
+                        h["tripped"] = False
+                        h["recover_ok"] = 0
+                        logger.info("工具 %s 健康度恢复，重新挂载", name)
+            else:
+                h["fail"] += 1
+                h["consecutive_fail"] += 1
+                h["recover_ok"] = 0
+                if h["consecutive_fail"] >= HEALTH_FAIL_THRESHOLD and not h["tripped"]:
+                    h["tripped"] = True
+                    logger.warning(
+                        "工具 %s 连续失败 %d 次，已摘除", name, h["consecutive_fail"]
+                    )
+
+    def health(self, name: str) -> dict:
+        with self._health_lock:
+            h = self._health.get(name) or {}
+            recent = list(h.get("recent") or [])
+            total = len(recent)
+            return {
+                "tripped": bool(h.get("tripped")),
+                "consecutive_fail": int(h.get("consecutive_fail", 0)),
+                "ok": int(h.get("ok", 0)),
+                "fail": int(h.get("fail", 0)),
+                "success_rate": round(sum(recent) / total, 4) if total else None,
+            }
+
+    def health_report(self) -> list[dict]:
+        return [
+            {"name": n, **self.health(n), "danger": self.danger_of(t)}
+            for n, t in self._tools.items()
+        ]
+
     def catalog(self, skip_retrieval: bool = False) -> list[dict]:
-        """目录随场景变化：闲聊场景不暴露检索工具。"""
+        """目录随场景变化：闲聊场景不暴露检索工具。
+
+        已熔断的工具**不出现**在目录里，并在描述中告知模型"该工具当前不可用"——
+        让它换工具，而不是反复调用一个已知坏掉的东西（TASK-109）。
+
+        TASK-104：加入 `parameters`（JSON Schema）——模型据此知道工具能接受哪些
+        参数（top_k / doc_id 等），而不是把参数写进 query 句子里靠下游猜。
+        """
         tools = list(self._tools.values())
         if skip_retrieval:
             tools = [t for t in tools if t.name == "calculator"]
-        return [{"name": t.name, "description": t.description} for t in tools]
+        out = []
+        for t in tools:
+            spec = spec_of(t, danger_resolver=self.danger_of)
+            out.append({
+                "name": t.name,
+                "description": t.description,
+                "parameters": spec.parameters,
+                "returns": spec.returns,
+                "danger": spec.danger,
+                "available": not self.health(t.name)["tripped"],
+            })
+        return out
+
+    def specs(self) -> list[dict]:
+        """完整工具规格（管理端点 / 排障用，含全部元信息）。"""
+        return [
+            spec_of(t, danger_resolver=self.danger_of).model_dump()
+            for t in self._tools.values()
+        ]
 
     def resolve(self, name: str) -> tuple[Tool, bool]:
         """按名取工具；幻觉工具名兜底到注册表第一个工具 + 告警（降级不崩溃）。
 
         返回 (tool, hallucinated)。
+
+        DEF-A-17：空注册表时原实现 `next(iter(...))` 会抛 StopIteration（裸的，
+        连异常类型都不说明问题）。改为明确的运行时错误——注册表为空是装配错误，
+        应当立刻暴露而不是伪装成随机崩溃。
         """
         tool = self._tools.get(name)
         if tool is not None:
             return tool, False
+        if not self._tools:
+            raise RuntimeError("工具注册表为空：没有任何工具可兜底（装配错误）")
         fallback = next(iter(self._tools.values()))
         logger.warning("工具名幻觉兜底: %r 未注册，降级到 %r", name, fallback.name)
         return fallback, True
 
-    def run_with_timeout(self, name: str, query: str, tenant_id: str) -> tuple[ToolResult, bool, str]:
-        """带第三层熔断（单步超时）的工具执行。返回 (result, hallucinated, actual_tool_name)。"""
+    @staticmethod
+    def _apply_acl(items: list[dict], acl_filter) -> tuple[list[dict], int]:
+        """按 ACL 过滤工具结果（DEF-A-3：此前仅 vector_search 走 ACL，图/图像证据不过滤）。
+
+        只有**来自受管控知识库文档**的证据受 ACL 约束：
+        - 带 doc_id 且非 ``__`` 前缀 → 交 acl_filter 判定（deny 优先在 acl.check 内）
+        - ``__`` 前缀（社区摘要 / 图像索引 / 计算器等系统块）→ 放行
+        - 无 doc_id（calculator / sql_search / web_search 等非知识库来源）→ 放行，
+          它们本就不来自任何受管控文档
+        """
+        visible: list[dict] = []
+        removed = 0
+        for it in items:
+            doc_id = it.get("doc_id") or ""
+            if not doc_id or doc_id.startswith("__") or acl_filter(doc_id):
+                visible.append(it)
+            else:
+                removed += 1
+        return visible, removed
+
+    def run_with_timeout(
+        self,
+        name: str,
+        query: str,
+        tenant_id: str,
+        acl_filter=None,
+        run_id: str = "",
+        approved: dict | None = None,
+        arguments: dict | None = None,
+    ) -> tuple[ToolResult, bool, str]:
+        """带第三层熔断（单步超时）的工具执行。返回 (result, hallucinated, actual_tool_name)。
+
+        传入 acl_filter 时，**所有工具**的证据都在返回前统一过 ACL（原先只在
+        graph.py 对 vector_search 做，图/图像/SQL 结果可绕过）。
+
+        - `run_id`：用于检查取消标志（TASK-126）与危险工具审批（TASK-125）
+        - `approved`：已批准的 `{工具名: True}` 集合；`write` 级工具未批准时**不执行**
+        """
         tool, hallucinated = self.resolve(name)
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(tool.run, query, tenant_id)
+
+        # TASK-126：取消标志。已取消则不再产生新的工具调用（额度/外部副作用）。
+        if run_id and self.is_cancelled(run_id):
+            return (
+                ToolResult(error="运行已被取消", acl_filtered=0),
+                hallucinated,
+                tool.name,
+            )
+
+        # TASK-125：写类工具必须先审批。返回结构化错误而不是抛异常——
+        # Agent 要读到"需要审批"这个事实并继续用别的工具，而不是整条链断掉。
+        danger = self.danger_of(tool)
+        if danger == DANGER_WRITE and not (approved or {}).get(tool.name):
+            return (
+                ToolResult(
+                    error=(
+                        f"工具 {tool.name} 属于写操作，需人工审批后执行"
+                        f"（danger={danger}）"
+                    )
+                ),
+                hallucinated,
+                tool.name,
+            )
+
+        def _finish(result: ToolResult) -> ToolResult:
+            if acl_filter is None or not result.items:
+                return result
+            result.items, removed = self._apply_acl(result.items, acl_filter)
+            if removed:
+                result.acl_filtered = removed
+                logger.info("ACL 过滤工具结果 %s：%d 条不可见", tool.name, removed)
+                if not result.items and not result.error:
+                    result.error = f"工具 {tool.name} 的结果均无访问权限"
+            return result
+
+        # 显式建池 + finally 里 shutdown(wait=False)：此前用 `with` 会�� __exit__ 调
+        # shutdown(wait=True) 阻塞等待工作线程结束，导致「超时」并不中断请求，只是把
+        # 等待挪到超时之后——熔断形同虚设（TASK-119）。
+        # 技术边界：cancel_futures 只能取消尚未开始的任务，已在运行的工具线程仍会跑完
+        # （Python 线程无强制中断能力）；真正强制中断留给 python_sandbox 的子进程实现。
+        # TASK-104：入参校验。失败返回**错误文案**（回传给 LLM 自我修正），
+        # 而不是抛异常让整步直接失败——"参数写错"是模型最能自愈的一类错误。
+        call_kwargs: dict = {}
+        if arguments is not None:
+            cleaned, err = validate_arguments(tool, arguments)
+            if err:
+                logger.info("工具 %s 入参校验失败: %s", tool.name, err)
+                return ToolResult(error=err), hallucinated, tool.name
+            call_kwargs = {k: v for k, v in cleaned.items() if k != "query"}
+
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            future = pool.submit(tool.run, query, tenant_id, **call_kwargs)
             try:
-                return future.result(timeout=self._timeout_s), hallucinated, tool.name
+                result = _finish(future.result(timeout=self._timeout_s))
+                # TASK-109：健康度按"是否产出了可用结果"判定。工具返回 error 也算失败——
+                # 它没给出信息，重规划时不该再指望它。
+                self._record_health(tool.name, ok=not result.error)
+                return result, hallucinated, tool.name
             except FutureTimeout:
+                logger.warning("工具 %s 超时 %ss（线程仍可能在后台跑完）", tool.name, self._timeout_s)
+                self._record_health(tool.name, ok=False)
                 return (
                     ToolResult(error=f"工具调用超过 {self._timeout_s}s 超时"),
                     hallucinated,
                     tool.name,
                 )
             except Exception as exc:  # noqa: BLE001
+                self._record_health(tool.name, ok=False)
                 return ToolResult(error=f"工具异常: {exc}"), hallucinated, tool.name
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)

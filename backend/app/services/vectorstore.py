@@ -15,6 +15,7 @@ import faiss
 import numpy as np
 
 from app.domain.schemas import Chunk
+from app.services.retrieval.filters import MAX_OVERFETCH_FACTOR, OverfetchState
 
 logger = logging.getLogger(__name__)
 
@@ -107,26 +108,56 @@ class VectorStore:
         top_k: int,
         tenant_id: str,
         doc_id: str | None = None,
+        filters=None,
     ) -> list[tuple[Chunk, float]]:
-        """余弦相似度检索（向量已归一化）。租户过滤在块上冗余字段内一次完成。"""
+        """余弦相似度检索（向量已归一化）。
+
+        TASK-142：FAISS 不支持表达式过滤，因此靠**迭代扩取**兜住后过滤的名额损耗
+        （固定 4 倍在"可见文档排名靠后"时会取不满，见 filters.py 的说明）。
+        """
         if self._index.ntotal == 0:
             return []
         query = np.array([query_vector], dtype=np.float32)
-        # 多取一些用于租户/文档过滤后兜底
-        k = min(max(top_k * 4, top_k), self._index.ntotal)
-        scores, indices = self._index.search(query, k)
-        results: list[tuple[Chunk, float]] = []
-        for score, row in zip(scores[0], indices[0]):
-            if row < 0:
-                continue
-            chunk = self._chunks.get(self._order[row])
-            if chunk is None or chunk.tenant_id != tenant_id:
-                continue
-            if doc_id is not None and chunk.doc_id != doc_id:
-                continue
-            results.append((chunk, float(score)))
-            if len(results) >= top_k:
+        total = self._index.ntotal
+        state = OverfetchState()
+        collected: dict[str, tuple[Chunk, float]] = {}
+
+        while True:
+            k = min(top_k * state.factor, total)
+            state.fetched = k
+            state.history.append(k)
+            scores, indices = self._index.search(query, k)
+            collected.clear()
+            for score, row in zip(scores[0], indices[0]):
+                if row < 0:
+                    continue
+                chunk = self._chunks.get(self._order[row])
+                if chunk is None or chunk.tenant_id != tenant_id:
+                    continue
+                if doc_id is not None and chunk.doc_id != doc_id:
+                    continue
+                if filters is not None and not filters.allows(chunk.doc_id, chunk.tenant_id):
+                    continue
+                collected[chunk.chunk_id] = (chunk, float(score))
+                if len(collected) >= top_k:
+                    break
+            if len(collected) >= top_k or k >= total:
                 break
+            # 取不满且还有候选 → 扩大候选池重取。
+            # 注意必须在这里翻倍 factor：不推进的话 `can_continue` 永远为真 → 死循环。
+            if state.factor >= MAX_OVERFETCH_FACTOR:
+                logger.warning(
+                    "FAISS 检索扩取达上限（factor=%d，可见 %d/%d），可能因过滤导致召回不足",
+                    state.factor, len(collected), top_k,
+                )
+                break
+            if not state.can_continue(top_k, len(collected), total):
+                break
+            state.next_limit(top_k)
+
+        if state.rounds:
+            logger.debug("FAISS 迭代扩取 %d 轮，候选池 %s，命中 %d", state.rounds, state.history, len(collected))
+        results = sorted(collected.values(), key=lambda x: x[1], reverse=True)[:top_k]
         return results
 
     def delete_doc(self, doc_id: str) -> int:

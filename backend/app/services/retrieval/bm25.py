@@ -6,11 +6,11 @@
 - 索引与向量库同步增删，启动时从向量库元数据重建。
 """
 import math
-import threading
 from collections import Counter
 
 import jieba
 
+from app.core.rwlock import ReadWriteLock
 from app.domain.schemas import Chunk
 from app.services.retrieval.base import RetrievalCandidate
 
@@ -66,7 +66,8 @@ class BM25Retriever:
     def __init__(self, k1: float = 1.5, b: float = 0.75):
         self._k1 = k1
         self._b = b
-        self._lock = threading.Lock()
+        # TASK-178：读共享 / 写独占（此前是普通 Lock，导致所有关键词检索串行）
+        self._lock = ReadWriteLock()
         self._chunks: dict[str, Chunk] = {}
         self._order: list[str] = []
         self._bm25: _BM25Scorer | None = None
@@ -81,21 +82,26 @@ class BM25Retriever:
         self._bm25 = _BM25Scorer(corpus, k1=self._k1, b=self._b)
 
     def rebuild(self, chunks: list[Chunk]) -> None:
-        with self._lock:
+        with self._lock.write():
             self._chunks = {c.chunk_id: c for c in chunks}
             self._order = [c.chunk_id for c in chunks]
             self._rebuild_model()
 
     def add(self, chunks: list[Chunk]) -> None:
-        with self._lock:
+        with self._lock.write():
+            # 先拷贝再重绑：`self._order.append()` 会**原地修改**列表，
+            # 而并发读者可能正持有该列表的引用（读锁只保证"不被写者打断"，
+            # 不保证"看到一致的列表长度"）。重绑让读者要么看到旧列表、要么看到新列表。
+            order = list(self._order)
             for c in chunks:
                 if c.chunk_id not in self._chunks:
-                    self._order.append(c.chunk_id)
+                    order.append(c.chunk_id)
                 self._chunks[c.chunk_id] = c
+            self._order = order
             self._rebuild_model()
 
     def delete_doc(self, doc_id: str) -> None:
-        with self._lock:
+        with self._lock.write():
             keep = [cid for cid in self._order if self._chunks[cid].doc_id != doc_id]
             for cid in set(self._order) - set(keep):
                 self._chunks.pop(cid, None)
@@ -105,24 +111,40 @@ class BM25Retriever:
     # ---- 检索 ----
 
     def search(
-        self, query: str, top_n: int, tenant_id: str, doc_id: str | None = None
+        self, query: str, top_n: int, tenant_id: str, doc_id: str | None = None,
+        filters=None,
     ) -> list[RetrievalCandidate]:
-        with self._lock:
+        """关键词检索。
+
+        TASK-142：**先过滤再排序**（此前是"全量排序 → 逐个跳过不合格"，等价于让
+        不合格文档参与排序并占位）。语义上两者结果相同，但显式过滤把 ACL 判定
+        收敛到一处，也让"可见集合"成为排序输入而非事后剔除。
+        """
+        with self._lock.read():
             if self._bm25 is None or not self._order:
                 return []
             scores = self._bm25.get_scores(tokenize(query))
+
+            def _visible(cid: str) -> bool:
+                chunk = self._chunks[cid]
+                if chunk.tenant_id != tenant_id:
+                    return False
+                if doc_id is not None and chunk.doc_id != doc_id:
+                    return False
+                if filters is not None and not filters.allows(chunk.doc_id, chunk.tenant_id):
+                    return False
+                return True
+
             ranked = sorted(
-                zip(self._order, scores), key=lambda x: x[1], reverse=True
+                ((cid, score) for cid, score in zip(self._order, scores) if _visible(cid)),
+                key=lambda x: x[1],
+                reverse=True,
             )
             results: list[RetrievalCandidate] = []
             for cid, score in ranked:
                 if score <= 0:  # 零分文档过滤：不进入 RRF 排名
                     break
                 chunk = self._chunks[cid]
-                if chunk.tenant_id != tenant_id:
-                    continue
-                if doc_id is not None and chunk.doc_id != doc_id:
-                    continue
                 results.append(RetrievalCandidate(chunk=chunk, score=float(score)))
                 if len(results) >= top_n:
                     break

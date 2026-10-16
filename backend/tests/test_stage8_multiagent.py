@@ -6,7 +6,6 @@
 """
 import time
 
-import pytest
 
 from app.core.envelope import ErrCode
 from app.services.agent.tools import CalculatorTool, ToolRegistry
@@ -222,10 +221,17 @@ class TestReportApi:
 
     def test_multiagent_metrics_separate_counts(self, client):
         """统计红线：评审失败（unreviewed）与未通过（capped）分开计数。"""
+        store = client.app.state.report_store
+        # 造三种终态，验证它们被分开计数而非混为一谈
+        for status in ("accepted", "capped", "unreviewed"):
+            r = store.create(f"goal-{status}", "default", "admin")
+            store.update(r["report_id"], status=status, accepted=(status == "accepted"))
         resp = client.get("/admin/metrics/multiagent")
         assert resp.status_code == 200
-        data = resp.json()["data"]
-        assert "by_status" in data and "critic_first_pass_rate" in data
+        by_status = resp.json()["data"]["by_status"]
+        assert by_status.get("accepted", 0) >= 1, "accepted 应单独计数"
+        assert by_status.get("capped", 0) >= 1, "capped（改满仍不过）应单独计数"
+        assert by_status.get("unreviewed", 0) >= 1, "unreviewed（评审异常）应单独计数"
 
     def test_report_not_found(self, client):
         assert client.get("/reports/not-exist").json()["error"]["code"] == 8004

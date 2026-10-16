@@ -9,11 +9,11 @@
 """
 import json
 import logging
+import os
 import secrets
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 from app.services.agent.state import sanitize_snapshot
 
@@ -47,6 +47,26 @@ class SessionStore:
         safe = session_id.replace(":", "_")
         return self._dir / f"{safe}.json"
 
+    @staticmethod
+    def _atomic_write(path: Path, content: str) -> None:
+        """原子写：先写临时文件再 os.replace（TASK-118）。
+
+        此前直接 write_text 覆盖，多 worker / 并发下会产生半截 JSON，
+        而 get() 读到半截即抛 JSONDecodeError → 整个会话 500 且无法自愈。
+        os.replace 在同一文件系统上是原子操作，读者要么看到旧内容要么看到新内容。
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(content, encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
     def _check_owner(self, session_id: str, tenant_id: str, user_id: str) -> None:
         if not session_id.startswith(f"{tenant_id}:{user_id}:"):
             from app.core.envelope import ApiError, ErrCode
@@ -69,7 +89,7 @@ class SessionStore:
             "updated_at": now,
             "expires_at": now + self._ttl,
         }
-        self._path(session_id).write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
+        self._atomic_write(self._path(session_id), json.dumps(session, ensure_ascii=False))
         return session
 
     def get(self, session_id: str, tenant_id: str, user_id: str) -> dict:
@@ -78,7 +98,18 @@ class SessionStore:
         if not path.exists():
             from app.core.envelope import ApiError, ErrCode
             raise ApiError(ErrCode.SESSION_NOT_FOUND, "会话不存在或已过期", http_status=404)
-        session = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            session = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            # TASK-118：损坏的会话文件此前直接抛 JSONDecodeError → 500。
+            # 数据已不可用，按"不存在"处理并隔离坏文件，比整站 500 更合理。
+            logger.error("会话文件损坏，已隔离: %s (%s)", path, exc)
+            try:
+                path.replace(path.with_suffix(f".corrupt-{int(time.time())}.json"))
+            except OSError:
+                path.unlink(missing_ok=True)
+            from app.core.envelope import ApiError, ErrCode
+            raise ApiError(ErrCode.SESSION_NOT_FOUND, "会话数据已损坏，请开启新对话", http_status=404)
         if session.get("expires_at", 0) < time.time():
             path.unlink(missing_ok=True)
             from app.core.envelope import ApiError, ErrCode
@@ -111,7 +142,7 @@ class SessionStore:
             session = self.get(session_id, tenant_id, user_id)
             session["title"] = title.strip()[:50]
             session["updated_at"] = time.time()
-            self._path(session_id).write_text(json.dumps(session, ensure_ascii=False), encoding="utf-8")
+            self._atomic_write(self._path(session_id), json.dumps(session, ensure_ascii=False))
             return session
 
     def delete(self, session_id: str, tenant_id: str, user_id: str) -> None:
@@ -161,6 +192,7 @@ class SessionStore:
             # 首问生成会话标题
             if session.get("title") == "新对话" and question:
                 session["title"] = question[:24]
-            self._path(session_id).write_text(
-                json.dumps(session, ensure_ascii=False, default=str), encoding="utf-8"
+            self._atomic_write(
+                self._path(session_id),
+                json.dumps(session, ensure_ascii=False, default=str),
             )

@@ -41,9 +41,10 @@ REFLECT_PROMPT = """你是证据审查员。评估当前累计证据是否足够
 {{"score": 0.0, "next_action": "continue", "reason": "..."}}
 """
 
-# 检索信号兜底：语料标定中 top_score ≥ 0.2 即为相关证据（见 config CRAG 标定口径）
+# 检索相关度参考线：语料标定中 top_score ≥ 0.2 即为相关证据（见 config CRAG 标定口径）。
+# 仅作为**参考信息**呈现给模型，不再用于抬升分数——TASK-110 修复前它会把任何弱证据
+# 强行抬到 0.65（> ANSWER_THRESHOLD），使 replan 分支在生产中永不执行。
 RETRIEVAL_FLOOR_SCORE = 0.2
-RETRIEVAL_FLOOR_LIFT = 0.65
 
 
 class Reflector(Protocol):
@@ -91,11 +92,14 @@ class LLMReflector:
                 "next_action": "answer" if evidence else "replan",
                 "reason": "反思服务异常，按证据有无兜底",
             }
-        # 检索信号兜底：语料层面已判定相关（top ≥ 0.2）而 LLM 过苛给低分时，
-        # 抬升到作答线，避免"反复重规划直到熔断"的保守循环（§5.2：熔断应是例外不是常态）
+        # TASK-110：此处原本有「检索信号兜底」把 top_score≥0.2 的判定**强制抬到 0.65**
+        # （> ANSWER_THRESHOLD=0.6）。由于 graph.py 随后还有对称纠正（高分+有证据 →
+        # 一律改 answer），结果是：只要检索到任意一条相关度 ≥0.2 的证据，replan 分支
+        # 在生产中**永不执行**，熔断率指标恒为 0，问题被彻底掩盖。
+        # 改为：top_score 只作为**下限保护**——LLM 判定 answer 但给分低于阈值时不强行
+        # 改判（交由 graph 的低分纠正处理）；真正的"证据够却想空转"仍由 graph 兜底。
         if verdict["score"] < ANSWER_THRESHOLD and top_score >= RETRIEVAL_FLOOR_SCORE:
-            verdict["reason"] += "（检索信号兜底：重排高分证据存在，抬升至作答线）"
-            verdict["score"] = RETRIEVAL_FLOOR_LIFT
+            verdict["reason"] += f"（检索相关度 top={top_score:.2f} 作为参考；分数仍以 LLM 判定为准）"
         return verdict
 
 

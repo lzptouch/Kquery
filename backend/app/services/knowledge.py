@@ -90,6 +90,15 @@ class KnowledgeService:
     def data_version(self) -> int:
         return self._data_version
 
+    def version_of(self, doc_id: str) -> int:
+        """文档的当前索引版本号（召回侧版本过滤的依据，DEF-R-2 / P0-7）。
+
+        与 chunks_of 的预览过滤同源：reparse 后旧块改名 @v{旧} 保留供溯源，
+        召回时只应返回版本号 == 当前版本的块。未收录的文档按 1 处理。
+        """
+        record = self._docs.get(doc_id)
+        return record.version if record else 1
+
     # ---- 元数据持久化 ----
 
     def _load_metadata(self) -> None:
@@ -284,7 +293,6 @@ class KnowledgeService:
 
         未先调 `apply_chunking` 时本方法内部自行切块（保持既有调用方兼容）。
         """
-        settings = self._settings
         chunks = getattr(record, "_pending_chunks", None)
         parents = getattr(record, "_pending_parents", None)
         chunker_name = getattr(record, "_pending_chunker", "recursive")

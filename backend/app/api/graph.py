@@ -12,21 +12,27 @@
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
+from app.dependencies import get_principal
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["graph"])
+router = APIRouter(tags=["graph"], dependencies=[Depends(get_principal)])
 SUBGRAPH_MAX_EDGES = 100  # 子图截断上限（超出必须提示）
 
 
 def _graph_store(request: Request):
     return request.app.state.graph_store
+
+
+def _tenant(request: Request) -> str:
+    """当前租户（图谱数据按租户分区，TASK-142 / P0-4：不得跨租户可见）。"""
+    return request.state.principal.tenant_id
 
 
 @router.get("/graph/entities", response_model=Envelope)
@@ -41,7 +47,7 @@ def list_entities(
     store = _graph_store(request)
     allowed = {t.strip() for t in types.split(",") if t.strip()}
     entities = []
-    for e in store.all_entities():
+    for e in store.all_entities(_tenant(request)):
         if allowed and e.type not in allowed:
             continue
         if q and q.lower() not in e.name.lower() and not any(q.lower() in a.lower() for a in e.aliases):
@@ -61,13 +67,13 @@ def entity_detail(name: str, request: Request) -> Envelope:
     store = _graph_store(request)
     # 别名归一查找
     canonical = request.app.state.entity_resolver.lookup(name) or name
-    entity = store.get_entity(canonical)
+    entity = store.get_entity(canonical, _tenant(request))
     if entity is None:
         raise ApiError(ErrCode.ENTITY_NOT_FOUND, f"实体未在图谱中: {name}", http_status=404)
     community = next(
-        (c for c in store.communities() if c.community_id == entity.community_id), None
+        (c for c in store.communities(_tenant(request)) if c.community_id == entity.community_id), None
     )
-    neighbors = store.neighbors(entity.name, depth=1)
+    neighbors = store.neighbors(entity.name, depth=1, tenant_id=_tenant(request))
     in_edges = [
         {"from": p["from"], "relation": p["relation"], "description": p["description"]}
         for p in neighbors if p["direction"] == "backward"
@@ -105,13 +111,13 @@ def subgraph(
     truncated = False
 
     def add_entity(name: str) -> None:
-        e = store.get_entity(name)
+        e = store.get_entity(name, _tenant(request))
         if e and name not in nodes:
             nodes[name] = {"id": name, "type": e.type, "degree": e.degree}
 
     if seed:
         canonical = request.app.state.entity_resolver.lookup(seed) or seed
-        for item in store.neighbors(canonical, depth=depth):
+        for item in store.neighbors(canonical, depth=depth, tenant_id=_tenant(request)):
             if len(links) >= SUBGRAPH_MAX_EDGES:
                 truncated = True
                 break
@@ -124,9 +130,9 @@ def subgraph(
             })
     else:
         # 默认视图：高连接度核心实体的一度邻居
-        core = store.all_entities()[:10]
+        core = store.all_entities(_tenant(request))[:10]
         for entity in core:
-            for item in store.neighbors(entity.name, depth=1):
+            for item in store.neighbors(entity.name, depth=1, tenant_id=_tenant(request)):
                 if len(links) >= SUBGRAPH_MAX_EDGES:
                     truncated = True
                     break
@@ -157,7 +163,7 @@ def list_communities(request: Request) -> Envelope:
             "summary": c.summary, "members": c.members[:10],
             "generated_at": c.generated_at, "model_version": c.model_version,
         }
-        for c in store.communities()
+        for c in store.communities(_tenant(request))
     ], trace_id, elapsed_ms_since(started))
 
 
@@ -191,7 +197,7 @@ def graph_stats(request: Request) -> Envelope:
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    stats = _graph_store(request).stats()
+    stats = _graph_store(request).stats(_tenant(request))
     stats["images"] = request.app.state.image_index.stats()["images"]
     stats["caption_model"] = request.app.state.image_index.stats()["model_version"]
     return ok_envelope(stats, trace_id, elapsed_ms_since(started))
@@ -208,7 +214,7 @@ def search_media(req: MediaSearchRequest, request: Request) -> Envelope:
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    tenant = request.headers.get("X-Tenant-Id", "default")
+    tenant = request.state.principal.tenant_id
     items = request.app.state.image_index.search(req.query, req.top_k, tenant)
     return ok_envelope({"items": items, "total": len(items)}, trace_id, elapsed_ms_since(started))
 

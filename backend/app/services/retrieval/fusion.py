@@ -10,7 +10,7 @@ score(d) = Σ weight_i / (k + rank_i + 1)，rank 从 0 开始，k=60 为论文�
 - 两路都排第 1 → 2 × 0.0164 ≈ 0.0328，必须大于单路第 1；
 - 两路同时靠前（第3+第1）胜过单路极靠前（第1+第3 颠倒亦然成立靠两边之和）。
 """
-from app.services.retrieval.base import FusedCandidate, RetrievalCandidate
+from app.services.retrieval.base import FusedCandidate
 
 
 def rrf_fuse(

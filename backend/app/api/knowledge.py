@@ -13,13 +13,13 @@ from pydantic import BaseModel, Field
 from app.core.envelope import Envelope, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.core.envelope import ApiError, ErrCode
-from app.dependencies import get_knowledge_service
+from app.dependencies import get_knowledge_service, get_principal
 from app.domain.schemas import DOC_STATUS_INDEXED
 from app.services.knowledge import KnowledgeService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/knowledge", tags=["knowledge"])
+router = APIRouter(prefix="/knowledge", tags=["knowledge"], dependencies=[Depends(get_principal)])
 
 
 def _file_view(record) -> dict:

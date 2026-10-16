@@ -9,6 +9,7 @@
  * 阶段 2 增量：retrieval_stats 事件（分阶段耗时）；
  * HTTP 429 时解析 Retry-After 并透传给界面（倒计时 + 自动重试）。
  */
+import { authErrorMessage, isAuthFailure, withAuth } from "./auth";
 import type {
   AgentPlanStep,
   Evidence,
@@ -91,7 +92,9 @@ export async function askStream(
   try {
     resp = await fetch("/ask/stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // TASK-160 前端配套：SSE 走 fetch（非 EventSource），因此可以带身份头。
+      // 若当初用 EventSource 就无法设置请求头，鉴权改造会在这里卡住。
+      headers: withAuth({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         question,
         ...(options.sessionId ? { session_id: options.sessionId } : {}),
@@ -116,6 +119,11 @@ export async function askStream(
         /* 忽略非 JSON 响应体 */
       }
       handlers.onError({ code: 6101, message, retry_after: retryAfter });
+      return;
+    }
+    // 鉴权失败必须与"服务挂了"区分：前者改身份即可，后者要等运维
+    if (isAuthFailure(resp.status)) {
+      handlers.onError({ code: resp.status, message: authErrorMessage(resp.status) });
       return;
     }
     handlers.onError({ code: 5001, message: "服务暂时不可用，请稍后再试" });

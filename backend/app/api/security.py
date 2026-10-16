@@ -13,22 +13,25 @@
 """
 import logging
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
+from app.dependencies import require_role
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["security"])
+# 本文件全部为 /admin/* 管理端点：整 router 挂 admin 门禁
+router = APIRouter(tags=["security"], dependencies=[Depends(require_role("admin"))])
 
 
 def _audit_admin(request: Request, trace_id: str, action: str, detail: dict) -> None:
+    # 审计身份以认证主体为准：认证开启后请求头仍可伪造，principal 才可作审计依据
+    principal = request.state.principal
     request.app.state.audit_store.log_admin(
-        trace_id, request.headers.get("X-Tenant-Id", "default"),
-        request.headers.get("X-User-Id", "anon"), action, detail,
+        trace_id, principal.tenant_id, principal.user_id, action, detail,
     )
 
 
@@ -105,7 +108,7 @@ def set_acl(doc_id: str, req: SetAclRequest, request: Request) -> Envelope:
     acl = request.app.state.acl_service
     result = acl.set_acl(
         doc_id, req.allow, req.deny, req.is_public,
-        updated_by=request.headers.get("X-User-Id", "anon"),
+        updated_by=request.state.principal.user_id,
     )
     _audit_admin(request, trace_id, "acl.set", {
         "doc_id": doc_id, "risk": result["risk"],
@@ -352,24 +355,49 @@ def get_run(run_id: str, request: Request) -> Envelope:
     return ok_envelope(run, trace_id, elapsed_ms_since(started))
 
 
+@router.get("/admin/tools", response_model=Envelope, dependencies=[Depends(require_role("admin"))])
+def list_tools(request: Request) -> Envelope:
+    """工具目录与健康状态（TASK-109）。
+
+    没有这个端点时，"某个工具挂了导致大量报告证据不足"只能靠翻日志发现。
+    前端「工具」面板据此显示每个工具的可用性徽标。
+    """
+    trace_id = new_trace_id()
+    set_trace_id(trace_id)
+    started = now_ms()
+    registry = request.app.state.tool_registry
+    rows = registry.health_report()
+    return ok_envelope(
+        {
+            "tools": rows,
+            "total": len(rows),
+            "tripped": [r["name"] for r in rows if r["tripped"]],
+        },
+        trace_id, elapsed_ms_since(started),
+    )
+
+
 # ---------- 权限矩阵 ----------
 
-# 能力清单：enforced 说明这一列到底由谁把守。
+# 能力清单：enforced 说明这一列到底由谁把守，`by` 给出**把守它的端点**。
 #   backend  = 后端端点/护栏真正强制；
-#   acl      = 由文档 ACL 身份表达式（role:/group:/user:）决定；
-#   declared = 管理台声明的约定，当前后端未做角色门禁，接上门禁后才是 backend。
-# 如实标注而不是一律写成"已强制"：运维看到 declared 才会知道哪些是纸面权限。
+#   acl      = 由文档 ACL 身份表达式（role:/group:/user:）决定。
+# TASK-164：原先 6 项标 `declared`（"管理台声明的约定，后端未做门禁"）。
+# 那时是事实——`/admin/*` 端点完全没有角色校验。TASK-160 给全部 28 个
+# `/admin/*` 端点挂上 `require_role("admin")` 之后，这 6 项**已经是真的**，
+# 继续标 declared 反而低估了实际防护等级。这里改为 backend 并注明把守端点，
+# 让运维能顺着 `by` 去核对，而不是只能相信这个字符串。
 CAPABILITIES: list[dict] = [
-    {"key": "ask", "label": "提问", "enforced": "backend"},
-    {"key": "view_own_data", "label": "看自己数据", "enforced": "backend"},
-    {"key": "view_all_tenant_data", "label": "看全员数据", "enforced": "acl"},
-    {"key": "ingest_document", "label": "文档入库", "enforced": "backend"},
-    {"key": "manage_acl", "label": "文档 ACL 管理", "enforced": "declared"},
-    {"key": "manage_users", "label": "用户管理", "enforced": "declared"},
-    {"key": "manage_quota", "label": "配额管理", "enforced": "declared"},
-    {"key": "view_audit", "label": "审计查询", "enforced": "declared"},
-    {"key": "manage_sensitive", "label": "敏感词管理", "enforced": "declared"},
-    {"key": "run_eval", "label": "评测运行", "enforced": "declared"},
+    {"key": "ask", "label": "提问", "enforced": "backend", "by": "/ask"},
+    {"key": "view_own_data", "label": "看自己数据", "enforced": "backend", "by": "Principal 租户/用户过滤"},
+    {"key": "view_all_tenant_data", "label": "看全员数据", "enforced": "acl", "by": "文档 ACL 身份表达式"},
+    {"key": "ingest_document", "label": "文档入库", "enforced": "backend", "by": "/knowledge/ingest"},
+    {"key": "manage_acl", "label": "文档 ACL 管理", "enforced": "backend", "by": "/admin/documents/{doc_id}/acl"},
+    {"key": "manage_users", "label": "用户管理", "enforced": "backend", "by": "/admin/users"},
+    {"key": "manage_quota", "label": "配额管理", "enforced": "backend", "by": "/admin/quota"},
+    {"key": "view_audit", "label": "审计查询", "enforced": "backend", "by": "/admin/audit"},
+    {"key": "manage_sensitive", "label": "敏感词管理", "enforced": "backend", "by": "/admin/sensitive"},
+    {"key": "run_eval", "label": "评测运行", "enforced": "backend", "by": "/admin/eval"},
 ]
 _ALL_CAPABILITIES = tuple(c["key"] for c in CAPABILITIES)
 _ASK_CAPABILITIES = ("ask", "view_own_data")

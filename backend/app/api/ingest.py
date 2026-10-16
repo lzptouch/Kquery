@@ -8,20 +8,27 @@
 import json
 import logging
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
+from app.dependencies import get_principal
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.services.chunkers.factory import validate_chunk_policy
 from app.services.parsers.router import SUPPORTED_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/knowledge", tags=["ingest"])
+router = APIRouter(prefix="/knowledge", tags=["ingest"], dependencies=[Depends(get_principal)])
 
 MAX_BATCH_FILES = 20
+
+# PII 硬拦截只作用于能直接解码的纯文本（TASK-169）。
+# PDF/DOCX/XLSX 等二进制若在入口扫描，成本高且编码不确定，改由输出侧掩码兜底。
+TEXT_SCANABLE_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml"}
+# 只有 PII 类命中才硬拦；租户自定义敏感词命中走原有策略（不因此拒绝入库）
+_PII_CATEGORIES = {"pii_id_card", "pii_phone", "pii_email", "pii_bank_card"}
 
 
 def _parse_policy_field(raw: str | None, name: str) -> dict:
@@ -57,8 +64,11 @@ async def ingest(request: Request) -> Envelope:
 
     settings = request.app.state.settings
     manager = request.app.state.task_manager
+    scanner = getattr(request.app.state, "sensitive_scanner", None)
+    principal = getattr(request.state, "principal", None)
+    tenant_id = principal.tenant_id if principal else settings.default_tenant_id
 
-    # 上传前校验（兜底，前端已拦截）：扩展名与大小
+    # 上传前校验（兜底，前端已拦截）：扩展名与大小 + PII 硬拦截
     files_meta: list[dict] = []
     contents: list[tuple[str, bytes]] = []
     for upload in uploads:
@@ -69,6 +79,27 @@ async def ingest(request: Request) -> Envelope:
         content = await upload.read()
         if len(content) > settings.max_upload_mb * 1024 * 1024:
             raise ApiError(ErrCode.FILE_TOO_LARGE, f"{filename} 超过 {settings.max_upload_mb}MB 限制")
+        # TASK-169 输入侧硬拦截：PII 不得进入知识库。
+        # 与"提问"不同——提问里的手机号可能是用户自己的查询条件（正当诉求），
+        # 但文档里的身份证/银行卡一旦入库就会被检索引用并进入回答，必须在入口拦住。
+        # 仅扫可解码的纯文本；PDF/DOCX 等二进制交给入库后的输出侧掩码兜底。
+        if scanner and ext in TEXT_SCANABLE_EXTENSIONS:
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+            if text:
+                hit = scanner.scan(text, tenant_id)
+                if not hit["safe"] and set(hit["categories"]) & _PII_CATEGORIES:
+                    logger.warning(
+                        "拒绝入库（含 PII）: %s categories=%s", filename, hit["categories"]
+                    )
+                    raise ApiError(
+                        ErrCode.INVALID_INPUT,
+                        f"{filename} 含个人敏感信息（{', '.join(sorted(set(hit['categories']) & _PII_CATEGORIES))}），"
+                        "请先脱敏后再上传",
+                        http_status=400,
+                    )
         files_meta.append({"filename": filename, "size": len(content)})
         contents.append((filename, content))
 

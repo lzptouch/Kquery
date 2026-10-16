@@ -39,12 +39,25 @@ class CragRound(BaseModel):
 
 
 class CragRouter:
+    """CRAG 三分支路由。
+
+    TASK-155：**阈值必须显式传入**（此前有 `0.7/0.3` 的构造默认值，与
+    `config.crag_correct_th/crag_incorrect_th` 的标定值 `0.14/0.08` 构成
+    两个来源）。这两个默认值在生产里从未生效（`main.py` 总是显式传参），
+    但它们是纯粹的陷阱——任何不传参的构造都会得到与标定口径不一致的阈值，
+    且**不会有任何报错**。宁可构造失败，也不要静默用错阈值。
+    """
+
     def __init__(
         self,
-        correct_th: float = 0.7,
-        incorrect_th: float = 0.3,
+        correct_th: float,
+        incorrect_th: float,
         max_iterations: int = 2,
     ):
+        if correct_th <= incorrect_th:
+            raise ValueError(
+                f"CRAG 阈值必须 correct_th > incorrect_th（得 {correct_th} / {incorrect_th}）"
+            )
         self._correct_th = correct_th
         self._incorrect_th = incorrect_th
         self.max_iterations = max_iterations

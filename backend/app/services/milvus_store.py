@@ -135,10 +135,20 @@ class MilvusVectorStore:
         top_k: int,
         tenant_id: str,
         doc_id: str | None = None,
+        filters=None,
     ) -> list[tuple[Chunk, float]]:
-        expr = f'tenant_id == "{tenant_id}"'
-        if doc_id is not None:
-            expr += f' and doc_id == "{doc_id}"'
+        """向量检索。
+
+        TASK-142：Milvus 支持表达式过滤，因此把 ACL 允许清单**下推到召回阶段**——
+        不可见文档根本不参与 top-k 竞争，从根上消除「后过滤吃掉名额」（DEF-R-6）。
+        清单过大时 `to_milvus_expr` 会自行降级为 tenant 粗过滤（表达式长度上限）。
+        """
+        if filters is not None:
+            expr = filters.to_milvus_expr()
+        else:
+            expr = f'tenant_id == "{tenant_id}"'
+            if doc_id is not None:
+                expr += f' and doc_id == "{doc_id}"'
         results = self._client.search(
             collection_name=self._collection,
             data=[query_vector],
@@ -159,13 +169,36 @@ class MilvusVectorStore:
             )
             return before - self.total
 
+    _QUERY_PAGE_SIZE = 1000  # Milvus 单次 query 硬上限 16384，分页拉取避免静默截断（DEF-R-3）
+
+    def _query_all(self, filter: str, output_fields: list[str]) -> list[dict]:
+        """分页拉取全部匹配行。
+
+        此前 doc_chunk_ids / rename_doc_version / all_chunks 都用 limit=16384 硬编码，
+        超过 16k 块后静默只取前 16k——BM25 重建、版本清理、doc_versions 全部不完整。
+        """
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            page = self._client.query(
+                collection_name=self._collection,
+                filter=filter,
+                output_fields=output_fields,
+                limit=self._QUERY_PAGE_SIZE,
+                offset=offset,
+            )
+            if not page:
+                break
+            rows.extend(page)
+            if len(page) < self._QUERY_PAGE_SIZE:
+                break
+            offset += self._QUERY_PAGE_SIZE
+        if len(rows) > 16384:
+            logger.warning("单次全量拉取超过 16384 行（%d），已分页补齐（历史版本此处会被静默截断）", len(rows))
+        return rows
+
     def doc_chunk_ids(self, doc_id: str) -> list[str]:
-        rows = self._client.query(
-            collection_name=self._collection,
-            filter=f'doc_id == "{doc_id}"',
-            output_fields=["chunk_id"],
-            limit=16384,
-        )
+        rows = self._query_all(f'doc_id == "{doc_id}"', ["chunk_id"])
         return [r["chunk_id"] for r in rows]
 
     def doc_versions(self, doc_id: str) -> list[int]:
@@ -203,12 +236,7 @@ class MilvusVectorStore:
         """
         from app.services.vectorstore import chunk_version, with_version
 
-        rows = self._client.query(
-            collection_name=self._collection,
-            filter=f'doc_id == "{doc_id}"',
-            output_fields=[*_OUTPUT_FIELDS, "vector"],
-            limit=16384,
-        )
+        rows = self._query_all(f'doc_id == "{doc_id}"', [*_OUTPUT_FIELDS, "vector"])
         stale_ids = [r["chunk_id"] for r in rows if chunk_version(r["chunk_id"]) == 0]
         if not stale_ids:
             return []
@@ -236,12 +264,7 @@ class MilvusVectorStore:
         return _row_to_chunk(rows[0]) if rows else None
 
     def all_chunks(self) -> list[Chunk]:
-        rows = self._client.query(
-            collection_name=self._collection,
-            filter='chunk_id != ""',
-            output_fields=_OUTPUT_FIELDS,
-            limit=16384,
-        )
+        rows = self._query_all('chunk_id != ""', _OUTPUT_FIELDS)
         return [_row_to_chunk(r) for r in rows]
 
     def close(self) -> None:

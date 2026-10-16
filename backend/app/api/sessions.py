@@ -7,16 +7,16 @@ from pydantic import BaseModel, Field
 
 from app.core.envelope import Envelope, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
-from app.dependencies import get_session_store
+from app.dependencies import get_principal, get_session_store
 from app.services.agent.sessions import SessionStore
 
-router = APIRouter(prefix="/sessions", tags=["sessions"])
+router = APIRouter(prefix="/sessions", tags=["sessions"], dependencies=[Depends(get_principal)])
 
 
 def _identity(request: Request) -> tuple[str, str]:
-    tenant = request.headers.get("X-Tenant-Id", "default")
-    user = request.headers.get("X-User-Id", "anon")
-    return tenant, user
+    """会话归属以认证主体为准，不可信请求头伪造（开启真实认证后 principal 才可信）。"""
+    principal = request.state.principal
+    return principal.tenant_id, principal.user_id
 
 
 class CreateSessionRequest(BaseModel):

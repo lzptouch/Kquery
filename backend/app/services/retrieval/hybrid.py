@@ -6,33 +6,38 @@ BM25 取前 20 + 向量取前 20 → RRF 融合取前 20 → gte-rerank-v2 精�
 降级语义：重排失败 → 跳过重排使用融合结果，reranked=False 显式标记，
 绝不让重排阻断整次检索。
 """
-import inspect
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from app.domain.schemas import RetrievalConfig, RetrievalStats
 from app.services.retrieval.base import FusedCandidate, Retriever
 from app.services.retrieval.fusion import rrf_fuse
 from app.services.retrieval.rerank import RerankError, Reranker
+from app.services.vectorstore import is_current_version
 
 logger = logging.getLogger(__name__)
 
 
-def _rerank(reranker, query: str, candidates, top_n: int, model: str) -> list[FusedCandidate]:
-    """调用重排器，按签名决定是否传 `model`。
+class RetrievalError(Exception):
+    """检索整体失败（**全部**检索路都挂了才抛）。
 
-    新增热更新参数后若直接硬传 `model=`，所有既有 `Reranker` 实现
-    （含测试替身与第三方实现）都会因签名不匹配而直接崩——把"可选能力"
-    实现成"必选契约"是典型的破坏性变更。这里做签名探测后优雅降级。
+    单路失败在 search_multi 内已降级（record 到 `stats.degraded_routes` 并继续），
+    只有一路都没成功时才是真的失败，由上层 CRAG/拒答逻辑处理（TASK-147）。
     """
-    try:
-        params = inspect.signature(reranker.rerank).parameters
-    except (TypeError, ValueError):  # 内建/C 实现无法探测
-        params = {}
-    if "model" in params or any(p.kind is p.VAR_KEYWORD for p in params.values()):
-        return reranker.rerank(query, candidates, top_n, model=model)
-    return reranker.rerank(query, candidates, top_n)
+
+
+def _rerank(reranker, query: str, candidates, top_n: int, model: str) -> list[FusedCandidate]:
+    """调用重排器。
+
+    TASK-159：删除原先的 `inspect.signature` 签名探测。
+    那种写法把"接口契约"变成了"运行时猜谜"：参数名恰好叫 `model` 就传、
+    否则不传；换实现、加装饰器、用 C 扩展都会让探测结果漂移，且**不会有报错**，
+    只会静默走错分支。`Reranker` 是项目内 Protocol，`model` 已是正式参数
+    （`rerank.py` 的 QwenReranker 与 MockReranker 都实现了它），直接传即可。
+    """
+    return reranker.rerank(query, candidates, top_n, model=model)
 
 
 @dataclass
@@ -53,12 +58,16 @@ class HybridRetriever:
         fused_top_n: int = 20,
         rrf_k: int = 60,
         settings=None,
+        # 索引版本查询（DEF-R-2 / P0-7）：doc_id → 当前版本号。
+        # 召回候选按此过滤历史版本块，否则 reparse 后新旧版本同时被召回污染结果。
+        version_of: Callable[[str], int] | None = None,
     ):
         self._retrievers = retrievers
         self._reranker = reranker
         self._per_route_top_n = per_route_top_n
         self._fused_top_n = fused_top_n
         self._rrf_k = rrf_k
+        self._version_of = version_of
         # 构造参数只是"没有运行时配置时的兜底"；实际生效值以 RetrievalConfig 为准，
         # 这样 /admin/retrieval-config 改 RRF 常数与两级召回数才能真正生效
         self._settings = settings
@@ -76,9 +85,11 @@ class HybridRetriever:
         tenant_id: str,
         config: RetrievalConfig,
         doc_id: str | None = None,
+        filters=None,
     ) -> HybridResult:
         return self.search_multi(
-            [("original", query)], tenant_id, config, rerank_query=query, doc_id=doc_id
+            [("original", query)], tenant_id, config, rerank_query=query,
+            doc_id=doc_id, filters=filters,
         )
 
     def search_multi(
@@ -88,6 +99,7 @@ class HybridRetriever:
         config: RetrievalConfig,
         rerank_query: str,
         doc_id: str | None = None,
+        filters=None,
     ) -> HybridResult:
         """多查询混合检索（阶段 4）：每条查询（原文/改写/子问题）分别双路召回，
         全部路结果进同一 RRF 融合（来源标注随路传递），重排以用户原话为基准。"""
@@ -101,17 +113,55 @@ class HybridRetriever:
             enabled.append(("keyword", "keyword"))
         if config.vector_enabled and "vector" in self._retrievers:
             enabled.append(("vector", "vector"))
+        degraded_routes: list[str] = []
         for kind, text in queries:
             origin = {"kind": kind, "text": text}
             for route_name, prefix in enabled:
                 started = time.perf_counter()
-                candidates = self._retrievers[route_name].search(
-                    text, per_route_top_n, tenant_id, doc_id=doc_id
-                )
+                # TASK-147：**单路失败必须降级而非拖垮整次检索**。
+                # 此前的写法是裸调用：embedding 服务抖一下 → 向量路抛错 →
+                # 整个 search_multi 失败 → BM25 已经拿到的结果一并丢弃。
+                # 这与本项目在 CRAG / 重排 / 幻觉自检上贯彻的降级纪律完全不一致。
+                try:
+                    # TASK-142：把 ACL 允许清单与版本条件一并下推给各后端。
+                    # 后端不支持表达式时（FAISS）由它自己做迭代扩取兜住名额损耗。
+                    candidates = self._retrievers[route_name].search(
+                        text, per_route_top_n, tenant_id, doc_id=doc_id, filters=filters
+                    )
+                except Exception as exc:  # noqa: BLE001 - 任一路失败都不应中断检索
+                    logger.warning("检索路 %s 失败（已降级，本次跳过该路）: %s", route_name, exc)
+                    if route_name not in degraded_routes:
+                        degraded_routes.append(route_name)
+                    continue
                 ms = int((time.perf_counter() - started) * 1000)
                 setattr(stats, f"{prefix}_ms", getattr(stats, f"{prefix}_ms") + ms)
                 setattr(stats, f"{prefix}_candidates", getattr(stats, f"{prefix}_candidates") + len(candidates))
                 route_results.append((f"{route_name}@{kind}", candidates, origin))
+
+        # 全部路都挂掉才算真失败；部分降级要在 stats 里可见（否则"少召回"无从解释）
+        if degraded_routes and not route_results:
+            raise RetrievalError(f"全部检索路失败: {', '.join(degraded_routes)}")
+        if degraded_routes:
+            stats.degraded_routes = degraded_routes
+
+        if not route_results:
+            return HybridResult(candidates=[], stats=stats, reranked=False)
+
+        # ①.5 索引版本过滤（DEF-R-2 / P0-7）：剔除历史版本块，只保留各文档当前版本。
+        # 在融合前统一过滤（而非三个召回后端各自下推），保证 FAISS/Milvus/BM25 行为一致。
+        if self._version_of is not None:
+            route_results = [
+                (
+                    route,
+                    [
+                        c for c in cands
+                        if is_current_version(c.chunk.chunk_id, c.chunk.doc_id, self._version_of(c.chunk.doc_id))
+                    ],
+                    origin,
+                )
+                for route, cands, origin in route_results
+            ]
+            route_results = [r for r in route_results if r[1]]
 
         if not route_results:
             return HybridResult(candidates=[], stats=stats, reranked=False)

@@ -4,7 +4,7 @@
 阶段 9：认证（get_principal）与配额（滑动窗口）在此统一叠加——
 这正是当初"依赖统一出口"设计预留的挂载点。
 """
-from fastapi import Request
+from fastapi import Depends, Request
 
 from app.core.config import Settings
 from app.core.envelope import ApiError, ErrCode
@@ -40,6 +40,30 @@ def get_orchestrator(request: Request):
     return request.app.state.orchestrator
 
 
+def acl_filter_of(request: Request, principal: Principal):
+    """构造 ACL 过滤函数（缺文档一律拒绝——默认拒绝原则）。
+
+    TASK-142 收口：原先此逻辑只在 `api/ask.py` 内私有，导致多智能体报告路径
+    完全绕过 ACL。现提取为共享依赖，ask / reports 共用同一实现与同一默认拒绝语义。
+    """
+    settings: Settings = request.app.state.settings
+    if not settings.acl_enabled:
+        return None
+    acl = request.app.state.acl_service
+    knowledge = request.app.state.knowledge
+
+    def check(doc_id: str) -> bool:
+        if doc_id.startswith("__"):  # 系统内置块（社区摘要/图像/计算器）租户内可见
+            return True
+        try:
+            doc = knowledge.get(doc_id)
+        except Exception:  # noqa: BLE001
+            return False  # 无主文档不可见
+        return acl.check(principal, doc)
+
+    return check
+
+
 def get_principal(request: Request) -> Principal:
     """认证：Bearer Token（启用时）或头部透传（默认兼容模式）。
 
@@ -52,6 +76,21 @@ def get_principal(request: Request) -> Principal:
     # 限流依赖按认证租户分桶，必须在配额判定之前就把主体挂到 request 上
     request.state.principal = principal
     return principal
+
+
+def require_role(role: str):
+    """角色门禁：认证主体必须含指定角色，否则 403（统一提示"无权限或不存在"防探测）。
+
+    用于管理面端点（/admin/*、/security/*）。认证本身由内部的 get_principal 完成，
+    因此路由只挂 require_role 即可，无需再单独挂 get_principal。
+    """
+
+    def _dep(principal: Principal = Depends(get_principal)) -> Principal:
+        if role not in principal.roles:
+            raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=403)
+        return principal
+
+    return _dep
 
 
 def enforce_rate_limit(request: Request) -> None:

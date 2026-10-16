@@ -18,12 +18,13 @@ from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
-from app.dependencies import get_orchestrator
+from app.dependencies import acl_filter_of, get_orchestrator, get_principal, require_role
 from app.services.multiagent.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["reports"])
+# 报告端点需认证（普通用户）；/admin/metrics/multiagent 另行挂 admin 门禁
+router = APIRouter(tags=["reports"], dependencies=[Depends(get_principal)])
 
 #: 阶段 8 §4 的 8 类进度事件（顺序即编排器的执行顺序）
 REPORT_STREAM_EVENTS = (
@@ -39,6 +40,14 @@ class CreateReportRequest(BaseModel):
 def _get_report(request: Request, report_id: str) -> dict:
     report = request.app.state.report_store.get(report_id)
     if report is None:
+        raise ApiError(ErrCode.REPORT_NOT_FOUND, f"报告不存在: {report_id}", http_status=404)
+    tenant = request.state.principal.tenant_id
+    report_tenant = report.get("tenant_id")
+    if report_tenant is None:
+        # 旧报告无归属字段：视为属主租户可见，首次读取时回填（兼容历史数据）
+        report["tenant_id"] = tenant
+    elif report_tenant != tenant:
+        # 跨租户访问：返回 404 而非 403，避免据此探测报告是否存在
         raise ApiError(ErrCode.REPORT_NOT_FOUND, f"报告不存在: {report_id}", http_status=404)
     return report
 
@@ -82,17 +91,19 @@ def stream_report(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    tenant = report.get("tenant_id") or request.headers.get("X-Tenant-Id", "default")
+    tenant = report.get("tenant_id") or request.state.principal.tenant_id
+    # TASK-142/163：报告路径与 /ask 走同一 ACL 收口，工具证据同样受权限约束
+    acl_filter = acl_filter_of(request, request.state.principal)
 
     def event_source():
         try:
-            for event, payload in orchestrator.run_stream(report_id, tenant):
+            for event, payload in orchestrator.run_stream(report_id, tenant, acl_filter):
                 yield sse(event, payload)
         except ApiError as exc:
             yield sse("error", {
                 "report_id": report_id, "code": int(exc.code), "message": exc.message,
             })
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             logger.exception("报告 %s 进度流异常", report_id)
             yield sse("error", {
                 "report_id": report_id,
@@ -121,14 +132,16 @@ def create_report(
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    tenant = request.headers.get("X-Tenant-Id", "default")
-    user = request.headers.get("X-User-Id", "anon")
+    tenant = request.state.principal.tenant_id
+    user = request.state.principal.user_id
+    # TASK-142/163：报告路径与 /ask 走同一 ACL 收口，工具证据同样受权限约束
+    acl_filter = acl_filter_of(request, request.state.principal)
     if sync:
         # 同步执行（测试/调试）
         report = request.app.state.report_store.create(req.goal, tenant, user)
-        result = orchestrator.run(report["report_id"], tenant)
+        result = orchestrator.run(report["report_id"], tenant, acl_filter)
     else:
-        report = orchestrator.submit(req.goal, tenant, user)
+        report = orchestrator.submit(req.goal, tenant, user, acl_filter)
         result = report
     return ok_envelope(
         {
@@ -144,7 +157,7 @@ def list_reports(request: Request) -> Envelope:
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    tenant = request.headers.get("X-Tenant-Id", "default")
+    tenant = request.state.principal.tenant_id
     return ok_envelope(request.app.state.report_store.list(tenant), trace_id, elapsed_ms_since(started))
 
 
@@ -212,18 +225,43 @@ def delete_report(report_id: str, request: Request) -> Envelope:
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    if not request.app.state.report_store.delete(report_id):
-        raise ApiError(ErrCode.REPORT_NOT_FOUND, f"报告不存在: {report_id}", http_status=404)
+    _get_report(request, report_id)  # 归属校验：跨租户删除返回 404
+    request.app.state.report_store.delete(report_id)
     return ok_envelope({"deleted": True}, trace_id, elapsed_ms_since(started))
 
 
-@router.get("/admin/metrics/multiagent", response_model=Envelope)
+@router.get("/admin/costs", response_model=Envelope, dependencies=[Depends(require_role("admin"))])
+def cost_dashboard(
+    request: Request,
+    from_ts: float = Query(default=0.0, alias="from"),
+    to_ts: float = Query(default=0.0, alias="to"),
+    group_by: str = Query(default="phase", pattern="^(phase|model|tenant_id)$"),
+    tenant_id: str = Query(default=""),
+) -> Envelope:
+    """成本看板（TASK-134）。按 phase/model/tenant 聚合，并可看消耗最高的问答。"""
+    trace_id = new_trace_id()
+    set_trace_id(trace_id)
+    started = now_ms()
+    from app.services.agent.cost import get_ledger
+
+    ledger = get_ledger()
+    data = ledger.aggregate(
+        since=from_ts or None,
+        until=to_ts or None,
+        tenant_id=tenant_id or None,
+        group_by=group_by,
+    )
+    data["top_traces"] = ledger.top_traces(limit=10)
+    return ok_envelope(data, trace_id, elapsed_ms_since(started))
+
+
+@router.get("/admin/metrics/multiagent", response_model=Envelope, dependencies=[Depends(require_role("admin"))])
 def multiagent_metrics(request: Request) -> Envelope:
     """多智能体指标（阶段 8 前端规范 §5）：评审失败与未通过分开计数（统计红线）。"""
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    reports = request.app.state.report_store.list()
+    reports = request.app.state.report_store.list(request.state.principal.tenant_id)
     details = [request.app.state.report_store.get(r["report_id"]) for r in reports]
     total = len(details)
     if not total:

@@ -15,6 +15,7 @@ import unicodedata
 import numpy as np
 
 from app.services.embeddings import Embeddings
+from app.services.graph.vector_index import EntityVectorIndex
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,21 @@ class EntityResolver:
         self._entities: dict[str, dict] = {}
         # 规范化名/别名 → 规范名
         self._alias_map: dict[str, str] = {}
+        # TASK-153：向量化索引（消歧从 O(N) 次 Python 点积降为一次矩阵乘）
+        self._index = EntityVectorIndex()
+        # 类型表缓存（避免每次消歧都重建 name→type 映射）
+        self._type_cache: dict[str, str] | None = None
+        self._type_cache_len = -1
+
+    def _type_of(self) -> dict[str, str]:
+        """name → type（传给索引做类型过滤）。惰性重建，避免每次消歧都扫全表。"""
+        if (
+            self._type_cache_len != len(self._entities)
+            or self._type_cache is None
+        ):
+            self._type_cache = {n: i["type"] for n, i in self._entities.items()}
+            self._type_cache_len = len(self._entities)
+        return self._type_cache
 
     def resolve(self, name: str, etype: str, description: str = "") -> tuple[str, bool]:
         """归一化一个实体名。返回 (规范名, 是否新建)。"""
@@ -43,13 +59,15 @@ class EntityResolver:
                 return canonical, False
         # 2. 向量相似度合并（仅同类型，§5.4 硬约束）
         vec = np.array(self._embeddings.embed_query(name), dtype=np.float32)
+        # TASK-153：改为向量化索引查询（此前是逐实体 Python 循环点积）。
+        # 索引只做"最相似"的检索，类型过滤在此传入——保持消歧的类型硬约束。
         best_name, best_sim = None, 0.0
-        for canonical, info in self._entities.items():
-            if info["type"] != etype:
-                continue
-            sim = float(np.dot(vec, info["vector"]))
-            if sim > best_sim:
-                best_name, best_sim = canonical, sim
+        hits = self._index.search(
+            vec, top_k=1, threshold=0.0,
+            type_of=self._type_of(), want_type=etype,
+        )
+        if hits:
+            best_name, best_sim = hits[0]
         if best_name is not None and best_sim >= self._threshold:
             info = self._entities[best_name]
             if name != best_name and name not in info["aliases"]:
@@ -64,7 +82,29 @@ class EntityResolver:
             "aliases": [], "vector": vec,
         }
         self._alias_map[key] = name
+        self._index.add(name, vec)  # TASK-153：同步进向量索引
         return name, True
+
+    def search_similar(
+        self, query_vector: np.ndarray, top_k: int = 1, threshold: float = 0.0,
+        want_type: str | None = None,
+    ) -> list[tuple[str, float]]:
+        """按向量召回实体（TASK-153：种子召回复用同一向量化索引）。
+
+        与 `resolve` 共用索引，因此不重复编码、不重复维护矩阵。
+        """
+        return self._index.search(
+            query_vector, top_k=top_k, threshold=threshold,
+            type_of=self._type_of() if want_type else None, want_type=want_type,
+        )
+
+    def suspend_index(self) -> None:
+        """批量入库前调用：暂存向量，避免逐条扩容矩阵。"""
+        self._index.suspend()
+
+    def resume_index(self) -> None:
+        """批量入库后调用：一次性落矩阵。"""
+        self._index.resume()
 
     def lookup(self, name: str) -> str | None:
         """按任意叫法查规范名（种子实体匹配用）。"""

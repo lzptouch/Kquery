@@ -71,7 +71,7 @@ services:
     volumes:
       - backend_data:/data       # 向量索引 / 图谱快照 / 审计日志 / 备份
     ports:
-      - "8000:8000"
+      - "8100:8000"      # 宿主 8100 → 容器 8000（8000 被本机 KAiSupport 占用）
     depends_on:
       # 必须等 init 建表完成：后端启动时会 load 集合，
       # 集合不存在会直接抛异常，容器进入 restart 循环
@@ -130,7 +130,7 @@ services:
     image: kquery-frontend:latest
     container_name: kquery-frontend
     ports:
-      - "8081:8080"      # 宿主 8081 → 容器 8080（8080 已被本机其它容器占用）
+      - "8090:8080"      # 宿主 8090 → 容器 8080（8080/8081 已被本机其它容器占用）
     depends_on:
       backend:
         condition: service_healthy

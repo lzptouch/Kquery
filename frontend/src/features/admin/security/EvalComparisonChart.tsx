@@ -7,6 +7,7 @@
  * 两张清单：调优真正要看的不是数字，是数字背后的那几条。
  */
 import { useCallback, useEffect, useState } from "react";
+import { authHeaders } from "../../../lib/auth";
 
 export interface EvalMetricDelta {
   metric: string;
@@ -70,6 +71,8 @@ export function EvalComparisonChart({
     try {
       const resp = await fetch(
         `/admin/eval/compare?a=${encodeURIComponent(runIdA)}&b=${encodeURIComponent(runIdB)}`,
+        // TASK-160：/admin/* 需要管理员身份；裸 fetch 会 403（浏览器 E2E 抓到过）
+        { headers: authHeaders() },
       );
       const body = await resp.json();
       if (body?.status === "ok" && body.data) setData(body.data);

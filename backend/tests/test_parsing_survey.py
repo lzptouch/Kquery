@@ -7,9 +7,7 @@
 """
 import io
 
-import pytest
 from docx import Document
-from docx.shared import Pt
 
 
 def _make_docx() -> bytes:

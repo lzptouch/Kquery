@@ -1,4 +1,5 @@
 /** 非流式 API 客户端：统一信封解析（阶段 0 前端规范 §7.1）。 */
+import { authErrorMessage, authHeaders, isAuthFailure, withAuth } from "./auth";
 import type {
   AgentMetrics,
   AskData,
@@ -47,8 +48,36 @@ import type {
 } from "../types";
 
 export async function request<T>(path: string, init?: RequestInit): Promise<Envelope<T>> {
-  const resp = await fetch(path, init);
-  const body = (await resp.json()) as Envelope<T>;
+  // TASK-160 前端配套：所有请求统一注入身份（否则管理页全部 403）。
+  // 加载入 authHeaders 而不是内联，是为了保证新增的 API 函数不会漏带凭证。
+  const resp = await fetch(path, { ...init, headers: withAuth(init?.headers) });
+  let body: Envelope<T>;
+  try {
+    body = (await resp.json()) as Envelope<T>;
+  } catch {
+    // 非 JSON 响应（网关 502、nginx 502 HTML 等）：不能直接 JSON.parse 崩掉，
+    // 否则"后端没起来"会表现成一个无提示的白屏
+    const code = resp.status || 5001;
+    return {
+      status: "error",
+      data: null,
+      error: {
+        code,
+        message: isAuthFailure(resp.status)
+          ? authErrorMessage(resp.status)
+          : `请求失败（HTTP ${resp.status}）`,
+      },
+      meta: { trace_id: "", elapsed_ms: 0 },
+    };
+  }
+  // 401/403 但信封里没有可读原因时补一句——用户需要知道"是权限问题"而非"系统坏了"
+  if (isAuthFailure(resp.status) && body && !body.error) {
+    return {
+      ...body,
+      status: "error",
+      error: { code: resp.status, message: authErrorMessage(resp.status) },
+    } as Envelope<T>;
+  }
   return body;
 }
 
@@ -415,6 +444,8 @@ export function uploadFile(
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/knowledge/upload");
+    // 上传走 XHR（为了进度事件），无法复用 request()，必须单独注入身份头
+    Object.entries(authHeaders()).forEach(([k, v]) => xhr.setRequestHeader(k, v));
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };

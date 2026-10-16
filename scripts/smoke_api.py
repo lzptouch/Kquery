@@ -20,12 +20,41 @@ PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
 
+# TASK-160 之后所有 /admin/* 都要求 admin 角色。本脚本是**鉴权改造前**写的，
+# 不带凭证会让管理端点全部 403——那不是产品缺陷而是脚本过期。这里统一注入身份头。
+# 说明：AUTH_ENABLED=false 时后端信任 X-Roles（本地开发模式）；真实凭证模式下
+# 需改用 Authorization: Bearer <token>，见 README。
+AUTH_HEADERS = {
+    "X-User-Id": "admin",
+    "X-Tenant-Id": "default",
+    "X-Roles": "admin",
+}
+TOKEN = ""  # 非空时改用 Bearer 凭证（生产/容器形态）
+# 报告同步生成的真实耗时（真实模型下可达数分钟）。可用 --report-timeout 覆盖。
+REPORT_TIMEOUT_S = 600
+
+
 def call(base: str, method: str, path: str, body=None, raw=False, timeout=120,
-         content_type: str | None = None):
-    """返回 (status, json_or_text)。不抛异常——失败也要继续跑后面的用例。"""
+         content_type: str | None = None, auth: bool = True, roles: str | None = None,
+         tenant: str | None = None):
+    """返回 (status, json_or_text)。不抛异常——失败也要继续跑后面的用例。
+
+    参数说明：
+    - `auth=False`：**故意**匿名请求，用于验证"没凭证必须被拒"
+    - `roles` / `tenant`：覆盖身份，用于验证越权与跨租户隔离
+    """
     url = base.rstrip("/") + path
     data = None
     headers = {}
+    if auth:
+        if TOKEN:
+            headers["Authorization"] = f"Bearer {TOKEN}"
+        else:
+            headers.update(AUTH_HEADERS)
+            if roles is not None:
+                headers["X-Roles"] = roles
+            if tenant is not None:
+                headers["X-Tenant-Id"] = tenant
     if body is not None:
         if isinstance(body, bytes):
             data = body
@@ -333,6 +362,16 @@ def run(base: str) -> int:
 
     # ---------------------------------------------------------- stage-9 安全
     section("stage-9 · 认证与审计")
+    # 先验鉴权真的在拦人（TASK-160 的验收口）：匿名与越权都必须被拒。
+    # 这两条若失败，说明管理端点又裸奔了——比"功能好用"更该优先发现。
+    anon_status, _ = call(base, "GET", "/admin/users/permission-matrix", auth=False)
+    check("匿名访问管理端点被拒（403）", anon_status == 403, f"实际 {anon_status}")
+    non_admin_status, _ = call(
+        base, "GET", "/admin/users/permission-matrix", roles="user",
+    )
+    check("非 admin 访问管理端点被拒（403）", non_admin_status == 403,
+          f"实际 {non_admin_status}")
+
     status, body = call(base, "GET", "/admin/users/permission-matrix")
     check("权限矩阵端点返回 200", status == 200, f"实际 {status}")
     matrix = data_of(body)
@@ -347,8 +386,11 @@ def run(base: str) -> int:
 
     # ---------------------------------------------------------- stage-8 报告
     section("stage-8 · 多智能体报告")
+    # 同步生成要走完整链路（规划 → 子任务 → 校验 → 撰写 → 评审，可能多轮），
+    # 真实模型下 120s 远远不够——超时过短会把"慢"误判成"坏"。
     status, body = call(base, "POST", "/reports?sync=true",
-                        body={"goal": "分析机会成本的含义并举例说明"})
+                        body={"goal": "分析机会成本的含义并举例说明"},
+                        timeout=REPORT_TIMEOUT_S)
     check("报告生成返回 200", status == 200, f"实际 {status}: {str(body)[:180]}")
     report = data_of(body)
     rid = report.get("report_id")
@@ -397,7 +439,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://localhost:8000",
                         help="服务基址。传 http://localhost:8081 可顺带验证 nginx 代理。")
+    parser.add_argument("--report-timeout", type=int, default=REPORT_TIMEOUT_S,
+                        help="报告同步生成的等待秒数（真实模型下需数分钟）。")
+    parser.add_argument("--token", default="",
+                        help="Bearer 凭证（AUTH_ENABLED=true 时使用，替代 X-Roles 头）。")
     args = parser.parse_args()
+    REPORT_TIMEOUT_S = args.report_timeout
+    TOKEN = args.token
     start = time.perf_counter()
     code = run(args.base)
     print(f"耗时 {time.perf_counter() - start:.1f}s")

@@ -6,6 +6,7 @@
 - 失败兜底：默认"需要检索"（46xx 静默降级，不阻塞主链路）。
 """
 import logging
+import re
 
 from pydantic import BaseModel
 
@@ -37,6 +38,31 @@ class _IntentPayload(BaseModel):
     needs_retrieval: bool = True
     confidence: float = 0.0
     reasoning: str = ""
+
+
+# TASK-137：零成本闲聊前置判定。
+#
+# 设计取舍：IntentClassifier 需要一次 LLM 调用。Agent 路径若为每个问题都付这次调用，
+# 对正常提问是净亏（多花一次钱）；但"你好/谢谢/再见"这类寒暄在真实流量里占比可观，
+# 而它们走完整 Agent 检索循环（plan→tool→reflect→answer）代价极高。
+# 因此这里只做**极保守的正则匹配**：仅当整句就是一句寒暄、且足够短时才判定，
+# 宁可漏判（多花一次检索的钱）也不能误判（把真问题当闲聊而不检索）。
+_CHITCHAT_RE = re.compile(
+    r"^\s*(你好|您好|hi|hello|hey|嗨|哈喽|在吗|早上好|下午好|晚上好|"
+    r"谢谢|多谢|感谢|thanks|thank you|thx|"
+    r"再见|拜拜|bye|goodbye|晚安|"
+    r"你是谁|你叫什么|介绍一下你自己|who are you)\s*[!！。.~～?？]*\s*$",
+    re.IGNORECASE,
+)
+_CHITCHAT_MAX_LEN = 20  # 超过此长度一律当作真问题（防"你好，请帮我查一下…"被误判）
+
+
+def is_obvious_chitchat(question: str) -> bool:
+    """整句是纯寒暄则为 True（保守判定，见上方注释）。"""
+    q = (question or "").strip()
+    if not q or len(q) > _CHITCHAT_MAX_LEN:
+        return False
+    return bool(_CHITCHAT_RE.match(q))
 
 
 class IntentClassifier:

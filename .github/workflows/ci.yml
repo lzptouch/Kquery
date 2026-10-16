@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: ruff check
+        run: uv run --group dev ruff check app tests
+
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install (milvus-lite on Linux)
+        run: uv sync --frozen --group dev
+      - name: pytest with coverage
+        # Linux 走真实 Milvus Lite（Windows 才回退 FAISS，见 tests/conftest.py）
+        run: uv run pytest --cov=app --cov-report=xml --cov-report=term
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: backend/coverage.xml
+          if-no-files-found: error
+
+  # 弱断言护栏：文档 DEF-E-9 记录的测试质量问题，靠静态检查长期拦住
+  test-quality:
+    name: test-quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: 禁止恒真断言与死代码
+        run: |
+          ! grep -rn "or True" tests/ --include=*.py
+          ! grep -rn "if False else" tests/ --include=*.py
+      - name: conftest 必须注入 admin 默认头（否则鉴权测试全红）
+        run: grep -q "X-Roles" tests/conftest.py

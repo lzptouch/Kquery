@@ -29,8 +29,12 @@ cd frontend && nvm use && npm install && npm run dev
 ## 测试
 
 ```bash
-cd backend && uv run pytest    # 17 项功能测试（Mock 模型，无需 API Key）
+cd backend && uv run pytest                          # 全部测试（Mock 模型，无需 API Key）
+cd backend && uv run pytest --cov=app                # 带覆盖率（门槛 80%，实测 85%）
+cd backend && uv run ruff check app tests            # 静态检查
 ```
+
+当前 **336 个用例**，覆盖率 85%。CI 见 `.github/workflows/ci.yml`（Linux 上跑真实 Milvus Lite，Windows 自动回退 FAISS）。
 
 ## 阶段进度
 

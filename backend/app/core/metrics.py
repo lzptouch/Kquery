@@ -24,7 +24,11 @@ class PromMetrics:
         self.latency_seconds = Histogram(
             "rag_latency_seconds",
             "端到端延迟",
-            ["tenant"],
+            # TASK-131：原 label 为 ["tenant"]，是多租户下的高基数反模式——
+            # 租户数随客户线性增长会让时间序列数量同步膨胀，最终打爆监控存储。
+            # 租户维度改由**日志**承载（结构化日志的 tenant_id 字段），
+            # 指标侧只保留低基数标签；按租户的 P95 应由日志后端聚合而非 Prometheus。
+            ["path"],  # ask / ask_stream
             buckets=(0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0),
             registry=self.registry,
         )
@@ -45,6 +49,50 @@ class PromMetrics:
             "检索分阶段耗时",
             ["stage"],  # keyword / vector / fusion / rerank
             buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000),
+            registry=self.registry,
+        )
+
+        # ---- Agent 路径（TASK-131）----
+        # 此前 6 个指标全部只在 pipeline.py 上报，Agent 与多智能体路径等于裸奔：
+        # 成功率、工具失败率、熔断率、迭代轮数在监控大盘上完全看不到。
+        # 标签一律低基数：status / mode / tool / result / action / reason 都是有限枚举，
+        # **不放 tenant 或 user**（高基数，见 latency_seconds 的注释）。
+        self.agent_runs_total = Counter(
+            "rag_agent_runs_total", "Agent 运行总数（按终态分组）",
+            ["status", "mode"], registry=self.registry,
+        )
+        self.agent_iterations = Histogram(
+            "rag_agent_iterations", "Agent 迭代轮数分布（验收指标：平均 ≤ 3）",
+            ["mode"],
+            buckets=(1, 2, 3, 4, 6, 8, 12, 20),
+            registry=self.registry,
+        )
+        self.agent_tool_calls_total = Counter(
+            "rag_agent_tool_calls_total", "Agent 工具调用（按工具与结果分组）",
+            ["tool", "result"],  # result: ok / empty / error / timeout / skipped
+            registry=self.registry,
+        )
+        self.agent_tool_duration_seconds = Histogram(
+            "rag_agent_tool_duration_seconds", "单次工具调用耗时",
+            ["tool"],
+            buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30),
+            registry=self.registry,
+        )
+        # 这个指标是 TASK-110 的验收口：此前 replan 分支不可达，熔断率恒为 0，
+        # 监控上看"一切正常"实际是分支从未执行。
+        self.agent_fuse_total = Counter(
+            "rag_agent_fuse_total", "Agent 熔断次数（按原因）",
+            ["reason"],  # iteration_limit / no_progress / loop_detected / budget_*
+            registry=self.registry,
+        )
+        self.agent_next_action_total = Counter(
+            "rag_agent_next_action_total", "反思决策分布（验收反思是否真在起作用）",
+            ["action"],  # answer / continue / replan
+            registry=self.registry,
+        )
+        self.agent_tokens_total = Counter(
+            "rag_agent_tokens_total", "Agent 路径 token 用量（按阶段）",
+            ["phase"],  # think / answer / reflect
             registry=self.registry,
         )
 
@@ -72,6 +120,10 @@ class MetricsStore:
         self._lock = threading.Lock()
         self._buckets: dict[int, _MinuteBucket] = defaultdict(_MinuteBucket)
         self._retention = retention_minutes
+        # TASK-182：键改为**问题哈希**而非原文。
+        # 进程内指标是长期驻留的聚合结构，把用户原话（可能含姓名、工号、病情等）
+        # 明文留在内存里既违反最小化原则，也会在 /metrics 或排障导出时外泄。
+        # 分析"哪些问题高频"用哈希足够（同一问题哈希一致，可计数、可聚合）。
         self._top_queries: dict[str, dict] = defaultdict(
             lambda: {"count": 0, "hits": 0, "latency_sum": 0.0, "errors": 0}
         )
@@ -119,8 +171,8 @@ class MetricsStore:
             cutoff = minute - self._retention
             for key in [k for k in self._buckets if k < cutoff]:
                 del self._buckets[key]
-            # top queries（query 文本只进进程内聚合，不进 Prom label）
-            tq = self._top_queries[query]
+            # top queries（TASK-182：只存哈希，不存用户原话——见 _top_queries 初始化处）
+            tq = self._top_queries[self._query_fingerprint(query)]
             tq["count"] += 1
             tq["latency_sum"] += latency_ms
             if from_cache:
@@ -181,11 +233,25 @@ class MetricsStore:
             points.append({"ts": minute * 60, "value": value})
         return points
 
+    @staticmethod
+    def _query_fingerprint(query: str) -> str:
+        """问题指纹（TASK-182）。
+
+        同一问题在任何时刻得到同一个哈希，因此"高频问题"仍然可统计、可排序；
+        但聚合结构里不再持有用户原话。原话的追溯需求由审计（同样只存哈希）
+        与业务库承担，指标层不该是第二份明文副本。
+        """
+        import hashlib
+
+        return hashlib.sha256((query or "").strip().encode("utf-8")).hexdigest()[:16]
+
     def top_queries(self, limit: int = 10) -> list[dict]:
         with self._lock:
             rows = [
                 {
-                    "query": q,
+                    # TASK-182：键已是哈希；字段名同步改为 query_hash，避免调用方
+                    # 误以为还能拿到原文
+                    "query_hash": q,
                     "count": v["count"],
                     "cache_hit_rate": round(v["hits"] / v["count"], 4) if v["count"] else 0.0,
                     "avg_latency_ms": round(v["latency_sum"] / v["count"], 1) if v["count"] else 0.0,
@@ -220,8 +286,16 @@ class MetricsStore:
         total = max(q["total"], 1)
         answered = max(q["answered"], 1)
         branch_total = max(sum(q["branches"].values()), 1)
+        avg_confidence = (
+            round(q["confidence_sum"] / q["confidence_n"], 4) if q["confidence_n"] else None
+        )
         return {
-            "faithfulness": round(q["confidence_sum"] / q["confidence_n"], 4) if q["confidence_n"] else None,
+            # TASK-176：这个值本来是**置信度均值**，却叫 faithfulness（忠实度），
+            # 语义不符会让看板读者以为它是 RAGAS 那种"答案是否有据"的指标。
+            # 现在用准确的名字，并保留 `faithfulness` 作为**兼容别名**（旧前端/看板
+            # 直接读这个键，改名会静默显示为空），标记为 deprecated。
+            "avg_confidence": avg_confidence,
+            "faithfulness": avg_confidence,  # deprecated：请改用 avg_confidence
             "refusal_rate": round(q["refused"] / total, 4),
             "avg_regeneration": round(q["regenerated"] / answered, 4),
             "crag_branch_ratio": {b: round(c / branch_total, 4) for b, c in q["branches"].items()},

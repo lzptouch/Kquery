@@ -9,7 +9,7 @@
 """
 from app.services.query.jsonutil import JsonParseError, parse_json, parse_json_model
 from app.services.query.orchestrator import QueryPreprocessor
-from tests.conftest import SAMPLE_MD, upload_sample
+from tests.conftest import upload_sample
 import pytest
 from pydantic import BaseModel
 

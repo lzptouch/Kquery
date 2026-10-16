@@ -12,8 +12,10 @@ class VectorRetriever:
         self._store = store
 
     def search(
-        self, query: str, top_n: int, tenant_id: str, doc_id: str | None = None
+        self, query: str, top_n: int, tenant_id: str, doc_id: str | None = None,
+        filters=None,
     ) -> list[RetrievalCandidate]:
         query_vec = self._embeddings.embed_query(query)
-        hits = self._store.search(query_vec, top_n, tenant_id, doc_id=doc_id)
+        # TASK-142：filters 透传给存储层（Milvus 下推表达式 / FAISS 迭代扩取）
+        hits = self._store.search(query_vec, top_n, tenant_id, doc_id=doc_id, filters=filters)
         return [RetrievalCandidate(chunk=chunk, score=score) for chunk, score in hits]

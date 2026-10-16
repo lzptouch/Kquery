@@ -12,6 +12,18 @@ import operator
 from typing import Annotated, Any, TypedDict
 
 
+def replace_list(old: list, new: list) -> list:
+    """覆盖语义 reducer（用于 plan）。
+
+    plan 与 evidence/tool_calls 的语义不同：后三者按轮**追加**，而 plan 是
+    "全量快照替换"（plan_node 追加新步骤后返回完整列表，tool_node 改单步状态后
+    也返回完整列表）。此前 plan 未声明 reducer、走 TypedDict 默认覆盖，行为正确
+    但意图不显式——一旦有人误以为它是追加语义而只返回增量，整张计划会被静默丢失。
+    这里显式声明为"替换"，把契约写死在代码里（TASK-138）。
+    """
+    return new
+
+
 def merge_evidence(old: list[dict], new: list[dict]) -> list[dict]:
     """证据追加合并 + 按 chunk_id 去重（先出现者优先，保留来源步骤号）。"""
     seen = {e.get("chunk_id") for e in old}
@@ -42,7 +54,8 @@ class AgentState(TypedDict, total=False):
     history: list[dict]  # 历史轮次 [{question, answer}]（覆盖，由 runner 注入）
 
     # ---- 规划 ----
-    plan: list[dict]  # [{step_index, description, tool_name, depends_on, status, result_count}]
+    # 全量快照替换语义（节点必须返回完整 plan，不得只返回增量）
+    plan: Annotated[list[dict], replace_list]
     current_step: int
 
     # ---- 累积（追加合并）----
@@ -50,6 +63,7 @@ class AgentState(TypedDict, total=False):
     executed_steps: Annotated[list[int], merge_executed]
     tool_calls: Annotated[list[dict], operator.add]  # [{step_index, tool_name, arguments, result_count, elapsed_ms, error}]
     tool_errors: Annotated[list[dict], merge_errors]
+    call_fingerprints: Annotated[list[str], operator.add]  # "tool::query" 指纹，循环检测用
 
     # ---- 控制（覆盖）----
     iteration: int  # 已迭代轮数，单调递增
@@ -59,7 +73,9 @@ class AgentState(TypedDict, total=False):
     needs_replan: bool  # 重规划标记（replan 节点置位，plan 节点消费）
     replan_count: int  # 已重规划次数（余量管控）
     evidence_score: float  # 最近一次反思的充分度
+    reflect_reason: str  # 最近一次反思的决策理由（可复盘"为什么继续查/为什么作答"）
     next_action: str  # answer / continue / replan
+    tool_exhausted: bool  # 工具层判定"无可执行步骤"（reflect 据此短路，避免信号被覆盖）
     status: str  # running / completed / circuit_breaker / failed
     degraded: bool  # 是否发生降级（工具不可用 / 重排降级等）
     incomplete: bool  # 熔断退出后尽力作答 → 结果可能不完整
@@ -68,6 +84,18 @@ class AgentState(TypedDict, total=False):
     # ---- 输出 ----
     final_answer: str
     skip_retrieval: bool  # 闲聊短路
+    hitl_resolved: str  # TASK-124：人工介入结果（""/hint/force_answer/stop），防二次打断
+    budget: dict  # TASK-121：预算快照（跨 HITL 中断点保持计数单调，防 resume 绕过）
+    verify_passed: bool  # TASK-113：答案校验是否通过
+    verify_rounds: int  # TASK-113：已校验轮数（受 max_verify_rounds 约束）
+    verify_notes: list[str]  # TASK-113：未通过时带回的"无据陈述"线索
+    # ---- TASK-101：ReAct 循环 ----
+    # 注意这些字段**必须声明**：LangGraph 只持久化 TypedDict 里声明过的键，
+    # 未声明的 key 会被静默丢弃（表现为"节点明明 return 了，读状态时却没有"）。
+    react_rounds: int  # 已进行的 ReAct 轮数
+    react_degraded: Annotated[list[str], operator.add]  # 降级原因（追加合并）
+    last_thought: str  # 最近一次 think 的思考（供轨迹展示与排障）
+    answer_hint: str  # LLM 给出的作答指引
     refusal: bool  # 证据不足拒答
 
 

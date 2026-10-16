@@ -29,6 +29,10 @@ class PlatformQuotaMonitor:
         self._calls = 0
         self._models: dict[str, int] = {}
         self._errors: dict[str, int] = {}
+        # TASK-120：按模型的 token 累计，以及其中"来自字符估算"的部分
+        # （成本看板必须能区分真值与估算，否则会用估算数字做归集与告警）
+        self._tokens: dict[str, int] = {}
+        self._estimated: dict[str, int] = {}
 
     # ---------- 上报 ----------
 
@@ -44,13 +48,26 @@ class PlatformQuotaMonitor:
             self._calls = 0
             self._models = {}
             self._errors = {}
+            self._tokens = {}
+            self._estimated = {}
 
-    def record_call(self, model: str = "", tokens: int = 0) -> None:
+    def record_call(
+        self, model: str = "", tokens: int = 0, estimated: bool = False
+    ) -> None:
+        """记录一次上游调用（TASK-120：tokens 此前是声明但从不使用的形参）。
+
+        `tokens=0` 表示本次未取到 usage（如流式异常路径），按"只记次数"处理；
+        `estimated=True` 表示数字来自字符估算，成本看板须能区分口径。
+        """
         with self._lock:
             self._roll()
             self._calls += 1
             if model:
                 self._models[model] = self._models.get(model, 0) + 1
+                if tokens > 0:
+                    self._tokens[model] = self._tokens.get(model, 0) + int(tokens)
+                    if estimated:
+                        self._estimated[model] = self._estimated.get(model, 0) + int(tokens)
 
     def record_platform_error(self, kind: str) -> None:
         with self._lock:
@@ -83,6 +100,8 @@ class PlatformQuotaMonitor:
             models = dict(self._models)
             errors = dict(self._errors)
             day = self._day
+            tokens = dict(self._tokens)
+            estimated = dict(self._estimated)
         if not self.enabled():
             status = "disabled"
             remaining = None
@@ -104,6 +123,10 @@ class PlatformQuotaMonitor:
             "status": status,
             "day": day,
             "models": models,
+            # TASK-120：token 用量与其中的估算部分（成本看板按此区分口径）
+            "tokens": tokens,
+            "tokens_estimated": estimated,
+            "tokens_total": sum(tokens.values()),
             "platform_errors": {
                 "rate_limited": errors.get("rate_limited", 0),
                 "quota": errors.get("quota", 0),

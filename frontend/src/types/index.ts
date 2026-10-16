@@ -268,6 +268,14 @@ export interface Envelope<T> {
   meta: { trace_id: string; elapsed_ms: number };
 }
 
+/** 当前身份（TASK-160 前端配套）。token 非空时后端只认令牌。 */
+export interface Principal {
+  user_id: string;
+  tenant_id: string;
+  roles: string;
+  token: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";

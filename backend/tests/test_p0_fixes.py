@@ -256,7 +256,7 @@ class TestWarnEnvelope:
         class FailingReranker:
             model = "failing"
 
-            def rerank(self, query, candidates, top_n):
+            def rerank(self, query, candidates, top_n, model=None):
                 from app.services.retrieval.rerank import RerankError
 
                 raise RerankError("模拟重排接口不可用")
@@ -628,7 +628,7 @@ class TestRetrievalConfigHotUpdate:
                 return candidates
 
         class OldSignature:
-            def rerank(self, query, candidates, top_n):
+            def rerank(self, query, candidates, top_n, model=None):
                 seen["model"] = "default"
                 return candidates
 

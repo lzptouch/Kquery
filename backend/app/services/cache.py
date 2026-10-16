@@ -49,6 +49,8 @@ class CacheEntry:
     # 语义近似检索用：问题向量 + 规范化后的问题文本
     vector: list = field(default_factory=list)
     question: str = ""
+    # 租户归属（DEF-R-22）：近似命中必须按它过滤，否则跨租户串答案
+    tenant_id: str = ""
 
 
 class SemanticCache(Protocol):
@@ -102,6 +104,7 @@ class InMemorySemanticCache:
         ttl_seconds: float,
         question: str = "",
         vector: list | None = None,
+        tenant_id: str = "",
     ) -> None:
         with self._lock:
             if len(self._entries) >= self._max_entries:
@@ -117,6 +120,7 @@ class InMemorySemanticCache:
                 ttl_seconds=ttl_seconds,
                 vector=list(vector or []),
                 question=question or str(payload.get("question", "")),
+                tenant_id=tenant_id,
             )
 
     def lookup(
@@ -124,11 +128,14 @@ class InMemorySemanticCache:
         question: str,
         exact_key: str,
         vector: list | None = None,
+        tenant_id: str = "",
     ) -> tuple[CacheEntry | None, str]:
         """语义级查找：先按键精确命中，再退回向量近似命中。
 
         返回 (entry, hit_kind)，hit_kind ∈ {"exact", "semantic", "miss"}。
-        近似命中会把候选按余弦从高到低扫描一遍，只认**同一租户**的条目。
+        近似命中会把候选按余弦从高到低扫描一遍，只认**同一租户**的条目——
+        此前实现遍历全部 entries 并未按租户过滤（与下方注释自相矛盾），
+        导致 A 租户的答案可被 B 租户近似命中（DEF-R-22 跨租户串答案）。
         """
         exact = self.get(exact_key)
         if exact is not None:
@@ -143,6 +150,9 @@ class InMemorySemanticCache:
         with self._lock:
             scanned = 0
             for entry in self._entries.values():
+                # 租户隔离第一闸：近似命中只认同租户条目（兑现上方注释承诺）
+                if entry.tenant_id != tenant_id:
+                    continue
                 if now - entry.created_at > entry.ttl_seconds:
                     continue
                 if not entry.vector:

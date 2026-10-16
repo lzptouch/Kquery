@@ -15,7 +15,10 @@ from app.core.config import Settings
 from app.core.envelope import ErrCode
 from app.core.metrics import MetricsStore, PromMetrics
 from app.domain.schemas import AskResult, Evidence, RetrievalConfig, SelfCheckRecord
+from app.core.otel import span
 from app.services.cache import SemanticCache, config_digest, make_cache_key
+from app.services.context import ContextItem, assemble_context
+from app.services.retrieval.filters import RetrievalFilters
 from app.services.config_store import RetrievalConfigStore
 from app.services.llm import LLM, LLMError
 from app.services.retrieval.hybrid import HybridResult, HybridRetriever
@@ -25,7 +28,7 @@ from app.services.validation.crag import (
     BRANCH_INCORRECT,
     CragRouter,
 )
-from app.services.validation.history import CRAG_KIND, SELFCHECK_KIND, ValidationHistoryStore
+from app.services.validation.history import CRAG_KIND, SELFCHECK_KIND
 from app.services.validation.selfcheck import (
     HallucinationChecker,
     compute_confidence,
@@ -92,6 +95,12 @@ class RagPipeline:
         audit=None,  # AuditStore：三事件审计
         scanner=None,  # SensitiveScanner：输出侧扫描
         history_store=None,  # ValidationHistoryStore：CRAG 轮次 / 自检明细落库
+        # ACL 全局版本提供者（DEF-R-1）：缓存键维度之一，权限变更后旧缓存失效
+        acl_version_provider: Callable[[], int] | None = None,
+        quota=None,  # SlidingWindowQuota：token 用量结算（TASK-120），装配期晚于构造故回填
+        # 当前主体可见文档清单提供者（TASK-142）：把 ACL 下推到召回阶段。
+        # 返回 None 表示"无法低成本枚举"→ 自动降级为后过滤。
+        visible_docs_provider: Callable[[], set[str] | None] | None = None,
     ):
         self._settings = settings
         self._llm = llm
@@ -102,6 +111,9 @@ class RagPipeline:
         self._metrics_store = metrics_store
         self._doc_name_resolver = doc_name_resolver or (lambda doc_id: doc_id)
         self._docstore = docstore
+        # TASK-142：ACL 下推所需的两个依赖（装配期回填，见 bind_principal）
+        self._acl_service = None
+        self._knowledge = None
         self._index_version = index_version_provider or (lambda: 0)
         self._preprocessor = preprocessor
         self._analysis_store = analysis_store
@@ -111,15 +123,42 @@ class RagPipeline:
         self._audit = audit
         self._scanner = scanner
         self._history = history_store
+        self._acl_version = acl_version_provider or (lambda: 0)
+        # TASK-142：当前主体可见文档清单提供者（装配期回填）。为 None 时只做后过滤。
+        self._visible_docs_provider = visible_docs_provider
+        # TASK-116：本轮被上下文组装丢弃的候选项（前端据此解释"为什么没进上下文"）
+        self._context_dropped: list[dict] = []
+        self._quota = quota
 
     # ---- 阶段 9：护栏挂载点（同一请求内固定，便于审计三事件复用同一主体）----
 
-    def bind_principal(self, tenant_id: str, user_id: str = "anon") -> "RagPipeline":
-        """绑定认证主体（副本语义，不改共享实例——流水线是单例）。"""
+    def bind_principal(
+        self, tenant_id: str, user_id: str = "anon", principal=None
+    ) -> "RagPipeline":
+        """绑定认证主体（副本语义，不改共享实例——流水线是单例）。
+
+        TASK-142：同时绑定"可见文档清单提供者"。可见清单是**主体相关**的，
+        只能在这里绑定——放在装配期会退化成"所有人共用一份清单"（比后过滤更糟）。
+        提供者本身惰性求值，未被检索用到时不会产生枚举开销。
+        """
         clone = object.__new__(RagPipeline)
         clone.__dict__.update(self.__dict__)
         clone._tenant_id = tenant_id
         clone._user_id = user_id
+        if principal is not None and self._acl_service is not None and self._knowledge is not None:
+            acl, knowledge = self._acl_service, self._knowledge
+
+            def _provider() -> set[str] | None:
+                try:
+                    docs = knowledge.list_files()
+                except Exception as exc:  # noqa: BLE001 - 拿不到就不下推
+                    logger.debug("文档清单读取失败（不下推 ACL）: %s", exc)
+                    return None
+                return acl.visible_doc_ids(principal, docs)
+
+            clone._visible_docs_provider = _provider
+        else:
+            clone._visible_docs_provider = None
         return clone
 
     def attach_security(self, audit=None, scanner=None, history_store=None) -> None:
@@ -157,6 +196,27 @@ class RagPipeline:
             f"+{self._settings.embedding_model}+{config.rerank_model}"
         )
 
+    def _settle_tokens(self, tenant_id: str, llm_calls: int) -> dict:
+        """把本次链路的 LLM token 用量结算到配额（TASK-120）。
+
+        此前 `quota.record_tokens` 在生产代码中零调用，导致 `dependencies.py` 的
+        `token_daily` 配额分支永不触发——配额体系实际少了 token 这一个维度。
+        配额服务由装配期注入（不设全局单例，与 platform_quota 的处理保持一致的显式依赖）。
+        口径说明：LLM 实例只保留"最近一次"usage，故按调用次数线性外推；
+        返回值里的 estimated 让调用方能区分真值与估算。
+        """
+        usage = getattr(self._llm, "last_usage", None)
+        if usage is None or self._quota is None:
+            return {}
+        total = int(getattr(usage, "total", 0) or 0) * max(1, llm_calls)
+        if total <= 0:
+            return {}
+        try:
+            self._quota.record_tokens(tenant_id, total)
+        except Exception as exc:  # noqa: BLE001 - 结算失败不得影响主流程
+            logger.debug("token 用量结算失败（忽略）: %s", exc)
+        return {"tokens": total, "estimated": bool(getattr(usage, "estimated", True))}
+
     def _cache_key(self, question: str, tenant_id: str, config: RetrievalConfig) -> str:
         digest = config_digest(
             {
@@ -165,6 +225,10 @@ class RagPipeline:
                 "temperature": self._settings.temperature,
                 "index_version": self._index_version(),
                 "crag": self._crag is not None,
+                # DEF-R-1：缓存键必须携带身份与 ACL 版本——缓存命中路径跳过检索与
+                # ACL 过滤，否则不同可见性的用户共享缓存、权限撤销后旧缓存仍命中
+                "user": self._principal_user,
+                "acl_version": self._acl_version(),
             }
         )
         return make_cache_key(tenant_id, question, self._model_version(config), digest)
@@ -188,18 +252,19 @@ class RagPipeline:
         if not hasattr(self._cache, "lookup"):
             return self._cache.get(key), "exact"
         try:
-            return self._cache.lookup(question, key, self._question_vector(question))
+            return self._cache.lookup(question, key, self._question_vector(question), tenant_id=tenant_id)
         except Exception as exc:  # noqa: BLE001
             # 45xx：无感降级，只上报指标不回传用户
             logger.warning("缓存读取降级（本次不走缓存）: %s", exc)
             self._prom.cache_total.labels(result="error").inc()
             return None, "miss"
 
-    def _cache_store(self, key: str, question: str, payload: dict, ttl: float) -> None:
-        """写入缓存。优先用支持"问题 + 向量"的新签名，旧实现退回三参数。"""
+    def _cache_store(self, key: str, question: str, payload: dict, ttl: float, tenant_id: str = "") -> None:
+        """写入缓存。优先用支持"问题 + 向量 + 租户"的新签名，旧实现退回三参数。"""
         try:
             self._cache.set(
-                key, payload, ttl, question=question, vector=self._question_vector(question)
+                key, payload, ttl, question=question,
+                vector=self._question_vector(question), tenant_id=tenant_id,
             )
             return
         except TypeError:
@@ -225,6 +290,48 @@ class RagPipeline:
         return analysis_obj.model_dump(), query_items, not analysis_obj.needs_retrieval
 
     # ---- ACL 过滤（检索后强制校验，阶段 9 §3.3 双保险的应用层一侧）----
+
+    def _build_filters(self, tenant_id: str):
+        """构造检索过滤条件（TASK-142）。
+
+        只有在**能低成本算出可见清单**时才带上 `visible_doc_ids`：判定是
+        "按 ACL 表枚举该主体的可见文档"，文档量很大时这个集合会很大，此时
+        `to_milvus_expr` 会自动降级为 tenant 粗过滤（避免超长表达式报错），
+        精确性由后过滤保证。
+
+        拿不到清单（未启用 ACL / 无访问器）时返回 None，行为与改造前一致——
+        降级而非中断。
+        """
+
+        if self._acl_filter is None:
+            return None  # 未启用 ACL：不做文档级过滤（与后过滤的短路语义一致）
+        visible = None
+        provider = self._visible_docs_provider
+        if provider is not None:
+            try:
+                visible = provider()
+            except Exception as exc:  # noqa: BLE001 - 清单拿不到就退回后过滤
+                logger.debug("可见文档清单获取失败（退回后过滤）: %s", exc)
+        return RetrievalFilters(tenant_id=tenant_id, visible_doc_ids=visible)
+
+    def _probe_denied_content(self, query_items, tenant_id, config, filters) -> bool:
+        """探测"存在匹配内容但当前主体不可见"（TASK-142）。
+
+        只在**检索结果为空**时调用（冷路径），且只返回布尔值——被探测到的内容
+        绝不进入响应、日志或指标，避免把探测本身变成信息泄露通道。
+
+        任何异常都视为"探不到"（返回 False）：宁可把权限拒答误报成"无内容"，
+        也不要因探测失败把整个请求变成 500。
+        """
+        try:
+            probe = RetrievalFilters(tenant_id=tenant_id)  # 不带允许清单 = 不过滤
+            result = self._hybrid.search_multi(
+                query_items, tenant_id, config, rerank_query="", filters=probe
+            )
+            return bool(result.candidates)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("权限探测失败（按无内容处理）: %s", exc)
+            return False
 
     def _visible_candidates(self, hybrid_result: HybridResult) -> tuple[list, int]:
         """ACL 过滤后的可见候选 + 被过滤条数。
@@ -257,25 +364,66 @@ class RagPipeline:
         acl_filter = self._acl_filter
         visible, acl_filtered = self._visible_candidates(hybrid_result)
 
-        evidence: list[Evidence] = []
+        # TASK-116 / TASK-150：先构造候选（含父块展开），再统一做
+        # 去重 → MMR → token 预算裁剪 → 硬截断。
+        # 此前父块展开后**不重排不截断**：多个命中子块被替换成同一段父块全文，
+        # 同一篇长文可能进提示词 N 次（既浪费预算又挤掉其他文档的证据）。
+        candidates: list[ContextItem] = []
+        # key → 原始候选（保留 chunk 元信息，避免组装后再反查）
+        meta: dict[str, tuple] = {}
         for rank, cand in enumerate(visible, start=1):
             chunk = cand.chunk
             filename = self._doc_name_resolver(chunk.doc_id)
             score = cand.rerank_score if hybrid_result.reranked else cand.rrf_score
             content = chunk.content
+            # 父块展开：用 parent_id 作为去重键，同一父块只保留最高分的那次命中
+            dedupe_key = chunk.chunk_id
             if chunk.parent_id and self._docstore is not None:
                 parent = self._docstore.get_parent(chunk.parent_id)
                 if parent is not None:
                     content = parent.content
+                    dedupe_key = f"parent:{chunk.parent_id}"
+            if dedupe_key in meta:
+                continue  # 同一父块已收录：保留先出现（分数更高）的那次
+            meta[dedupe_key] = (chunk, cand, f"{filename} · {chunk.source}")
+            candidates.append(
+                ContextItem(
+                    key=dedupe_key,
+                    doc_id=chunk.doc_id,
+                    content=content,
+                    score=float(score or 0.0),
+                    source=f"{filename} · {chunk.source}",
+                    rank=rank,
+                )
+            )
+
+        assembled = assemble_context(
+            candidates,
+            token_budget=int(getattr(self._settings, "context_token_budget", 0) or 0),
+            mmr_lambda=float(getattr(self._settings, "context_mmr_lambda", 1.0) or 1.0),
+        )
+        if assembled.dropped:
+            logger.info(
+                "上下文组装：%d 条候选 → %d 条（约 %d token，丢弃 %d 条）",
+                len(candidates), len(assembled.items), assembled.tokens, len(assembled.dropped),
+            )
+        # 供前端解释"为什么这条没进上下文"
+        self._context_dropped = [
+            {"key": d.key, "reason": d.reason, "doc_id": d.doc_id} for d in assembled.dropped
+        ]
+
+        evidence: list[Evidence] = []
+        for rank, item in enumerate(sorted(assembled.items, key=lambda c: c.rank), start=1):
+            chunk, cand, source_label = meta[item.key]
             evidence.append(
                 Evidence(
                     rank=rank,
                     chunk_id=chunk.chunk_id,
-                    score=round(score, 4) if score is not None else None,
-                    content=content,
-                    source=f"{filename} · {chunk.source}",
+                    score=round(item.score, 4) if item.score else None,
+                    content=item.content,
+                    source=source_label,
                     doc_id=chunk.doc_id,
-                    filename=filename,
+                    filename=self._doc_name_resolver(chunk.doc_id),
                     source_route=cand.source_route,
                     modality=chunk.modality,
                     chunker=chunk.chunker,
@@ -335,9 +483,11 @@ class RagPipeline:
         latency_ms: float,
         from_cache: bool,
         llm_called: bool,
+        path: str = "ask",
     ) -> None:
         self._prom.requests_total.labels(status="ok" if ok else "error").inc()
-        self._prom.latency_seconds.labels(tenant=tenant_id).observe(latency_ms / 1000)
+        # TASK-131：label 由 tenant 改为 path（低基数）。按租户的延迟请看结构化日志。
+        self._prom.latency_seconds.labels(path=path).observe(latency_ms / 1000)
         self._metrics_store.record_request(question, ok, latency_ms, from_cache, llm_called)
 
     def _observe_retrieval(self, hybrid_result: HybridResult) -> None:
@@ -357,6 +507,22 @@ class RagPipeline:
     ) -> Iterator[tuple[str, dict]]:
         """校验闭环主流程。产出的事件同时支撑 /ask（聚合）与 /ask/stream（透传）。"""
         self._log_request(trace_id, tenant_id, question)
+
+        # ---- 输入侧 PII 探测（TASK-169）----
+        # 策略是**探测 + 留痕，不阻断**：用户问"我的订单 13800138000 怎么处理"是正常诉求，
+        # 直接拒答会误伤。真正需要硬拦的是"把含 PII 的文档灌进知识库"（见 ingest 侧）。
+        # 这里把命中的类别作为事件与审计线索暴露出来，便于事后追溯与提示用户。
+        if self._scanner:
+            q_scan = self._scanner.scan(question, tenant_id)
+            if not q_scan["safe"]:
+                logger.info(
+                    "输入侧 PII 探测：trace_id=%s categories=%s", trace_id, q_scan["categories"]
+                )
+                yield "input_pii_detected", {
+                    "categories": q_scan["categories"],
+                    "trace_id": trace_id,
+                }
+
         analysis, query_items, is_chitchat = self._preprocess(question, tenant_id)
         preprocess_calls = (analysis or {}).get("llm_calls", 0)
         llm_calls = preprocess_calls
@@ -387,10 +553,24 @@ class RagPipeline:
         refusal_reason = REASON_NO_CONTENT
         max_rounds = 1 + (self._crag.max_iterations if self._crag else 0)
 
+        # TASK-142：构造检索过滤条件并**下推**。此前 ACL 只在召回之后做后过滤，
+        # 不可见文档会占满 top-k 名额（DEF-R-6：用户有权看 7 份，却因 3 份不可见
+        # 排在前列而拿不到任何证据）。下推后 Milvus 在召回阶段就排除不可见文档，
+        # FAISS 则由迭代扩取兜住。
+        filters = self._build_filters(tenant_id)
+
         for round_no in range(1, max_rounds + 1):
-            hybrid_result = self._hybrid.search_multi(query_items, tenant_id, config, rerank_query=question)
+            # TASK-132：检索阶段 span（含查询数、最终召回的统计在下面挂属性）
+            with span("retrieve", **{"kquery.queries": len(query_items),
+                                     "kquery.round": round_no}) as sp:
+                hybrid_result = self._hybrid.search_multi(
+                    query_items, tenant_id, config, rerank_query=question, filters=filters
+                )
+                sp.set_attribute("kquery.candidates", len(hybrid_result.candidates))
+                sp.set_attribute("kquery.reranked", bool(hybrid_result.reranked))
             self._observe_retrieval(hybrid_result)
-            # ACL 先于评分：不可见的证据既不该进上下文，也不该撑高置信度
+            # 后过滤保留为**第二道防线**：即使下推被降级（清单过大）或后端不支持
+            # 表达式，应用层仍会拦一次。deny 与多身份判定只能在这里做。
             candidates, acl_filtered = self._visible_candidates(hybrid_result)
             retrieved_total += len(hybrid_result.candidates)
 
@@ -400,6 +580,15 @@ class RagPipeline:
             if not candidates:
                 # 有召回但全被权限过滤 → 权限类拒答（与"知识库没有"是不同产品动作）
                 reason = REASON_PERMISSION if acl_filtered and retrieved_total else REASON_NO_CONTENT
+                # TASK-142：ACL 下推后，"不可见文档"根本不会出现在召回结果里，
+                # 于是 acl_filtered 恒为 0，permission_denied 又变不可达。
+                # 这里做一次**只读探测**（仅空结果路径，不在热路径上）：绕过 ACL 再查一次，
+                # 若能查到内容则说明"库里有但你没权限"，据此区分两种拒答。
+                # 注意只回传原因，不回传任何被过滤文档的元信息。
+                if reason == REASON_NO_CONTENT and filters is not None and self._acl_filter:
+                    if self._probe_denied_content(query_items, tenant_id, config, filters):
+                        reason = REASON_PERMISSION
+                        acl_filtered += 1
                 rounds.append({"round": round_no, "branch": BRANCH_INCORRECT, "avg_score": 0.0, "evidence_count": 0, "refined_query": ""})
                 self._persist_round(trace_id, question, tenant_id, rounds[-1])
                 yield "crag_branch", {"branch": BRANCH_INCORRECT, "avg_score": 0.0, "round": round_no, "acl_filtered": acl_filtered}
@@ -437,7 +626,13 @@ class RagPipeline:
                 llm_calls += 1
                 rounds[-1]["refined_query"] = refined
                 yield "refine", {"before": question if round_no == 1 else rounds[-2].get("refined_query") or question, "after": refined}
-                query_items = [("refined", refined)]
+                # TASK-148：**追加**而非替换。此前 `query_items = [("refined", refined)]`
+                # 把 original + Fusion/HyDE/Step-Back 改写 + 全部子问题一次性丢弃 ——
+                # 结果是"CRAG 认为证据不足 → 反而把召回面收窄到一条查询"，
+                # 修复动作让情况更糟。正确语义是"在原召回面上再补一个角度"。
+                existing = {q for _, q in query_items}
+                if refined and refined not in existing:
+                    query_items = [*query_items, ("refined", refined)]
 
         self._log_retrieve(trace_id, tenant_id, retrieved_total, retrieved_total - acl_filtered)
         crag_payload = {"branch": final_branch if self._crag else "disabled", "rounds": rounds} if self._crag else None
@@ -475,7 +670,12 @@ class RagPipeline:
         acl_filtered = max(acl_filtered, evidence_acl_filtered)
         used_evidence = [e for e in evidence if e.used]
         evidence_block = build_evidence_block(used_evidence)
-        answer = self._llm.generate(self.build_prompt(question, used_evidence))
+        # TASK-132：生成阶段 span（含证据条数；首 token 延迟由 runner 侧记录）
+        with span("generate", **{"kquery.evidence": len(used_evidence)}) as sp:
+            answer = self._llm.generate(self.build_prompt(question, used_evidence))
+            usage = getattr(self._llm, "last_usage", None)
+            if usage is not None:
+                sp.set_attribute("gen_ai.usage.total_tokens", int(getattr(usage, "total", 0) or 0))
         llm_calls += 1
 
         # ---- 幻觉自检 + 受限重生成（只一次）----
@@ -674,9 +874,12 @@ class RagPipeline:
             final = next(p for k, p in events if k == "_final")
             result = self._assemble(trace_id, started, events)
             self._cache_store(
-                cache_key, question, result.model_dump(mode="json"), config.cache_ttl_s
+                cache_key, question, result.model_dump(mode="json"), config.cache_ttl_s,
+                tenant_id=tenant_id,
             )
             self._prom.llm_calls_total.inc(final.get("llm_calls", 1))
+            # TASK-120：token 用量结算（激活此前永不触发的 token_daily 配额维度）
+            self._settle_tokens(tenant_id, int(final.get("llm_calls", 1)))
             self._record(question, tenant_id, True, result.elapsed_ms, from_cache=False, llm_called=True)
             self._record_quality(result)
             logger.info(
@@ -752,11 +955,15 @@ class RagPipeline:
 
             result = self._assemble(trace_id, started, events)
             self._cache_store(
-                cache_key, question, result.model_dump(mode="json"), config.cache_ttl_s
+                cache_key, question, result.model_dump(mode="json"), config.cache_ttl_s,
+                tenant_id=tenant_id,
             )
             final = next(p for k, p in events if k == "_final")
             self._prom.llm_calls_total.inc(final.get("llm_calls", 1))
-            self._record(question, tenant_id, True, result.elapsed_ms, from_cache=False, llm_called=True)
+            # TASK-120：token 用量结算（激活此前永不触发的 token_daily 配额维度）
+            self._settle_tokens(tenant_id, int(final.get("llm_calls", 1)))
+            self._record(question, tenant_id, True, result.elapsed_ms, from_cache=False,
+                         llm_called=True, path="ask_stream")
             self._record_quality(result)
             logger.info(
                 "ask_stream 完成 trace_id=%s verdict=%s confidence=%s elapsed_ms=%d",
@@ -765,7 +972,7 @@ class RagPipeline:
             yield "done", {"trace_id": trace_id, "elapsed_ms": result.elapsed_ms, "from_cache": False}
         except LLMError as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
-            self._record(question, tenant_id, False, elapsed, from_cache=False, llm_called=True)
+            self._record(question, tenant_id, False, elapsed, from_cache=False, llm_called=True, path="ask_stream")
             logger.warning("ask_stream 失败 trace_id=%s code=%s: %s", trace_id, exc.code, exc.message)
             yield "error", {"code": int(exc.code), "message": exc.message}
         except Exception:

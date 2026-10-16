@@ -9,9 +9,9 @@ import logging
 import time
 from pathlib import Path
 
-from app.domain.schemas import Chunk, Community, EntityNode, RelationEdge
+from app.domain.schemas import Chunk, EntityNode, RelationEdge
 from app.services.embeddings import Embeddings
-from app.services.graph.community import CommunityDetector, HierarchicalCommunityDetector, build_communities
+from app.services.graph.community import HierarchicalCommunityDetector, build_communities
 from app.services.graph.extractor import Extractor
 from app.services.graph.resolver import EntityResolver
 from app.services.graph.store import BaseGraphStore

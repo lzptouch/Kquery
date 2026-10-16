@@ -10,7 +10,7 @@ import logging
 import numpy as np
 
 from app.services.embeddings import Embeddings
-from app.services.graph.resolver import EntityResolver, normalize_name
+from app.services.graph.resolver import EntityResolver
 from app.services.graph.store import BaseGraphStore
 
 logger = logging.getLogger(__name__)
@@ -47,19 +47,14 @@ class GraphQueryService:
             if len(seeds) >= self._seed_top_k:
                 return seeds
         # 2. 向量召回（问题未出现确切实体名时；复用消歧器已存向量，不重复编码）
+        # TASK-153：改用消歧器的向量化索引（此前是逐实体 Python 循环点积）
         if not seeds:
             try:
                 qvec = np.array(self._embeddings.embed_query(question), dtype=np.float32)
-                scored = []
-                for info in self._resolver.all_entities():
-                    evec = self._resolver.vector_of(info["name"])
-                    if evec is None or evec.shape != qvec.shape:
-                        continue
-                    sim = float(np.dot(qvec, evec))
-                    if sim >= SEED_VECTOR_TH:
-                        scored.append((info["name"], sim))
-                scored.sort(key=lambda x: -x[1])
-                seeds = [name for name, _ in scored[: self._seed_top_k]]
+                hits = self._resolver.search_similar(
+                    qvec, top_k=self._seed_top_k, threshold=SEED_VECTOR_TH
+                )
+                seeds = [name for name, _ in hits]
             except Exception as exc:  # noqa: BLE001
                 logger.warning("种子向量召回失败: %s", exc)
         return seeds[: self._seed_top_k]

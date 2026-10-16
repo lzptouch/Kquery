@@ -12,12 +12,11 @@
 import json
 import logging
 import re
-import time
 from typing import Protocol
 
 from app.services.agent.tools import ToolRegistry
-from app.services.llm import LLM, LLMError
-from app.services.multiagent.blackboard import Blackboard, Critique, SubTask
+from app.services.llm import LLM
+from app.services.multiagent.blackboard import Critique, SubTask
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +127,23 @@ class LLMPlanner:
         ) from last_error
 
 
+def score_many(validator, query: str, texts: list[str]) -> list[float]:
+    """批量打分入口（TASK-175）。
+
+    `score_many` 是**可选优化能力**而非契约要求：`Validator` 协议只规定
+    `score(query, text)`，第三方/测试替身实现单条即可。批量只是把 N 次网络
+    往返压成 1 次的加速手段，拿不到就退回逐条——绝不能让"没实现加速方法"
+    变成"功能不可用"。
+
+    （对比 TASK-159 删掉的 `inspect.signature` 探测：那里 `model` 参数已是
+    所有实现的正式契约，探测纯属多余；这里的差异是真实存在的。）
+    """
+    batch = getattr(validator, "score_many", None)
+    if callable(batch):
+        return batch(query, texts)
+    return [validator.score(query, t) for t in texts]
+
+
 class RerankValidator:
     """Validator：复用 gte-rerank-v2 口径给证据打分（与阶段 5 同标准）。"""
 
@@ -136,18 +152,40 @@ class RerankValidator:
         self._threshold = adopt_threshold
 
     def score(self, query: str, text: str) -> float:
+        return self.score_many(query, [text])[0]
+
+    def score_many(self, query: str, texts: list[str]) -> list[float]:
+        """批量打分（TASK-175）。
+
+        此前编排器对每条证据**逐条**调一次 rerank（`top_n=1`），是 N 次串行网络
+        往返。rerank 接口本身支持一次多条文档，批量调用把 N 次往返压成 1 次。
+
+        返回与 `texts` 等长的分数列表（未命中的记 0.0），保证调用方索引对齐。
+        """
+        if not texts:
+            return []
         from app.domain.schemas import Chunk
         from app.services.retrieval.fusion import FusedCandidate
 
-        cand = FusedCandidate(
-            chunk=Chunk(
-                chunk_id="tmp", doc_id="tmp", seq=1, content=text,
-                source="", tenant_id="default",
-            ),
-            rrf_score=0.0,
-        )
-        ranked = self._reranker.rerank(query, [cand], top_n=1)
-        return ranked[0].rerank_score if ranked else 0.0
+        candidates = [
+            FusedCandidate(
+                chunk=Chunk(
+                    chunk_id=f"tmp{i}", doc_id="tmp", seq=i + 1, content=text,
+                    source="", tenant_id="default",
+                ),
+                rrf_score=0.0,
+            )
+            for i, text in enumerate(texts)
+        ]
+        try:
+            ranked = self._reranker.rerank(query, candidates, top_n=len(candidates))
+        except Exception:
+            # 批量失败退回逐条：批量接口不可用时不能整批判 0（那会让全部证据被淘汰，
+            # 报告直接变成"证据不足"——降级必须保持结果可用）
+            logger.warning("批量校验失败，退回逐条评分")
+            return [self.score(query, t) for t in texts]
+        by_id = {c.chunk.chunk_id: (c.rerank_score or 0.0) for c in ranked}
+        return [by_id.get(f"tmp{i}", 0.0) for i in range(len(texts))]
 
 
 class LLMWriter:

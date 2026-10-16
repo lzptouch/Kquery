@@ -248,6 +248,9 @@ class RetrievalStats(BaseModel):
     vector_ms: int = 0
     fusion_ms: int = 0
     rerank_ms: int = 0
+    # TASK-147：本次降级（失败被跳过）的检索路。为空表示全部正常——
+    # 有了它，"这一次召回为什么偏少"才有可解释的线索。
+    degraded_routes: list[str] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

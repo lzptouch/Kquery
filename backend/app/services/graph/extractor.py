@@ -76,14 +76,28 @@ def parse_extraction(raw: str) -> dict:
 
 
 class LLMExtractor:
-    def __init__(self, llm: LLM, max_retries: int = 1):
+    """LLM 实体/关系抽取。
+
+    TASK-154：单块正文的截断长度由构造参数控制（默认 2000 字），且**截断必留痕**。
+    此前是硬编码 `text[:2000]` 且静默——长表格块的后半段实体直接消失，
+    排查"为什么这个实体没进图谱"时毫无线索。
+    """
+
+    def __init__(self, llm: LLM, max_retries: int = 1, max_chars: int = 2000):
         self._llm = llm
         self._max_retries = max_retries
+        self._max_chars = max(200, int(max_chars))
 
     def extract(self, text: str) -> dict:
         if len(text.strip()) < 10:
             return {"entities": [], "relations": []}
-        prompt = EXTRACT_PROMPT.format(text=text[:2000])
+        truncated = len(text) > self._max_chars
+        if truncated:
+            logger.info(
+                "实体抽取输入被截断：%d → %d 字（超长块后半段的实体不会被抽取）",
+                len(text), self._max_chars,
+            )
+        prompt = EXTRACT_PROMPT.format(text=text[: self._max_chars])
         last_error: Exception | None = None
         for _ in range(self._max_retries + 1):
             try:

@@ -15,7 +15,7 @@ from app.services.ratelimit import TokenBucketLimiter
 from app.services.retrieval.base import RetrievalCandidate
 from app.services.retrieval.fusion import rrf_fuse
 from app.services.retrieval.rerank import RerankError
-from tests.conftest import SAMPLE_MD, upload_sample
+from tests.conftest import upload_sample
 
 
 def _chunk(cid: str, content: str = "x") -> Chunk:
@@ -239,8 +239,13 @@ class TestMetricsAndAdmin:
         assert summary["total_requests"] >= 2
         assert 0.0 <= summary["cache_hit_rate"] <= 1.0
         top = client.get("/admin/metrics/top-queries").json()["data"]
-        assert top[0]["query"] == "支持哪些文档格式？"
+        # TASK-182：指标层不再持有用户原话，只存哈希——同一问题哈希一致，
+        # 因此"高频问题"依然可统计，但内存里不留明文副本。
+        assert "query" not in top[0], "指标不应回传用户原话"
+        assert top[0]["query_hash"], "应返回问题指纹"
         assert top[0]["count"] == 2
+        # 指纹稳定：同一问题两次提问聚合成同一条
+        assert len({r["query_hash"] for r in top}) == len(top)
         ts = client.get("/admin/metrics/timeseries?metric=requests").json()["data"]
         assert ts["metric"] == "requests" and len(ts["points"]) >= 1
 
@@ -281,7 +286,7 @@ class TestProbeAndDegradation:
         class FailingReranker:
             model = "failing"
 
-            def rerank(self, query, candidates, top_n):
+            def rerank(self, query, candidates, top_n, model=None):
                 raise RerankError("模拟重排接口不可用")
 
         client.app.state.hybrid._reranker = FailingReranker()

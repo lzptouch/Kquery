@@ -5,14 +5,13 @@
 """
 import json
 import time
-from pathlib import Path
 
 import pytest
 
 from app.services.agent.graph import build_agent_graph
 from app.services.agent.planner import HeuristicPlanner, sanitize_steps
 from app.services.agent.reflector import HeuristicReflector
-from app.services.agent.runner import AgentRunner, agent_prompt_builder
+from app.services.agent.runner import agent_prompt_builder
 from app.services.agent.sessions import SessionStore
 from app.services.agent.state import initial_state, merge_evidence, sanitize_snapshot
 from app.services.agent.tools import CalculatorTool, ToolRegistry
@@ -211,10 +210,16 @@ class TestGraphExecution:
         assert final["status"] == "completed"  # 不中断
 
     def test_low_score_correction(self):
-        """反思第二道防线：低分 answer 被纠正为 continue。"""
+        """反思第二道防线：低分 answer 被纠正为 continue。
+
+        TASK-122（循环检测）落地后行为有一处**预期内的变化**：本测试的 planner 永远
+        返回同一计划，重规划产出的查询与首次完全相同 —— 这类无信息增益的重复调用
+        现在会被指纹检测短路并收敛，而不是继续"重规划→再检索→再重规划"。
+        熔断不是错误：仍会基于已有证据尽力作答，只是标记 incomplete。
+        """
         registry = make_registry(FakeSearchTool([_evidence("c#1", 0.9)]))
         planner = ScriptedPlanner([[{"description": "q", "tool": "vector_search"}]])
-        # 低分却想作答 → 纠正为 continue → 无剩余步骤 → 升级 replan → 重规划后无新步 → answer
+        # 低分却想作答 → 纠正为 continue → 无剩余步骤 → 升级 replan → 重复查询被循环检测短路
         reflector = ScriptedReflector([
             {"score": 0.2, "next_action": "answer", "reason": ""},
             {"score": 0.9, "next_action": "answer", "reason": ""},
@@ -222,7 +227,10 @@ class TestGraphExecution:
         final, events = run_graph(registry, planner, reflector)
         kinds = [e for e, _ in events]
         assert "replan" in kinds  # 经历了重规划
-        assert final["status"] == "completed"
+        assert final["replan_count"] <= 2, "重规划必须有上限"
+        assert final["status"] in ("completed", "circuit_breaker")
+        # 无论走哪条路径，都必须给出可用产出（答案或明确拒答），不能空返回
+        assert final.get("final_answer") or final.get("refusal") is True
 
     def test_calculator_tool(self):
         registry = make_registry()
@@ -266,7 +274,7 @@ class TestSessionStore:
         store = SessionStore(tmp_path / "s", ttl_s=1)
         s = store.create("t", "u")
         path = store._path(s["session_id"])
-        payload = json.loads(path.read_text())
+        payload = json.loads(path.read_text(encoding="utf-8"))
         payload["expires_at"] = time.time() - 1  # 伪造过期
         path.write_text(json.dumps(payload))
         from app.core.envelope import ApiError

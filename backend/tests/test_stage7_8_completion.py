@@ -12,7 +12,6 @@
 8.  `_run_layer` 传入 report_id 后事件仍能正确归属
 """
 import threading
-import time
 
 import pytest
 
@@ -337,7 +336,6 @@ class TestReportStreamEvents:
 
     def test_run_stream_restores_sink(self, tmp_path):
         """run_stream 消费完必须摘掉 sink，否则事件会推给已死的连接。"""
-        from app.services.multiagent.orchestrator import Orchestrator
 
         orch, reports = self._make(tmp_path)
         sentinel = lambda e, p: None  # noqa: E731
@@ -368,7 +366,8 @@ class TestPermissionMatrix:
         data = client.get("/admin/users/permission-matrix").json()["data"]
         assert data["capabilities"] and data["matrix"]
         for cap in data["capabilities"]:
-            assert set(cap) == {"key", "label", "enforced"}
+            # TASK-164：新增 `by`（把守该能力的端点），便于运维核对而非只信字符串
+            assert set(cap) == {"key", "label", "enforced", "by"}
 
     def test_every_role_row_has_granted_and_denied(self, client):
         data = client.get("/admin/users/permission-matrix").json()["data"]
@@ -388,13 +387,31 @@ class TestPermissionMatrix:
                 continue
             assert set(row["granted"]) <= admin, f"{role} 的能力超出 admin"
 
-    def test_declared_capabilities_are_labelled(self, client):
-        """不能把纸面权限说成已强制，否则管理员会误以为接了门禁。"""
+    def test_capabilities_are_actually_enforced(self, client):
+        """TASK-164：管理类能力必须**真的**被后端把守，且能说出由谁把守。
+
+        此前 6 项标 `declared`（"后端未做角色门禁"）——那是当时的事实。
+        TASK-160 给全部 `/admin/*` 挂上 `require_role("admin")` 之后，
+        继续标 declared 就变成了**低估**实际防护。
+        这里改为断言"不再有纸面权限"，并要求每项都给出把守出处。
+        """
         data = client.get("/admin/users/permission-matrix").json()["data"]
-        enforced = {c["key"]: c["enforced"] for c in data["capabilities"]}
-        assert enforced["ask"] == "backend"
-        assert enforced["view_all_tenant_data"] == "acl"
-        assert enforced["manage_acl"] == "declared"
+        caps = {c["key"]: c for c in data["capabilities"]}
+        assert caps["ask"]["enforced"] == "backend"
+        assert caps["view_all_tenant_data"]["enforced"] == "acl"
+        # 管理类能力已由 /admin/* 的 require_role("admin") 强制
+        assert caps["manage_acl"]["enforced"] == "backend"
+        assert caps["manage_users"]["enforced"] == "backend"
+        assert caps["manage_quota"]["enforced"] == "backend"
+        assert caps["view_audit"]["enforced"] == "backend"
+        assert caps["manage_sensitive"]["enforced"] == "backend"
+        assert caps["run_eval"]["enforced"] == "backend"
+        # 不允许再有"声明了但没人把守"的纸面权限
+        assert not [k for k, c in caps.items() if c["enforced"] == "declared"], (
+            "存在未被强制的纸面权限，会把管理员误导为已接门禁"
+        )
+        # 每项都要说得出把守它的端点（可核对，而非只能相信字符串）
+        assert all(c.get("by") for c in caps.values()), "每项能力都应注明把守出处"
 
     def test_matrix_query_is_audited(self, client):
         client.get("/admin/users/permission-matrix")

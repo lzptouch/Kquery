@@ -1,5 +1,5 @@
 /** 非流式 API 客户端：统一信封解析（阶段 0 前端规范 §7.1）。 */
-import { authErrorMessage, authHeaders, isAuthFailure, withAuth } from "./auth";
+import { authErrorMessage, authHeaders, isAuthFailure, notifyUnauthorized, withAuth } from "./auth";
 import type {
   AgentMetrics,
   AskData,
@@ -22,35 +22,38 @@ import type {
 } from "../types";
 import type {
   CommunityInfo,
-  CritiqueRound,
   EntityDetail,
-  EvidenceRecordView,
   GraphEntity,
   GraphStats,
   MediaItem,
-  MultiAgentMetrics,
-  PlanTask,
-  ReportDetail,
-  ReportSummary,
   Subgraph,
 } from "../types";
 import type {
   AclImpact,
   AuditEvent,
   DocAcl,
-  EvalDataset,
-  EvalRunDetail,
-  EvalRunSummary,
+  LoginResponse,
+  MeResponse,
   PlatformQuota,
   QuotaRow,
   SensitiveWord,
   UserRecord,
 } from "../types";
 
+/**
+ * 登录/注册端点自身返回 401 是**正常业务结果**（口令错了），
+ * 不能触发"清会话 + 跳登录"——那会把"用户名或密码不正确"这条提示吃掉，
+ * 用户只看到登录页一闪，压根不知道发生了什么。
+ */
+const AUTH_ENTRY_PATHS = new Set(["/auth/login", "/auth/register"]);
+
 export async function request<T>(path: string, init?: RequestInit): Promise<Envelope<T>> {
   // TASK-160 前端配套：所有请求统一注入身份（否则管理页全部 403）。
   // 加载入 authHeaders 而不是内联，是为了保证新增的 API 函数不会漏带凭证。
   const resp = await fetch(path, { ...init, headers: withAuth(init?.headers) });
+  if (resp.status === 401 && !AUTH_ENTRY_PATHS.has(path.split("?")[0])) {
+    notifyUnauthorized();
+  }
   let body: Envelope<T>;
   try {
     body = (await resp.json()) as Envelope<T>;
@@ -312,44 +315,6 @@ export function searchMedia(query: string, topK = 4): Promise<Envelope<{ items: 
   });
 }
 
-// ---------- 阶段 8：报告中心 ----------
-
-export function createReport(goal: string): Promise<Envelope<{ report_id: string; title: string; status: string }>> {
-  return request("/reports", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ goal }),
-  });
-}
-
-export function listReports(): Promise<Envelope<ReportSummary[]>> {
-  return request<ReportSummary[]>("/reports");
-}
-
-export function getReport(reportId: string): Promise<Envelope<ReportDetail>> {
-  return request<ReportDetail>(`/reports/${encodeURIComponent(reportId)}`);
-}
-
-export function getReportPlan(reportId: string): Promise<Envelope<{ tasks: PlanTask[]; layers: number }>> {
-  return request(`/reports/${encodeURIComponent(reportId)}/plan`);
-}
-
-export function getReportEvidence(reportId: string): Promise<Envelope<{ records: EvidenceRecordView[]; total: number; adopted: number; rejected: number }>> {
-  return request(`/reports/${encodeURIComponent(reportId)}/evidence`);
-}
-
-export function getReportCritique(reportId: string): Promise<Envelope<{ rounds: CritiqueRound[]; final_score: number | null; accepted: boolean | null; unresolved_issues: string[] }>> {
-  return request(`/reports/${encodeURIComponent(reportId)}/critique`);
-}
-
-export function deleteReport(reportId: string): Promise<Envelope<{ deleted: boolean }>> {
-  return request(`/reports/${encodeURIComponent(reportId)}`, { method: "DELETE" });
-}
-
-export function fetchMultiAgentMetrics(): Promise<Envelope<MultiAgentMetrics>> {
-  return request<MultiAgentMetrics>("/admin/metrics/multiagent");
-}
-
 // ---------- 阶段 9：企业护栏 ----------
 
 export function fetchUsers(): Promise<Envelope<UserRecord[]>> {
@@ -360,6 +325,33 @@ export function editUser(userId: string, patch: { roles: string[]; groups: strin
   return request(`/admin/users/${encodeURIComponent(userId)}`, {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
   });
+}
+
+/** 管理员为账号设置/重置口令。只有管理员能调（后端挂在 /admin/* 的 admin 门禁下）。 */
+export function setUserPassword(userId: string, password: string): Promise<Envelope<{ user_id: string; password_set: boolean }>> {
+  return request(`/admin/users/${encodeURIComponent(userId)}/password`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
+  });
+}
+
+// ---------- 登录 / 注册 / 当前身份 ----------
+
+export function login(username: string, password: string): Promise<Envelope<LoginResponse>> {
+  return request<LoginResponse>("/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function register(username: string, password: string): Promise<Envelope<{ user_id: string; roles: string[] }>> {
+  return request<{ user_id: string; roles: string[] }>("/auth/register", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+}
+
+export function fetchMe(): Promise<Envelope<MeResponse>> {
+  return request<MeResponse>("/auth/me");
 }
 
 export function fetchAclList(): Promise<Envelope<DocAcl[]>> {
@@ -408,32 +400,6 @@ export function addSensitiveWord(word: SensitiveWord): Promise<Envelope<unknown>
 
 export function deleteSensitiveWord(word: string, tenantId = "default"): Promise<Envelope<unknown>> {
   return request(`/admin/sensitive/${encodeURIComponent(word)}?tenant_id=${tenantId}`, { method: "DELETE" });
-}
-
-export function fetchEvalDatasets(): Promise<Envelope<EvalDataset[]>> {
-  return request<EvalDataset[]>("/admin/eval/datasets");
-}
-
-export function saveEvalDataset(name: string, version: string, samples: Record<string, unknown>[]): Promise<Envelope<unknown>> {
-  return request("/admin/eval/datasets", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, version, samples }),
-  });
-}
-
-export function runEval(dataset: string, datasetVersion: string): Promise<Envelope<EvalRunSummary>> {
-  return request("/admin/eval/run", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dataset, dataset_version: datasetVersion }),
-  });
-}
-
-export function fetchEvalRuns(): Promise<Envelope<EvalRunSummary[]>> {
-  return request<EvalRunSummary[]>("/admin/eval/runs");
-}
-
-export function fetchEvalRun(runId: string): Promise<Envelope<EvalRunDetail>> {
-  return request<EvalRunDetail>(`/admin/eval/runs/${encodeURIComponent(runId)}`);
 }
 
 /** 单文件上传（XMLHttpRequest 以获得上传进度）。 */

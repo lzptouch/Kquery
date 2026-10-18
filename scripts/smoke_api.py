@@ -30,8 +30,6 @@ AUTH_HEADERS = {
     "X-Roles": "admin",
 }
 TOKEN = ""  # 非空时改用 Bearer 凭证（生产/容器形态）
-# 报告同步生成的真实耗时（真实模型下可达数分钟）。可用 --report-timeout 覆盖。
-REPORT_TIMEOUT_S = 600
 
 
 def call(base: str, method: str, path: str, body=None, raw=False, timeout=120,
@@ -191,6 +189,34 @@ SAMPLE_MD = """# 曼昆经济学核心概念
 
 def run(base: str) -> int:
     section(f"目标服务: {base}")
+
+    # ---------------------------------------------------- 登录档与管理区门禁
+    section("认证 · 登录端点与身份")
+    # /auth/* 只在账号密码档开启时可用（AUTH_PASSWORD_ENABLED=true）。
+    # 未开启时返回 403 属预期——它不是"服务坏了"，而是"这个部署没开这个档位"。
+    status, body = call(base, "POST", "/auth/login",
+                        body={"username": "__probe__", "password": "definitely-wrong-1"},
+                        auth=False)
+    login_reachable = status != 404
+    check("登录端点已注册（未被代理成 SPA 页面）",
+          isinstance(body, dict) and ("error" in body or "data" in body),
+          f"实际 {status}: {str(body)[:100]}")
+    if status == 403:
+        check("账号密码档未开启时明确拒绝（不是静默放行）", True, "AUTH_PASSWORD_ENABLED=false")
+    elif login_reachable:
+        check("口令错误返回 401", status == 401, f"实际 {status}")
+
+    # /auth/me 的匿名行为按档位不同：令牌档下没有令牌必须 401；
+    # 身份头档下 HeaderAuthProvider 从不拒绝（它只是构造一个 anon 主体），
+    # 因此匿名请求会正常返回 200。两种都是既有设计，断言需与档位一致。
+    status, body = call(base, "GET", "/auth/me", auth=False)
+    if TOKEN:
+        check("令牌模式下未带凭证访问 /auth/me 返回 401", status == 401, f"实际 {status}")
+        status, body = call(base, "GET", "/auth/me")
+        check("携带令牌时 /auth/me 返回 200", status == 200, f"实际 {status}: {str(body)[:100]}")
+    else:
+        check("身份头模式下匿名 /auth/me 返回 200（anon 主体）", status == 200,
+              f"实际 {status}: {str(body)[:100]}")
 
     # ---------------------------------------------------------- stage-0 契约
     section("stage-0 · 全局契约与探针")
@@ -364,13 +390,42 @@ def run(base: str) -> int:
     section("stage-9 · 认证与审计")
     # 先验鉴权真的在拦人（TASK-160 的验收口）：匿名与越权都必须被拒。
     # 这两条若失败，说明管理端点又裸奔了——比"功能好用"更该优先发现。
+    #
+    # 匿名期望值是 401/403 二者之一：401=没带凭证被认证层拦下，
+    # 403=带凭证但无角色被门禁拦下。两者都是"被拒"，断言具体哪一个
+    # 等于把"当前部署用哪档认证"硬编码进脚本，换个档位就误报。
     anon_status, _ = call(base, "GET", "/admin/users/permission-matrix", auth=False)
-    check("匿名访问管理端点被拒（403）", anon_status == 403, f"实际 {anon_status}")
-    non_admin_status, _ = call(
-        base, "GET", "/admin/users/permission-matrix", roles="user",
-    )
-    check("非 admin 访问管理端点被拒（403）", non_admin_status == 403,
-          f"实际 {non_admin_status}")
+    check("匿名访问管理端点被拒（401/403）", anon_status in (401, 403), f"实际 {anon_status}")
+
+    # 越权断言只在**身份头模式**下有意义：`roles=` 靠 X-Roles 覆盖身份，
+    # 而令牌模式下 Authorization 头优先，X-Roles 会被后端完全忽略——
+    # 此时"非 admin"实际仍是那个 admin 令牌，断言会假性通过（更糟：假性失败）。
+    # 令牌模式下的越权矩阵由 tests/integration/test_auth_flow.py 覆盖
+    # （那里用真实注册出来的 sales 账号发真令牌）。
+    header_mode = not TOKEN
+    if header_mode:
+        non_admin_status, _ = call(
+            base, "GET", "/admin/users/permission-matrix", roles="user",
+        )
+        check("非 admin 访问管理端点被拒（403）", non_admin_status == 403,
+              f"实际 {non_admin_status}")
+
+        # 管理区收口后，knowledge/graph 与 /admin/* 一样要求 admin。
+        # 曾经它们只要求"已认证"，导致任何登录用户都能上传文档、建图谱、
+        # 读全量文件列表。
+        for probe_path in ("/knowledge/files", "/graph/stats"):
+            probe_status, _ = call(base, "GET", probe_path, roles="user")
+            check(f"非 admin 访问 {probe_path} 被拒（403）", probe_status == 403,
+                  f"实际 {probe_status}")
+
+        # 对话链路必须仍然对普通用户开放——收口管理区时最容易误伤的就是它
+        session_status, _ = call(base, "GET", "/sessions", roles="user")
+        check("非 admin 仍可访问 /sessions（对话链路未被误伤）",
+              session_status == 200, f"实际 {session_status}")
+    else:
+        section("认证 · 越权矩阵（令牌模式跳过）")
+        check("令牌模式下无法用 X-Roles 伪造身份，跳过越权断言", True,
+              "该矩阵由 test_auth_flow.py 用真实 sales 账号覆盖")
 
     status, body = call(base, "GET", "/admin/users/permission-matrix")
     check("权限矩阵端点返回 200", status == 200, f"实际 {status}")
@@ -383,22 +438,6 @@ def run(base: str) -> int:
 
     status, body = call(base, "GET", "/admin/quota/platform")
     check("平台配额端点返回 200", status == 200, f"实际 {status}")
-
-    # ---------------------------------------------------------- stage-8 报告
-    section("stage-8 · 多智能体报告")
-    # 同步生成要走完整链路（规划 → 子任务 → 校验 → 撰写 → 评审，可能多轮），
-    # 真实模型下 120s 远远不够——超时过短会把"慢"误判成"坏"。
-    status, body = call(base, "POST", "/reports?sync=true",
-                        body={"goal": "分析机会成本的含义并举例说明"},
-                        timeout=REPORT_TIMEOUT_S)
-    check("报告生成返回 200", status == 200, f"实际 {status}: {str(body)[:180]}")
-    report = data_of(body)
-    rid = report.get("report_id")
-    check("报告含 report_id", bool(rid))
-    if rid:
-        status, text = call(base, "GET", f"/reports/{rid}/stream", raw=True, timeout=180)
-        check("报告 SSE 可连", status == 200, f"实际 {status}")
-        check("报告 SSE 有 finished 事件", "event: finished" in str(text), str(text)[:150])
 
     # ---------------------------------------------------------- stage-10 会话
     section("stage-6 · Agent 会话")
@@ -439,12 +478,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://localhost:8000",
                         help="服务基址。传 http://localhost:8081 可顺带验证 nginx 代理。")
-    parser.add_argument("--report-timeout", type=int, default=REPORT_TIMEOUT_S,
-                        help="报告同步生成的等待秒数（真实模型下需数分钟）。")
     parser.add_argument("--token", default="",
                         help="Bearer 凭证（AUTH_ENABLED=true 时使用，替代 X-Roles 头）。")
     args = parser.parse_args()
-    REPORT_TIMEOUT_S = args.report_timeout
     TOKEN = args.token
     start = time.perf_counter()
     code = run(args.base)

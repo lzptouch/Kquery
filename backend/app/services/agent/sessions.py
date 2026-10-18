@@ -174,6 +174,7 @@ class SessionStore:
         answer: str,
         verdict: str,
         state: dict,
+        answer_source: str = "",
     ) -> None:
         """轮次结束写快照：带轮次号，同会话串行，证据截断到上限。"""
         with self._lock_for(session_id):
@@ -182,6 +183,7 @@ class SessionStore:
             session["turn"] = new_turn
             session.setdefault("turns", []).append({
                 "question": question, "answer": answer, "verdict": verdict, "turn": new_turn,
+                "answer_source": answer_source,
             })
             snapshot = dict(state)
             snapshot["evidence"] = state.get("evidence", [])[-EVIDENCE_CARRY_LIMIT:]

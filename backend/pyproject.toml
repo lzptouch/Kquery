@@ -25,6 +25,12 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.25.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "playwright>=1.48",
+    "pytest-playwright>=0.6",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8.2.0",
@@ -38,6 +44,10 @@ dev = [
 
 [tool.uv]
 package = false
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

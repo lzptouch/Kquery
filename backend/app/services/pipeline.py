@@ -40,6 +40,21 @@ logger = logging.getLogger(__name__)
 NO_INFO_ANSWER = "知识库无相关内容"
 REFUSAL_TEXT = "知识库中没有足够证据回答该问题"
 
+# 通用知识兜底提示词（doc/analysis/通用知识兜底回答.md §6.2）。
+# 红线：
+# 1. 首句措辞必须与 NO_INFO_ANSWER 不同——runner 的拒答归一用 startswith(NO_INFO_ANSWER)
+#    检测，含该串会被判回拒答；
+# 2. 不得注入证据块——低分无关片段会干扰通用知识回答；
+# 3. 禁止 [n] 引用标注——兜底回答没有可溯源证据，出现编号会让前端引用跳转指到无关片段。
+GENERAL_KNOWLEDGE_PROMPT = """你是企业知识库助手。用户的问题在知识库中没有检索到相关内容。
+请基于你自己的通用知识回答这个问题，并遵守：
+1. 回答的第一句必须是"以下回答基于大模型通用知识，知识库中未收录相关内容"；
+2. 不要编造企业内部数据、制度、人员信息、未公开的数字、具体文档条款；
+3. 无法确定的部分如实说明"这一点我不确定"，不要猜测；
+4. 不要添加 [数字] 形式的引用标注。
+
+用户问题：{question}"""
+
 # 拒答原因（可归因，三类对应完全不同的产品动作）
 REASON_NO_CONTENT = "no_content"  # 知识库无相关内容 → 补知识
 REASON_INSUFFICIENT = "insufficient_evidence"  # 证据不足（循环耗尽）→ 换问法
@@ -354,6 +369,51 @@ class RagPipeline:
 
     # ---- 证据装配 ----
 
+    def _parametric_fallback_events(
+        self, question: str, tenant_id: str, trace_id: str, analysis: dict | None,
+        hybrid_result, llm_calls: int, acl_filtered: int, crag_payload: dict | None,
+        refusal_reason: str,
+    ) -> Iterator[tuple[str, dict]]:
+        """通用知识兜底（doc/analysis/通用知识兜底回答.md §6.7）。
+
+        CRAG 判定「无相关内容/证据耗尽」时，改由模型自身知识回答：
+        - 重生成仍输出拒答话术 → 维持原拒答（兜底失败不硬撑）；
+        - 兜底成功 → verdict=answered + answer_source=parametric，不发 refused 事件。
+        token 由调用方在 _final 后按终稿切块重放，本方法不直接产 token。
+        """
+        answer = self._llm.generate(GENERAL_KNOWLEDGE_PROMPT.format(question=question))
+        llm_calls += 1
+        if answer.strip().startswith(NO_INFO_ANSWER):
+            yield "refused", {"reason": refusal_reason, "trace_id": trace_id,
+                              "acl_filtered": acl_filtered}
+            yield "_final", {
+                "answer": REFUSAL_TEXT, "evidence": [], "analysis": analysis,
+                "retrieval": hybrid_result.stats if hybrid_result else None,
+                "reranked": bool(hybrid_result.reranked) if hybrid_result else False,
+                "verdict": "refused", "refusal_reason": refusal_reason,
+                "answer_source": "", "confidence": 0.0,
+                "crag": crag_payload, "llm_calls": llm_calls,
+                "acl_filtered": acl_filtered,
+            }
+            return
+        confidence = round(float(self._settings.parametric_fallback_confidence), 4)
+        yield "confidence", {
+            "verdict": "answered", "score": confidence,
+            "unsupported_claims_count": 0, "regenerated": False,
+            "unvalidated": True, "self_check": None, "removed_claims": [],
+            "answer_source": "parametric",
+        }
+        self._log_answer(trace_id, tenant_id, answer, 0)
+        yield "_final", {
+            "answer": answer, "evidence": [], "analysis": analysis,
+            "retrieval": hybrid_result.stats if hybrid_result else None,
+            "reranked": bool(hybrid_result.reranked) if hybrid_result else False,
+            "verdict": "answered", "refusal_reason": "",
+            "answer_source": "parametric", "confidence": confidence,
+            "crag": crag_payload, "llm_calls": llm_calls,
+            "acl_filtered": acl_filtered,
+        }
+
     def _to_evidence(self, hybrid_result: HybridResult) -> tuple[list[Evidence], int]:
         """装配证据。返回 (证据列表, 因权限被过滤的条数)。
 
@@ -638,7 +698,15 @@ class RagPipeline:
         crag_payload = {"branch": final_branch if self._crag else "disabled", "rounds": rounds} if self._crag else None
 
         # ---- 拒答判定（一等公民：走成功状态码）----
+        # 通用知识兜底：无相关内容 / 证据耗尽时改由模型自身知识回答（§6.7）。
+        # 红线：权限类拒答（库里有但你没权限）不兜底——通用知识回答可能暗示文档存在。
         if self._crag is not None and final_branch == BRANCH_INCORRECT:
+            if self._settings.parametric_fallback_enabled and refusal_reason != REASON_PERMISSION:
+                yield from self._parametric_fallback_events(
+                    question, tenant_id, trace_id, analysis, hybrid_result,
+                    llm_calls, acl_filtered, crag_payload, refusal_reason,
+                )
+                return
             yield "refused", {"reason": refusal_reason, "trace_id": trace_id,
                               "acl_filtered": acl_filtered}
             yield "_final", {
@@ -652,6 +720,12 @@ class RagPipeline:
             }
             return
         if self._crag is not None and final_branch == BRANCH_AMBIGUOUS and len(rounds) >= max_rounds:
+            if self._settings.parametric_fallback_enabled:
+                yield from self._parametric_fallback_events(
+                    question, tenant_id, trace_id, analysis, hybrid_result,
+                    llm_calls, acl_filtered, crag_payload, REASON_INSUFFICIENT,
+                )
+                return
             yield "refused", {"reason": REASON_INSUFFICIENT, "trace_id": trace_id,
                               "acl_filtered": acl_filtered}
             yield "_final", {
@@ -668,6 +742,7 @@ class RagPipeline:
         # ---- 生成（证据已筛干净）----
         evidence, evidence_acl_filtered = self._to_evidence(hybrid_result)
         acl_filtered = max(acl_filtered, evidence_acl_filtered)
+        answer_source = "evidence"  # 通用知识兜底命中后改为 parametric
         used_evidence = [e for e in evidence if e.used]
         evidence_block = build_evidence_block(used_evidence)
         # TASK-132：生成阶段 span（含证据条数；首 token 延迟由 runner 侧记录）
@@ -715,6 +790,21 @@ class RagPipeline:
 
         # 提示词级拒答归一：LLM 判定证据不足时，verdict 统一为 refused（一等公民）
         prompt_level_refusal = answer.strip().startswith(NO_INFO_ANSWER)
+        if prompt_level_refusal and self._settings.parametric_fallback_enabled:
+            # 通用知识兜底：模型判断证据不足 → 改由模型自身知识重答（仅一次）。
+            # 自检已在上方跑过；兜底答案本就无据可核，不回自检/regenerate。
+            fallback_answer = self._llm.generate(GENERAL_KNOWLEDGE_PROMPT.format(question=question))
+            llm_calls += 1
+            if not fallback_answer.strip().startswith(NO_INFO_ANSWER):
+                answer = fallback_answer
+                answer_source = "parametric"
+                prompt_level_refusal = False
+                confidence = round(float(self._settings.parametric_fallback_confidence), 4)
+                self_check_record = None
+                unvalidated = True
+                regenerated = False
+                unsupported_count = 0
+                evidence = []  # 兜底回答不引用证据，前端不展示无关片段
         if prompt_level_refusal:
             yield "refused", {"reason": REASON_NO_CONTENT, "trace_id": trace_id}
             yield "_final", {
@@ -755,12 +845,14 @@ class RagPipeline:
             "unsupported_claims_count": unsupported_count,
             "regenerated": regenerated,
             "unvalidated": unvalidated,
+            "answer_source": answer_source if verdict_out == "answered" else "",
             "self_check": self_check_record.model_dump() if self_check_record else None,
             "removed_claims": self_check_record.unsupported_claims if self_check_record else [],
         }
         self._log_answer(trace_id, tenant_id, answer, len(sensitive["categories"]))
         yield "_final", {
             "answer": answer, "evidence": evidence if verdict_out == "answered" else [],
+            "answer_source": answer_source if verdict_out == "answered" else "",
             "analysis": analysis,
             "retrieval": hybrid_result.stats if hybrid_result else None,
             "reranked": hybrid_result.reranked if hybrid_result else True,
@@ -832,6 +924,7 @@ class RagPipeline:
             analysis=final.get("analysis"),
             verdict=final.get("verdict", "answered"),
             refusal_reason=final.get("refusal_reason", ""),
+            answer_source=final.get("answer_source", ""),
             confidence=final.get("confidence"),
             regenerated=final.get("regenerated", False),
             unsupported_claims_count=final.get("unsupported_claims_count", 0),
@@ -847,6 +940,7 @@ class RagPipeline:
                 confidence=result.confidence,
                 branch=(result.crag or {}).get("branch"),
                 regenerated=result.regenerated,
+                answer_source=result.answer_source,
             )
 
     # ---- 同步问答 ----
@@ -936,7 +1030,8 @@ class RagPipeline:
                 yield "token", {"content": text[i : i + step]}
             elapsed = int((time.perf_counter() - started) * 1000)
             self._record(question, tenant_id, True, elapsed, from_cache=True, llm_called=False)
-            yield "done", {"trace_id": trace_id, "elapsed_ms": elapsed, "from_cache": True}
+            yield "done", {"trace_id": trace_id, "elapsed_ms": elapsed, "from_cache": True,
+                           "answer_source": payload.get("answer_source", "")}
             return
 
         self._prom.cache_total.labels(result="miss").inc()
@@ -969,7 +1064,8 @@ class RagPipeline:
                 "ask_stream 完成 trace_id=%s verdict=%s confidence=%s elapsed_ms=%d",
                 trace_id, result.verdict, result.confidence, result.elapsed_ms,
             )
-            yield "done", {"trace_id": trace_id, "elapsed_ms": result.elapsed_ms, "from_cache": False}
+            yield "done", {"trace_id": trace_id, "elapsed_ms": result.elapsed_ms,
+                           "from_cache": False, "answer_source": result.answer_source}
         except LLMError as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
             self._record(question, tenant_id, False, elapsed, from_cache=False, llm_called=True, path="ask_stream")

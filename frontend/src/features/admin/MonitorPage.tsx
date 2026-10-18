@@ -4,8 +4,8 @@
  * 趋势图（SVG 迷你折线）+ Top Queries 表。数值必配阈值变色与文字趋势。
  */
 import { useCallback, useEffect, useState } from "react";
-import { fetchAgentMetrics, fetchGraphStats, fetchMetricsSummary, fetchMultiAgentMetrics, fetchQualityMetrics, fetchTimeseries, fetchTopQueries } from "../../lib/api-client";
-import type { AgentMetrics, GraphStats, MetricsSummary, MultiAgentMetrics, QualityMetrics, TimeseriesPoint, TopQuery } from "../../types";
+import { fetchAgentMetrics, fetchGraphStats, fetchMetricsSummary, fetchQualityMetrics, fetchTimeseries, fetchTopQueries } from "../../lib/api-client";
+import type { AgentMetrics, GraphStats, MetricsSummary, QualityMetrics, TimeseriesPoint, TopQuery } from "../../types";
 
 const RANGES = [
   { label: "近 15m", value: 900 },
@@ -66,13 +66,12 @@ export function MonitorPage() {
   const [topQueries, setTopQueries] = useState<TopQuery[]>([]);
   const [agent, setAgent] = useState<AgentMetrics | null>(null);
   const [graphStats, setGraphStats] = useState<GraphStats | null>(null);
-  const [maMetrics, setMaMetrics] = useState<MultiAgentMetrics | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [s, req, lat, cache, top, q, ag, gs, ma] = await Promise.all([
+      const [s, req, lat, cache, top, q, ag, gs] = await Promise.all([
         fetchMetricsSummary(rangeS),
         fetchTimeseries("requests", rangeS),
         fetchTimeseries("p95_latency_ms", rangeS),
@@ -81,7 +80,6 @@ export function MonitorPage() {
         fetchQualityMetrics(),
         fetchAgentMetrics(),
         fetchGraphStats(),
-        fetchMultiAgentMetrics(),
       ]);
       if (s.data) setSummary(s.data);
       if (q.data) setQuality(q.data);
@@ -91,7 +89,6 @@ export function MonitorPage() {
       if (top.data) setTopQueries(top.data);
       if (ag.data) setAgent(ag.data);
       if (gs.data) setGraphStats(gs.data);
-      if (ma.data) setMaMetrics(ma.data);
     } catch {
       setError("监控数据加载失败，请检查后端服务");
     }
@@ -205,52 +202,6 @@ export function MonitorPage() {
                 })}
               </div>
             </div>
-          </div>
-        )}
-
-        {/* 多智能体指标区（阶段 8 前端规范 §5） */}
-        {maMetrics && maMetrics.reports > 0 && (
-          <div className="card">
-            <h3 style={{ marginTop: 0 }}>多智能体报告（阶段 8）</h3>
-            <div className="metric-grid">
-              <MetricCard title="报告总数" value={String(maMetrics.reports)} ariaLabel={`报告 ${maMetrics.reports} 份`}>
-                <span className="trace-id">含进行中与已完结</span>
-              </MetricCard>
-              <MetricCard title="Critic 一次通过率" value={maMetrics.critic_first_pass_rate != null ? pct(maMetrics.critic_first_pass_rate) : "-"} ariaLabel="一次通过率">
-                <span className="trace-id">第一轮即通过占比</span>
-              </MetricCard>
-              <MetricCard title="平均 Critic 轮次" value={String(maMetrics.avg_critic_rounds)} ariaLabel="平均评审轮次">
-                <span className="trace-id">重写频率</span>
-              </MetricCard>
-              <MetricCard title="平均子任务数" value={String(maMetrics.avg_subtasks)} ariaLabel="平均子任务数">
-                <span className="trace-id">任务拆解粒度</span>
-              </MetricCard>
-            </div>
-            <div style={{ marginTop: 12 }}>
-              <div className="trace-id" style={{ marginBottom: 6 }}>状态分布（评审失败与未通过分开计数）</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {Object.entries(maMetrics.by_status).map(([status, count]) => (
-                  <span key={status} className="issue-tag">{status}: {count}</span>
-                ))}
-              </div>
-            </div>
-            {Object.keys(maMetrics.role_calls).length > 0 && (
-              <div style={{ marginTop: 12 }}>
-                <div className="trace-id" style={{ marginBottom: 6 }}>角色活跃度（调用次数）</div>
-                {Object.entries(maMetrics.role_calls).map(([role, count]) => {
-                  const total = Object.values(maMetrics.role_calls).reduce((a, b) => a + b, 0);
-                  return (
-                    <div key={role} className="crag-ratio-row">
-                      <span className="trace-id" style={{ width: 90 }}>{role}</span>
-                      <div className="confidence-track" style={{ flex: 1 }}>
-                        <div className="confidence-fill" style={{ width: `${(count / Math.max(total, 1)) * 100}%`, background: "#8B5CF6" }} />
-                      </div>
-                      <span className="mono" style={{ width: 48, textAlign: "right" }}>{count}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
         )}
 

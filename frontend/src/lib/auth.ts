@@ -1,13 +1,5 @@
 /**
- * 身份注入（TASK-160 前端配套）。
- *
- * ## 为什么需要这个文件
- *
- * 后端在 TASK-160 之后给全部 28 个 `/admin/*` 端点加了 `require_role("admin")`，
- * 其余端点加了 `get_principal`。但前端所有请求都是裸 `fetch(path)`，不带任何凭证——
- * 结果是**管理页全部 403**，用户看到的是"功能坏了"，而不是"没登录"。
- *
- * 这是后端鉴权改造的必然连带影响（文档附录 D 已预判：需要同步改前端）。
+ * 身份注入与登录会话（TASK-160 前端配套 + 账号密码登录档）。
  *
  * ## 两种身份来源
  *
@@ -16,16 +8,25 @@
  * | 本地开发 | `AUTH_ENABLED=false`（后端信任身份头） | `X-User-Id` / `X-Roles` / `X-Tenant-Id` |
  * | 生产 | `AUTH_ENABLED=true`（校验签名令牌） | `Authorization: Bearer <token>` |
  *
+ * ## 开发旁路为什么用编译期常量
+ *
+ * 早期版本让任何未设置 localStorage 的人都是 admin——那等于没有门禁：
+ * 清一下缓存就进管理区。而用 `import.meta.env.DEV` 做开关后，
+ * `npm run dev`（后端 `AUTH_ENABLED=false`）仍然开箱即用，
+ * `npm run build` 产出的东西则**没有**任何默认身份，必须真实登录。
+ * 关键是它由构建期常量决定：运行时无法被 localStorage 打开，
+ * 因此不存在"改个存储键就绕过登录"的路径。
+ *
+ * 注意 `scripts/e2e_browser.py` 打的是构建产物（默认 :8081），
+ * `import.meta.env.DEV` 为 false，所以 E2E 必须走真实登录流程。
+ *
  * ## 安全边界（重要）
  *
- * 身份头模式**只在后端 `AUTH_ENABLED=false` 时有效**——后端此时信任客户端自报身份，
- * 属明确标注的开发形态。生产必须走 Bearer 令牌，此时本模块只负责带上令牌，
+ * 身份头模式**只在 `import.meta.env.DEV` 且后端 `AUTH_ENABLED=false` 时才发送**，
+ * 属明确标注的开发形态。生产一律走 Bearer 令牌，本模块只负责带上令牌，
  * 不做任何身份推断。因此这里存的身份**不是**权限依据，只是开发期的便利开关。
- *
- * 身份持久化在 `localStorage`，键前缀 `kquery.`，便于运维/测试用脚本切换身份
- * 而不必改代码（浏览器 E2E 正是靠这一点验证越权路径）。
  */
-import type { Principal } from "../types";
+import type { Principal, SessionUser } from "../types";
 
 const K = {
   userId: "kquery.user_id",
@@ -33,6 +34,9 @@ const K = {
   roles: "kquery.roles",
   token: "kquery.token",
 } as const;
+
+/** 开发旁路：仅构建期 dev server 为真，生产构建恒为 false。 */
+export const DEV_BYPASS = import.meta.env.DEV;
 
 /** 本地开发默认身份：与后端 `AUTH_ENABLED=false` 的信任模型配套。 */
 const DEV_DEFAULTS = { userId: "admin", tenantId: "default", roles: "admin" };
@@ -105,11 +109,78 @@ export function authHeaders(): Record<string, string> {
   if (p.token) {
     return { Authorization: `Bearer ${p.token}` };
   }
-  return {
-    "X-User-Id": p.user_id,
-    "X-Tenant-Id": p.tenant_id,
-    "X-Roles": p.roles,
-  };
+  if (DEV_BYPASS) {
+    return {
+      "X-User-Id": p.user_id,
+      "X-Tenant-Id": p.tenant_id,
+      "X-Roles": p.roles,
+    };
+  }
+  // 生产构建且尚未登录：一个身份头都不发。
+  // 发空身份头会让后端的 HeaderAuthProvider 档（若被误开）把空串当成合法身份，
+  // 凭空造出一个"没有角色但已认证"的主体——比不发更糟。
+  return {};
+}
+
+/** 把逗号分隔的角色串解析成数组；空串 → 空数组（"显式没有任何角色"是合法语义）。 */
+export function rolesOf(principal: Principal): string[] {
+  return principal.roles
+    .split(",")
+    .map((r) => r.trim())
+    .filter(Boolean);
+}
+
+/**
+ * 当前会话；未登录返回 `null`。
+ *
+ * 唯一的事实源是 localStorage——`authHeaders()` 也从那里读。两处若各存一份，
+ * 迟早会漂移（登出清了存储但 Context 还以为已登录），症状是"登出后仍能点管理页"。
+ */
+export function currentSession(): SessionUser | null {
+  const token = read(K.token);
+  if (token) {
+    const p = currentPrincipal();
+    return {
+      user_id: p.user_id,
+      tenant_id: p.tenant_id,
+      roles: rolesOf(p),
+      token,
+    };
+  }
+  if (DEV_BYPASS) {
+    return {
+      user_id: DEV_DEFAULTS.userId,
+      tenant_id: DEV_DEFAULTS.tenantId,
+      roles: DEV_DEFAULTS.roles.split(","),
+      token: "",
+    };
+  }
+  return null;
+}
+
+/** 是否具备指定角色。登录态以 `/auth/me` 回填的 roles 为准。 */
+export function hasRole(roles: string[], role: string): boolean {
+  return roles.includes(role);
+}
+
+/**
+ * 认证失效（401）的全局回调注册。
+ *
+ * 放在 `auth.ts` 而不是 `api-client.ts`：`api-client` 与 `sse-client` 都要用它，
+ * 而它们彼此没有理由互相依赖。挂在三者共同依赖的最底层，才不会为共享一个
+ * 回调而引入新的模块边。
+ *
+ * 只处理 401，不处理 403——403 表示"已登录但无权"，跳转会把用户踢出登录，
+ * 反而掩盖真实原因。
+ */
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
+export function notifyUnauthorized(): void {
+  unauthorizedHandler?.();
 }
 
 /** 合并调用方自带的头（调用方显式指定的优先级更高）。 */

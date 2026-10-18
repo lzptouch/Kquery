@@ -17,12 +17,12 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import get_principal
+from app.dependencies import get_principal, require_role
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["graph"], dependencies=[Depends(get_principal)])
+router = APIRouter(tags=["graph"], dependencies=[Depends(require_role("admin"))])
 SUBGRAPH_MAX_EDGES = 100  # 子图截断上限（超出必须提示）
 
 

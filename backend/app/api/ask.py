@@ -66,6 +66,9 @@ def _degraded_warning(result: dict) -> tuple[int, str] | None:
     重排不可用是用户该知道的事（44xx 轻提示）；缓存不可用不是——它无感降级，
     只上报指标（stage-2 §错误码）。
     """
+    # 通用知识兜底是用户该知道的事：答案不来自知识库（warn 信封，仍返回结果）
+    if result.get("answer_source") == "parametric":
+        return (int(ErrCode.PARAMETRIC_FALLBACK), "知识库未收录相关内容，以下回答来自模型自身知识")
     if result.get("reranked") is False:
         return (int(ErrCode.RERANK_DEGRADED), "本次未进行精排，结果可能不够精确")
     return None

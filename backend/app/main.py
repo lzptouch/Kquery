@@ -18,11 +18,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from app.api import admin as admin_api
 from app.api import analysis as analysis_api
 from app.api import ask as ask_api
+from app.api import auth as auth_api
 from app.api import feedback as feedback_api
 from app.api import ingest as ingest_api
 from app.api import graph as graph_api
 from app.api import knowledge as knowledge_api
-from app.api import reports as reports_api
 from app.api import security as security_api
 from app.api import sessions as sessions_api
 from app.core.config import get_settings
@@ -31,7 +31,6 @@ from app.core.metrics import MetricsStore, PromMetrics
 from app.core.otel import setup_otel, shutdown_otel
 from app.core.shared_state import SharedState
 from app.services.agent.memory import LongTermMemory
-from app.core.tasks import BackgroundQueue
 from app.core.tracing import get_trace_id, new_trace_id, reset_trace_id, set_trace_id
 from app.services.cache import build_cache
 from app.services.config_store import RetrievalConfigStore
@@ -67,25 +66,9 @@ from app.services.graph.images import ImageIndex, MockCaptioner, QwenVlCaptioner
 from app.services.graph.query import GraphQueryService
 from app.services.graph.resolver import EntityResolver
 from app.services.graph.sqlite_store import build_graph_store
-from app.services.multiagent.orchestrator import Orchestrator
-from app.services.multiagent.roles import (
-    FixedValidator,
-    LLMCritic,
-    LLMWriter,
-    RerankValidator,
-    ScriptedCritic,
-)
-from app.services.multiagent.roles import (
-    HeuristicPlanner as MAHeuristicPlanner,
-)
-from app.services.multiagent.roles import (
-    LLMPlanner as MALLMPlanner,
-)
-from app.services.multiagent.store import ReportStore
 from app.services.security.acl import ACLService
 from app.services.security.audit import AuditStore
 from app.services.security.auth import UserDirectory, build_auth_provider
-from app.services.security.evalrun import EvalRunner, EvalStore
 from app.services.security.platform_quota import PlatformQuotaMonitor, install_monitor
 from app.services.security.quota import SlidingWindowQuota
 from app.services.security.sensitive import SensitiveScanner
@@ -125,6 +108,42 @@ def _app_version() -> str:
 
 def _elapsed(t0: float) -> float:
     return round((time.perf_counter() - t0) * 1000, 2)
+
+
+def _bootstrap_admin_password(settings, user_directory) -> None:
+    """账号密码档的首次启动口令引导。
+
+    为什么必须在这里硬拦：全新部署的 `data/users.json` 由
+    `UserDirectory.DEFAULT_USERS` 生成，其中**没有任何 password_hash**。
+    若此时只依赖配置校验，服务会正常启动、探针全绿、日志无异常，
+    但**没有人能登录**——这种故障比启动失败难查得多：运维看到的是
+    "服务是好的"，用户看到的是"登录框点了没反应"。
+
+    两种合法状态：一是目录里已存在口令（管理员此前已设过），此时不做任何写入；
+    二是提供了 `AUTH_BOOTSTRAP_ADMIN_PASSWORD`，写入 admin 的口令。
+    两者都没有 → 拒绝启动并给出可操作的指引。
+    """
+    from app.services.security.password import hash_password, validate_password_strength
+
+    if any(record.get("password_hash") for record in user_directory.all()):
+        return  # 已有口令就绪，bootstrap 配置不再介入（否则每次重启都会重置密码）
+
+    bootstrap = (settings.auth_bootstrap_admin_password or "").strip()
+    if not bootstrap:
+        raise RuntimeError(
+            "账号密码登录已启用，但用户目录中没有任何账号口令，且未提供初始管理员口令。"
+            "请设置 AUTH_BOOTSTRAP_ADMIN_PASSWORD 后重启，或先以其它认证档位登录后"
+            "为 admin 设置口令。"
+        )
+    weak = validate_password_strength(bootstrap)
+    if weak:
+        raise RuntimeError(f"初始管理员口令不合规：{weak}")
+
+    user_directory.set_password("admin", hash_password(bootstrap))
+    logger.warning(
+        "已为 admin 设置初始口令（来自 AUTH_BOOTSTRAP_ADMIN_PASSWORD）。"
+        "请在首次登录后立即修改；其余账号需由管理员另行设置口令。"
+    )
 
 
 def create_app() -> FastAPI:
@@ -330,6 +349,9 @@ def create_app() -> FastAPI:
             _json9.loads(settings.auth_tokens_json) if settings.auth_tokens_json else {},
             jwt_settings=settings,
         )
+        # 首个管理员口令引导：仅当目录里没有任何口令时才写入，避免每次启动重置密码
+        if settings.auth_password_enabled:
+            _bootstrap_admin_password(settings, user_directory)
         audit_store = AuditStore(settings.data_dir / "audit" / "audit.jsonl")
         acl_service = ACLService(settings.data_dir / "acl.json", user_directory)
         # DEF-R-1：pipeline 装配早于 acl_service，回填版本提供者（bind_principal 的
@@ -355,7 +377,6 @@ def create_app() -> FastAPI:
         )
         install_monitor(platform_monitor)
         sensitive_scanner = SensitiveScanner(settings.data_dir / "sensitive-words.json")
-        eval_store = EvalStore(settings.data_dir / "eval")
         # 阶段 5 校验历史（CRAG 轮次 / 自检明细）落库
         validation_history = ValidationHistoryStore(settings.data_dir / "validation-history")
         # 护栏回填到**线性路径**：此前审计与敏感词只挂 Agent 路径，默认问答不产生任何痕迹
@@ -363,32 +384,6 @@ def create_app() -> FastAPI:
             audit=audit_store,
             scanner=sensitive_scanner if settings.sensitive_scan_enabled else None,
             history_store=validation_history,
-        )
-
-        def _eval_ask(question: str, tenant_id: str | None = None) -> dict:
-            """评测走**线性路径**：阶段 5 的 faithfulness 自检与 CRAG 只在线性路径产出，
-            走 Agent 路径只拿得到最终答案，两种口径的 faithfulness 不可比（§7.3）。
-
-            带 tenant_id 参数是为了按调用主体的租户检索——默认租户之外的文档
-            不该被计入评测（EvalRunner 用签名探测兼容既有单参注入）。
-            """
-            result = pipeline.ask(
-                question, tenant_id or settings.default_tenant_id, get_trace_id()
-            )
-            return {
-                "answer": result.answer,
-                "evidence": [e.model_dump() for e in result.evidence],
-                "verdict": result.verdict,
-                "self_check": result.self_check.model_dump() if result.self_check else None,
-                "crag": result.crag,
-            }
-
-        eval_runner = EvalRunner(
-            eval_store, _eval_ask,
-            model_version=settings.llm_model,
-            code_version=settings.code_version or None,  # 留空则读 KQUERY_CODE_VERSION → git → unknown
-            path="linear",
-            default_tenant_id=settings.default_tenant_id,
         )
 
         # 阶段 6：Agentic RAG（LangGraph 状态机 + 工具注册 + 会话存档）
@@ -530,6 +525,8 @@ def create_app() -> FastAPI:
             prompt_builder=agent_prompt_builder,
             no_progress_limit=settings.agent_no_progress_limit,
             checkpointer=agent_checkpointer,
+            parametric_fallback_enabled=settings.parametric_fallback_enabled,
+            parametric_fallback_score_threshold=settings.parametric_fallback_score_threshold,
         )
         session_store = SessionStore(
             settings.data_dir / "sessions", ttl_s=settings.agent_session_ttl_s
@@ -552,47 +549,6 @@ def create_app() -> FastAPI:
         )
         app.state.session_store = session_store
         app.state.tool_registry = tool_registry
-
-        # 阶段 8：多智能体报告（五角色协同 + 黑板 + 拓扑并行 + Writer↔Critic 循环）
-        report_store = ReportStore(settings.data_dir / "reports")
-        if provider == "dashscope":
-            ma_planner = MALLMPlanner(agent_llm, tool_registry, max_tasks=settings.report_max_subtasks)
-            ma_validator = RerankValidator(reranker, adopt_threshold=settings.crag_correct_th)
-            writer_llm = build_llm(
-                provider=provider, api_key=settings.dashscope_api_key,
-                model=settings.writer_model, temperature=0.3,
-                max_retries=settings.llm_max_retries, timeout_s=settings.llm_timeout_s,
-            )
-            critic_llm = build_llm(
-                provider=provider, api_key=settings.dashscope_api_key,
-                model=settings.critic_model, temperature=0,
-                max_retries=settings.llm_max_retries, timeout_s=settings.llm_timeout_s,
-            )
-            ma_writer = LLMWriter(writer_llm, fallback_llm=agent_llm)
-            ma_critic = LLMCritic(critic_llm, pass_score=settings.critic_pass_score)
-        else:
-            ma_planner = MAHeuristicPlanner(tool_registry)
-            ma_validator = FixedValidator(0.5)
-            ma_writer = LLMWriter(llm)
-            ma_critic = ScriptedCritic([{"score": 8.5, "issues": [], "resolved": []}],
-                                       pass_score=settings.critic_pass_score)
-        # TASK-181：报告生成走有界后台队列（此前每次提交裸起一个 daemon 线程：
-        # 无上限、无背压、进程退出时被掐断导致报告写一半）
-        report_queue = BackgroundQueue(
-            name="reports",
-            workers=settings.report_workers,
-            queue_size=settings.report_queue_size,
-        )
-        orchestrator = Orchestrator(
-            planner=ma_planner, validator=ma_validator, writer=ma_writer, critic=ma_critic,
-            registry=tool_registry, reports=report_store,
-            pass_score=settings.critic_pass_score, max_rounds=settings.critic_max_rounds,
-            adopt_threshold=settings.crag_correct_th,
-            background=report_queue,
-        )
-        app.state.orchestrator = orchestrator
-        app.state.report_store = report_store
-        app.state.report_queue = report_queue
 
         # TASK-165：共享状态门面（Redis 不可用时自动降级为进程内）
         shared_state = SharedState(settings.redis_url, settings.redis_key_prefix)
@@ -617,8 +573,6 @@ def create_app() -> FastAPI:
         app.state.quota_service = quota_service
         app.state.platform_monitor = platform_monitor
         app.state.sensitive_scanner = sensitive_scanner
-        app.state.eval_store = eval_store
-        app.state.eval_runner = eval_runner
         logger.info(
             "Kquery 后端已启动（provider=%s, vector_store=%s, llm=%s, rerank=%s, 向量=%d, BM25=%d）",
             provider, settings.vector_store, settings.llm_model, settings.rerank_model, store.total, bm25.total,
@@ -631,9 +585,6 @@ def create_app() -> FastAPI:
             # 且连接会一直挂在进程里阻止 WAL 落盘。
             close_checkpointer(agent_checkpointer)
             # TASK-180：图存储的 sqlite 连接同理——不关会导致临时目录无法清理
-            # TASK-181：优雅停机——让 worker 跑完**当前**任务再退出，
-            # 而不是像 daemon 那样被直接掐断（报告/入库都会落盘，半截文件比慢几秒糟得多）
-            report_queue.shutdown(wait=True, timeout=5.0)
             # TASK-132：flush 未上报的 span（BatchSpanProcessor 有缓冲）
             shutdown_otel()
             for closer in (
@@ -817,6 +768,8 @@ def create_app() -> FastAPI:
             media_type="text/plain; version=0.0.4; charset=utf-8",
         )
 
+    # auth router 不挂角色门禁（登录必须先于认证），须单独注册
+    app.include_router(auth_api.router)
     app.include_router(ask_api.router)
     app.include_router(knowledge_api.router)
     app.include_router(ingest_api.router)
@@ -825,7 +778,6 @@ def create_app() -> FastAPI:
     app.include_router(admin_api.router)
     app.include_router(sessions_api.router)
     app.include_router(graph_api.router)
-    app.include_router(reports_api.router)
     app.include_router(security_api.router)
     return app
 

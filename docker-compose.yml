@@ -41,8 +41,10 @@ services:
     volumes:
       - milvus_data:/var/lib/milvus
     ports:
-      - "19530:19530"   # gRPC：pymilvus 走这个
-      - "9091:9091"     # 健康检查 / 指标
+      # 宿主 19530 已被本机其它容器（svc04-milvus）占用，改用 19531；
+      # 容器内仍是 19530，KQUERY_MILVUS_URI=http://milvus:19530 不受影响。
+      - "19531:19530"   # gRPC：pymilvus 走这个
+      - "9092:9091"     # 健康检查 / 指标
     depends_on:
       etcd:
         condition: service_healthy

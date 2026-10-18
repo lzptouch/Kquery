@@ -9,9 +9,10 @@
  * 阶段 2 增量：retrieval_stats 事件（分阶段耗时）；
  * HTTP 429 时解析 Retry-After 并透传给界面（倒计时 + 自动重试）。
  */
-import { authErrorMessage, isAuthFailure, withAuth } from "./auth";
+import { authErrorMessage, isAuthFailure, notifyUnauthorized, withAuth } from "./auth";
 import type {
   AgentPlanStep,
+  AnswerSource,
   Evidence,
   QueryAnalysis,
   RefusalReason,
@@ -25,6 +26,8 @@ export interface ConfidencePayload {
   unsupported_claims_count: number;
   regenerated: boolean;
   unvalidated?: boolean;
+  /** 答案来源：parametric 表示知识库未收录、由模型自身知识回答 */
+  answer_source?: AnswerSource;
   /** 阶段 5：被剔除的无据声明原文（前端要告诉用户剔除了哪句） */
   removed_claims?: string[];
   self_check?: import("../types").SelfCheckInfo | null;
@@ -51,6 +54,7 @@ export interface StreamHandlers {
     evidence?: Evidence[];  // Agent 模式：最终编号后的证据列表
     verdict?: string;
     confidence?: number;
+    answer_source?: AnswerSource;
     acl_filtered?: number;  // 阶段 9：权限过滤数
     retrieval?: import("../types").RetrievalStats | null;
     crag?: import("../types").CragInfo | null;
@@ -123,6 +127,10 @@ export async function askStream(
     }
     // 鉴权失败必须与"服务挂了"区分：前者改身份即可，后者要等运维
     if (isAuthFailure(resp.status)) {
+      // 只有 401 触发全局登出。403 是"已登录但无权"，跳转反而掩盖真实原因。
+      // 流式问答走的是 /ask（普通用户可用），正常不会 403；但统一口径能避免
+      // 将来某个端点收紧后，流式与普通请求对同一问题给出不同的处置。
+      if (resp.status === 401) notifyUnauthorized();
       handlers.onError({ code: resp.status, message: authErrorMessage(resp.status) });
       return;
     }

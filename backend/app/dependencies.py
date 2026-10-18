@@ -36,15 +36,11 @@ def get_session_store(request: Request) -> SessionStore:
     return request.app.state.session_store
 
 
-def get_orchestrator(request: Request):
-    return request.app.state.orchestrator
-
-
 def acl_filter_of(request: Request, principal: Principal):
     """构造 ACL 过滤函数（缺文档一律拒绝——默认拒绝原则）。
 
-    TASK-142 收口：原先此逻辑只在 `api/ask.py` 内私有，导致多智能体报告路径
-    完全绕过 ACL。现提取为共享依赖，ask / reports 共用同一实现与同一默认拒绝语义。
+    TASK-142 收口：原先此逻辑只在 `api/ask.py` 内私有。现提取为共享依赖，
+    所有需要按文档收口权限的检索路径共用同一实现与同一默认拒绝语义。
     """
     settings: Settings = request.app.state.settings
     if not settings.acl_enabled:
@@ -68,14 +64,42 @@ def get_principal(request: Request) -> Principal:
     """认证：Bearer Token（启用时）或头部透传（默认兼容模式）。
 
     认证失败抛 1101（前端跳登录并清空本地缓存）。
+
+    认证通过后再与用户目录对一次账：令牌里烧的是签发时的角色与启用状态，
+    若不复核，管理员把某人降权或停用后，对方手上的旧令牌仍能用到过期——
+    令牌越长（默认 15 分钟、运维常调更长），这个窗口越难看。要取消授权时，
+    唯一可靠的做法是不依赖"等令牌过期"。
     """
     auth = request.app.state.auth_provider
     authorization = request.headers.get("authorization", "")
     token = authorization[7:] if authorization.lower().startswith("bearer ") else None
     principal = auth.authenticate(token, dict(request.headers))
+    _reconcile_with_directory(request, principal)
     # 限流依赖按认证租户分桶，必须在配额判定之前就把主体挂到 request 上
     request.state.principal = principal
     return principal
+
+
+def _reconcile_with_directory(request: Request, principal: Principal) -> None:
+    """以用户目录为准复核启用状态与角色；目录不可用时静默放行。
+
+    只在**令牌认证**下生效：头部透传档（开发/测试）没有"签发"概念，
+    请求方自报的身份本就来自测试用例，此时再去目录里找同名账号会误伤——
+    例如用 `X-User-Id: someone-not-in-directory` 构造越权用例时会变成 401，
+    把"403 还是 200"的断言搅乱。
+    """
+    if request.headers.get("authorization", "").lower().startswith("bearer "):
+        directory = getattr(request.app.state, "user_directory", None)
+        if directory is None or not hasattr(directory, "get"):
+            return
+        record = directory.get(principal.user_id)
+        if record is None:
+            # 令牌有效但账号已从目录中消失：视为不可用，避免"删号"不等于"禁用"
+            raise ApiError(ErrCode.UNAUTHORIZED, "账号不存在或已停用", http_status=401)
+        if not record.get("enabled", True):
+            raise ApiError(ErrCode.UNAUTHORIZED, "账号已停用", http_status=401)
+        principal.roles = list(record.get("roles") or [])
+        principal.groups = list(record.get("groups") or [])
 
 
 def require_role(role: str):

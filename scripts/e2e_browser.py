@@ -171,37 +171,14 @@ def run(base: str, headed: bool, sample_file: str) -> int:
         check("图谱页有实体或空态提示", bool(re.search(r"实体|图谱|为空|上传", graph_text)),
               graph_text[:160])
 
-        # ---------------------------------------------------------- 报告
-        section("6. 多智能体报告")
-        page.goto(f"{base}/reports", wait_until="networkidle", timeout=30000)
-        check("报告页可打开", "报告" in page_text(page), page_text(page)[:120])
-        goal_box = page.locator('input.probe-input, input[placeholder*="报告"], input[placeholder*="目标"]').first
-        if goal_box.count() == 0:
-            goal_box = page.locator('input[type="text"]').first
-        if goal_box.count() > 0:
-            check("报告页有目标输入框", True, "")
-            goal_box.fill("分析机会成本的含义并举例说明")
-            page.wait_for_timeout(300)
-            submit = page.locator('button:has-text("新建"), button[type="submit"]').first
-            if submit.count() > 0 and not submit.is_disabled():
-                submit.click()
-                page.wait_for_timeout(5000)
-                text = page_text(page)
-                check("提交报告目标后页面有响应",
-                      bool(re.search(r"报告|生成|进度|轮次|状态", text)),
-                      f"提交后文本: {text[-150:]}")
-            else:
-                check("报告页有可用的提交按钮",
-                      False, f"按钮数={submit.count()} disabled={submit.is_disabled() if submit.count() else 'N/A'}")
-        else:
-            check("报告页有目标输入框", False, "未找到输入框")
-
         # ---------------------------------------------------------- 管理页
-        section("7. 管理页与四态")
+        section("6. 管理页与四态")
         for path, keyword in (("/admin/users", "用户"),
-                              ("/admin/eval", "评测"),
+                              ("/admin/acl", "ACL"),
                               ("/admin/audit", "审计"),
                               ("/admin/quota", "配额"),
+                              ("/admin/sensitive", "敏感"),
+                              ("/admin/monitor", "监控"),
                               ("/admin/retrieval-config", "检索")):
             page.goto(f"{base}{path}", wait_until="networkidle", timeout=30000)
             text = page_text(page)
@@ -211,7 +188,7 @@ def run(base: str, headed: bool, sample_file: str) -> int:
                   f"页面出现 undefined: {text[:200]}")
 
         # ---------------------------------------------------------- 错误处理
-        section("8. 禁用态与错误提示")
+        section("7. 禁用态与错误提示")
         page.goto(base, wait_until="networkidle", timeout=30000)
         box = page.locator('textarea, input[type="text"]').first
         box.wait_for(state="visible", timeout=10000)
@@ -239,7 +216,7 @@ def run(base: str, headed: bool, sample_file: str) -> int:
               f"页面出现 undefined/null: {text[-250:]}")
 
         # ---------------------------------------------------------- 控制台
-        section("9. 运行时健康")
+        section("8. 运行时健康")
         # 过滤掉与后端无关的噪声（如 favicon 404）
         real_errors = [e for e in CONSOLE_ERRORS
                        if "favicon" not in e.lower() and "404" not in e]

@@ -90,6 +90,8 @@ export interface MediaItem {
 
 export type Verdict = "answered" | "refused";
 export type RefusalReason = "no_content" | "insufficient_evidence" | "permission_denied" | "";
+/** 答案来源：evidence=有据回答 / parametric=通用知识兜底 / ""=拒答或旧数据 */
+export type AnswerSource = "evidence" | "parametric" | "";
 
 export interface CragRound {
   round: number;
@@ -111,6 +113,8 @@ export interface QualityMetrics {
   crag_branch_ratio: Record<string, number>;
   answered: number;
   refused: number;
+  parametric?: number;
+  parametric_rate?: number;
 }
 
 export interface FeedbackTicket {
@@ -276,6 +280,40 @@ export interface Principal {
   token: string;
 }
 
+/**
+ * 已登录会话（账号密码档）。
+ *
+ * 与 `Principal` 的区别是 `roles` 在这里是**数组**：`Principal.roles` 是逗号分隔串，
+ * 因为它要原样塞进 `X-Roles` 响应头。会话面向界面逻辑，数组省去每次调用都解析一次。
+ * 两者的不一致是历史遗留，本次只在新增类型上统一，不回头改造既有签名。
+ */
+export interface SessionUser {
+  user_id: string;
+  tenant_id: string;
+  roles: string[];
+  /** 登录后端 `/auth/login` 下发的 JWT；开发旁路下为空串 */
+  token: string;
+}
+
+/** `/auth/login` 与 `/auth/register` 的响应体。 */
+export interface LoginResponse {
+  token: string;
+  user_id: string;
+  tenant_id: string;
+  roles: string[];
+  groups: string[];
+  expires_in: number;
+}
+
+/** `/auth/me` 的响应体。is_admin 由后端给出，避免各页面各写一遍 `roles.includes("admin")`。 */
+export interface MeResponse {
+  user_id: string;
+  tenant_id: string;
+  roles: string[];
+  groups: string[];
+  is_admin: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -290,6 +328,7 @@ export interface ChatMessage {
   analysis?: QueryAnalysis | null;
   verdict?: Verdict;
   refusalReason?: RefusalReason;
+  answerSource?: AnswerSource;
   confidence?: number | null;
   regenerated?: boolean;
   unsupportedClaimsCount?: number;
@@ -369,7 +408,7 @@ export interface SessionSummary {
 export interface SessionDetail {
   session_id: string;
   title: string;
-  turns: { question: string; answer: string; verdict: string; turn: number }[];
+  turns: { question: string; answer: string; verdict: string; turn: number; answer_source?: AnswerSource }[];
   updated_at: number;
 }
 
@@ -379,89 +418,6 @@ export interface AgentMetrics {
   fuse_rate: number;
   tool_distribution: Record<string, number>;
   abnormal: { ts: number; session_id: string; kind: string; detail: string }[];
-}
-
-// ---------- 阶段 8：多智能体报告 ----------
-
-/** 报告九态：未通过（rejected/capped）与未评审（unreviewed）严格区分 */
-export type ReportStatus =
-  | "planning" | "researching" | "validating" | "writing" | "critiquing"
-  | "accepted" | "rejected" | "capped" | "unreviewed" | "failed";
-
-export interface ReportSummary {
-  report_id: string;
-  title: string;
-  status: ReportStatus;
-  accepted: boolean | null;
-  critic_score: number | null;
-  rounds: number;
-  layers: number;
-  created_at: number;
-  updated_at: number;
-}
-
-export interface PlanTask {
-  task_id: string;
-  description: string;
-  tool_name: string;
-  depends_on: string[];
-  layer: number;
-  status: "pending" | "running" | "done" | "failed";
-  failure_reason: string;
-}
-
-export interface EvidenceRecordView {
-  evidence_id: string;
-  task_id: string;
-  content: string;
-  tool_name: string;
-  score: number | null;
-  adopted: boolean | null;
-  rejected_reason: string;
-  used_by_tasks: string[];
-  created_at: number;
-  chunk_id?: string;
-  uri?: string;
-  modality?: string;
-}
-
-export interface CritiqueRound {
-  round: number;
-  score: number;
-  issues: string[];
-  resolved_issues: string[];
-  raw_output: string;
-  created_at: number;
-}
-
-export interface Draft {
-  round: number;
-  content: string;
-  word_count: number;
-  created_at: number;
-}
-
-export interface ReportDetail extends ReportSummary {
-  goal: string;
-  role_calls: Record<string, number>;
-  unresolved_issues: string[];
-  drafts: Draft[];
-  blackboard: {
-    plan: PlanTask[];
-    evidence: EvidenceRecordView[];
-    critiques: CritiqueRound[];
-  } | null;
-  error: string;
-}
-
-export interface MultiAgentMetrics {
-  reports: number;
-  by_status: Record<string, number>;
-  avg_subtasks: number;
-  avg_critic_rounds: number;
-  critic_first_pass_rate: number | null;
-  layer_distribution: Record<string, number>;
-  role_calls: Record<string, number>;
 }
 
 // ---------- 阶段 9：企业护栏 ----------
@@ -537,43 +493,6 @@ export interface SensitiveWord {
   tenant_id: string;
   enabled: boolean;
 }
-
-export interface EvalDataset {
-  name: string;
-  version: string;
-  count: number;
-}
-
-export interface EvalRunSummary {
-  run_id: string;
-  dataset: string;
-  dataset_version: string;
-  model_version: string;
-  /** 业务代码版本：指标变化到底是平台换版还是我们改了代码，靠它区分 */
-  code_version?: string | null;
-  /** 评测走的链路（linear / agent）：两种口径的 faithfulness 不可比 */
-  path?: string | null;
-  sample_count: number;
-  faithfulness: number;
-  citation_accuracy: number;
-  refusal_accuracy: number | null;
-  /** 期望证据被答案真正引用的比例：唯一能区分"检索没找到"与"生成写错了"的指标 */
-  coverage?: number | null;
-  created_at: number;
-}
-
-export interface EvalRunDetail extends EvalRunSummary {
-  details: {
-    idx: number;
-    question: string;
-    verdict: string;
-    faithfulness: number;
-    citation: number;
-    should_refuse: boolean;
-    refuse_ok: boolean | null;
-  }[];
-}
-
 /** 监控大盘首屏指标（/admin/metrics/summary） */
 export interface MetricsSummary {
   qps: number;

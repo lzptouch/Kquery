@@ -348,6 +348,7 @@ class AskResult(BaseModel):
     # 阶段 5 扩展：答案判定（拒答是一等公民，走成功状态码）
     verdict: str = "answered"  # answered / refused
     refusal_reason: str = ""  # no_content / insufficient_evidence / permission_denied
+    answer_source: str = ""  # evidence（有据）/ parametric（通用知识兜底）/ ""（拒答或旧数据）
     confidence: float | None = None  # 0~1；None = 未校验（评分器/自检器降级）
     regenerated: bool = False
     unsupported_claims_count: int = 0

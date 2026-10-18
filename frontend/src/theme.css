@@ -1143,17 +1143,6 @@ button {
   display: block;
 }
 
-/* ---------- 阶段 8：多智能体报告 ---------- */
-.role-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: 999px;
-  padding: 2px 10px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
 /* 报告状态标签 */
 .status-tag {
   border-radius: 999px;
@@ -1180,94 +1169,9 @@ button {
 .quota-fill-warn { background: var(--warning); }
 .quota-fill-fail { background: var(--error); }
 
-.report-link { color: var(--primary); text-decoration: none; }
-.report-link:hover { text-decoration: underline; }
-
 /* 标签页 */
-.report-tabs {
-  display: flex;
-  gap: 4px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 12px;
-}
-
-.report-tab {
-  border: none;
-  background: none;
-  padding: 8px 16px;
-  font: inherit;
-  font-size: 13px;
-  color: var(--text-secondary);
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-}
-
-.report-tab.active {
-  color: var(--primary);
-  border-bottom-color: var(--primary);
-  font-weight: 600;
-}
-
 /* 黑板面板 */
-.bb-panel { display: flex; flex-direction: column; gap: 12px; }
-.bb-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-
-.bb-task {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 13px;
-  background: var(--evidence-bg);
-  margin-bottom: 4px;
-  flex-wrap: wrap;
-}
-
-.bb-task.status-failed { border-left: 3px solid var(--error); }
-.bb-task.status-done { border-left: 3px solid var(--success); }
-.bb-task.status-running { border-left: 3px solid var(--info); }
-
-.bb-layer {
-  font-size: 11px;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 0 4px;
-}
-
-.bb-tool { color: var(--text-secondary); font-size: 12px; }
-.bb-desc { flex: 1; min-width: 200px; }
-.bb-failed { color: var(--error); }
-
-.bb-evidence-list { margin: 0; display: flex; flex-direction: column; gap: 4px; }
-.bb-evidence { padding: 4px 8px; border-radius: 4px; background: var(--evidence-bg); }
-.bb-evidence dt { font-size: 11px; color: var(--text-secondary); }
-.bb-evidence dd { margin: 2px 0 0; display: flex; gap: 8px; align-items: baseline; }
-.bb-evidence.rejected dd .bb-ev-content { color: var(--text-secondary); text-decoration: line-through; }
-.bb-ev-content { flex: 1; font-size: 12px; }
-.bb-adopted { color: var(--success); font-size: 12px; }
-.bb-rejected { color: var(--error); font-size: 12px; }
-
-.bb-critique { font-size: 13px; padding: 4px 0; }
-.bb-issue { color: var(--warning); font-size: 12px; padding-left: 16px; }
-
 /* Critic 评分历史 */
-.critic-history { display: flex; flex-direction: column; gap: 10px; }
-.critic-round {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px 12px;
-}
-.critic-round-head { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
-
-.critic-score { font-weight: 700; font-feature-settings: "tnum"; }
-.score-pass { color: var(--success); }
-.score-warn { color: var(--warning); }
-.score-fail { color: var(--error); }
-.score-none { color: var(--text-secondary); }
-
-.critic-issues, .critic-resolved { display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); }
 .issue-tag {
   background: color-mix(in srgb, var(--warning) 12%, transparent);
   color: var(--warning);
@@ -1278,23 +1182,6 @@ button {
 .issue-tag.resolved {
   background: color-mix(in srgb, var(--success) 12%, transparent);
   color: var(--success);
-}
-
-.critic-final { border-top: 1px dashed var(--border); padding-top: 10px; font-size: 14px; }
-
-.plan-layer { margin-bottom: 10px; }
-
-.draft-compare {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.draft-compare > div {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
-  max-height: 480px;
-  overflow-y: auto;
 }
 
 /* ---------- 答案卡片层级：最终结果 vs 中间过程 ---------- */
@@ -1636,6 +1523,36 @@ button {
   padding: 16px;
 }
 
+/* 通用知识兜底提示条：暖色弱提示，区别于拒答卡片的错误色 */
+.parametric-notice {
+  border: 1px solid color-mix(in srgb, var(--warn, #d97706) 40%, transparent);
+  background: color-mix(in srgb, var(--warn, #d97706) 8%, transparent);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.parametric-notice-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.parametric-notice-head .btn-text {
+  margin-left: auto;
+}
+
+/* 兜底徽章：与"已达上限"徽章同风格 */
+.parametric-badge {
+  font-size: 12px;
+  color: var(--warn, #d97706);
+  border: 1px solid color-mix(in srgb, var(--warn, #d97706) 40%, transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
 .refusal-head {
   display: flex;
   align-items: center;
@@ -1714,8 +1631,8 @@ button {
    ========================================================================== */
 
 /* ① 全局可见焦点环。
-   此前全仓只有一条 `textarea:focus`，.btn / .citation-chip / .session-item /
-   .report-tab 等可聚焦元素都没有焦点样式，键盘用户无法判断当前位置。 */
+   此前全仓只有一条 `textarea:focus`，.btn / .citation-chip / .session-item
+   等可聚焦元素都没有焦点样式，键盘用户无法判断当前位置。 */
 :where(button, a, input, select, textarea, [tabindex]):focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
@@ -1839,7 +1756,7 @@ button {
 }
 
 /* ==========================================================================
-   权限矩阵与评测对比（stage-9 §2.3 / §7.4）
+   权限矩阵（stage-9 §2.3）
    ========================================================================== */
 
 /* 可访问性第一：矩阵每格必须"颜色 + 文字"双通道，
@@ -1860,74 +1777,6 @@ button {
 [data-theme="dark"] .perm-yes {
   color: #4ade80;
 }
-
-/* 评测对比：基线 / 本次双条 */
-.cmp-metrics {
-  display: grid;
-  gap: 14px;
-  margin: 12px 0 18px;
-}
-.cmp-metric-name {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: 13px;
-  margin-bottom: 4px;
-}
-.cmp-delta {
-  font-size: 12px;
-}
-.cmp-delta[data-dir="up"] { color: #15803d; }
-.cmp-delta[data-dir="down"] { color: #b91c1c; }
-.cmp-delta[data-dir="flat"] { color: var(--text-secondary); }
-:root.dark .cmp-delta[data-dir="up"],
-[data-theme="dark"] .cmp-delta[data-dir="up"] { color: #4ade80; }
-:root.dark .cmp-delta[data-dir="down"],
-[data-theme="dark"] .cmp-delta[data-dir="down"] { color: #f87171; }
-
-.cmp-bar-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 3px;
-}
-.cmp-bar-label {
-  width: 32px;
-  flex: none;
-  font-size: 11px;
-  color: var(--text-secondary);
-}
-.cmp-bar {
-  height: 10px;
-  border-radius: 5px;
-  min-width: 2px;
-  transition: width 0.2s ease;
-}
-.cmp-bar[data-run="a"] { background: var(--cite-2); }
-.cmp-bar[data-run="b"] { background: var(--cite-1); }
-.cmp-value {
-  font-size: 11px;
-  color: var(--text-secondary);
-  flex: none;
-}
-
-.cmp-diff-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-}
-.cmp-diff h4 {
-  margin: 0 0 6px;
-  font-size: 13px;
-}
-.cmp-list {
-  margin: 0;
-  padding-left: 18px;
-  font-size: 12px;
-  max-height: 220px;
-  overflow-y: auto;
-}
-.cmp-list li { margin-bottom: 6px; }
 
 /* 仅屏幕阅读器可见：表格 caption */
 .sr-only {
@@ -2044,3 +1893,75 @@ button.route-tag:hover { filter: brightness(1.08); }
   border-top: 1px solid var(--border);
 }
 .data-state { min-height: 120px; display: flex; align-items: center; justify-content: center; }
+
+/* ---------- 登录 / 注册 ---------- */
+/* 此前没有任何通用输入框与密码框样式（grep "password" 零命中），
+   登录表单所需的 .field/.input/input[type=password] 均为本次新增。 */
+.auth-page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 24px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.auth-title { margin: 0; font-size: 22px; }
+.auth-subtitle { margin: 0; color: var(--text-secondary); font-size: 13px; }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field-label { font-size: 13px; color: var(--text-secondary); }
+
+.input {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+}
+.input:focus-visible { border-color: var(--primary); }
+
+.auth-submit { margin-top: 4px; }
+
+.auth-error {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--error) 40%, transparent);
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+  color: var(--error);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.auth-hint { margin: 0; font-size: 12px; color: var(--text-secondary); }
+
+/* ---------- 顶栏用户区 ---------- */
+.topbar-subtitle { color: var(--text-secondary); }
+.topbar-user {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.topbar-username {
+  font-size: 13px;
+  color: var(--text-secondary);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.password-reset { display: flex; align-items: center; margin-top: 6px; }

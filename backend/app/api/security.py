@@ -5,8 +5,6 @@
 - /admin/audit：审计查询（过滤 + trace 聚合）与 CSV 导出（不含原文）；
 - /admin/quota：配额总览与单租户配置；
 - /admin/sensitive：敏感词表 CRUD（按租户隔离）；
-- /admin/eval/*：评测集与运行（结果绑定评测集版本 + 模型版本 + 业务代码版本）
-  以及两次运行的逐指标对比；
 - /admin/users/permission-matrix：角色 × 能力矩阵（前端 PermissionMatrix 组件的数据源）。
 
 管理操作本身写审计（admin.action）——审计查询者也留痕。
@@ -20,6 +18,7 @@ from pydantic import BaseModel, Field
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.dependencies import require_role
+from app.services.security import password as password_mod
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,19 @@ def _audit_admin(request: Request, trace_id: str, action: str, detail: dict) -> 
 
 # ---------- 用户 ----------
 
+#: 用户记录中绝不能出后端的字段。
+#:
+#: `list_users` / `edit_user` 是把用户目录原样回传给前端的设计（前端 UserRecord
+#: 直接消费它）。一旦目录里新增 `password_hash`，它就会随响应落进浏览器、
+#: devtools 与前端内存缓存——即使只有 admin 可见，哈希离线爆破的成本也远低于
+#: 直接猜原始口令。因此脱敏必须放在 API 边界，而不是指望目录层不存这个字段。
+_USER_SECRET_FIELDS = frozenset({"password_hash"})
+
+
+def _public_user(record: dict) -> dict:
+    return {k: v for k, v in record.items() if k not in _USER_SECRET_FIELDS}
+
+
 @router.get("/admin/users", response_model=Envelope)
 def list_users(request: Request) -> Envelope:
     trace_id = new_trace_id()
@@ -45,7 +57,7 @@ def list_users(request: Request) -> Envelope:
     _audit_admin(request, trace_id, "users.list", {})
     directory = request.app.state.user_directory
     users = directory.all() if hasattr(directory, "all") else list(directory)
-    return ok_envelope(users, trace_id, elapsed_ms_since(started))
+    return ok_envelope([_public_user(u) for u in users], trace_id, elapsed_ms_since(started))
 
 
 class UserEditRequest(BaseModel):
@@ -75,7 +87,37 @@ def edit_user(user_id: str, req: UserEditRequest, request: Request) -> Envelope:
         target.update(patch)
         updated = target
     _audit_admin(request, trace_id, "users.edit", {"user_id": user_id})
-    return ok_envelope(updated, trace_id, elapsed_ms_since(started))
+    return ok_envelope(_public_user(updated), trace_id, elapsed_ms_since(started))
+
+
+class UserPasswordRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+@router.put("/admin/users/{user_id}/password", response_model=Envelope)
+def set_user_password(user_id: str, req: UserPasswordRequest, request: Request) -> Envelope:
+    """为账号设置/重置口令。
+
+    没有这个端点时只有 admin 能登录——因为只有 admin 拿得到初始口令。
+    而"管理员给别人开账号"正是账号密码档存在的意义，故必须提供。
+    """
+    trace_id = new_trace_id()
+    set_trace_id(trace_id)
+    started = now_ms()
+    directory = request.app.state.user_directory
+    if directory.get(user_id) is None:
+        # 与 edit_user 保持同一套防探测口径
+        raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
+
+    weak = password_mod.validate_password_strength(req.password)
+    if weak:
+        raise ApiError(ErrCode.INVALID_INPUT, weak, http_status=400)
+
+    directory.set_password(user_id, password_mod.hash_password(req.password))
+    # 只审计"给谁重置了"，绝不记录口令本身（logging_setup 的脱敏正则不覆盖
+    # 显式拼接的字符串，写进 payload 就等于把口令抄进了审计文件）
+    _audit_admin(request, trace_id, "users.password_reset", {"user_id": user_id})
+    return ok_envelope({"user_id": user_id, "password_set": True}, trace_id, elapsed_ms_since(started))
 
 
 # ---------- 文档 ACL ----------
@@ -250,111 +292,6 @@ def delete_sensitive(word: str, request: Request, tenant_id: str = "default") ->
     return ok_envelope({"deleted": True}, trace_id, elapsed_ms_since(started))
 
 
-# ---------- 评测 ----------
-
-class DatasetRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=50)
-    version: str = Field(min_length=1, max_length=20)
-    samples: list[dict]
-
-
-@router.post("/admin/eval/datasets", response_model=Envelope)
-def save_dataset(req: DatasetRequest, request: Request) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    try:
-        result = request.app.state.eval_store.save_dataset(req.name, req.version, req.samples)
-    except ValueError as exc:
-        raise ApiError(ErrCode.INVALID_REQUEST, str(exc), http_status=422) from exc
-    return ok_envelope(result, trace_id, elapsed_ms_since(started))
-
-
-@router.get("/admin/eval/datasets", response_model=Envelope)
-def list_datasets(request: Request) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    return ok_envelope(request.app.state.eval_store.list_datasets(), trace_id, elapsed_ms_since(started))
-
-
-class EvalRunRequest(BaseModel):
-    dataset: str
-    dataset_version: str
-
-
-# 运行摘要字段：三个版本（评测集/模型/业务代码）缺一，指标变化就无法归因（§6.3）。
-# 用 .get 而非下标：存量 run-*.json 里没有 code_version / coverage，硬取会 500。
-_EVAL_RUN_FIELDS = (
-    "run_id", "dataset", "dataset_version", "model_version", "code_version", "path",
-    "sample_count", "faithfulness", "citation_accuracy", "refusal_accuracy", "coverage",
-    "created_at",
-)
-
-
-def _eval_summary(run: dict) -> dict:
-    return {key: run.get(key) for key in _EVAL_RUN_FIELDS}
-
-
-@router.post("/admin/eval/run", response_model=Envelope)
-def run_eval(req: EvalRunRequest, request: Request) -> Envelope:
-    """触发评测（同步执行轻量指标；样本量大时应异步，此处演示规模同步即可）。"""
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    try:
-        run = request.app.state.eval_runner.run(req.dataset, req.dataset_version)
-    except FileNotFoundError as exc:
-        raise ApiError(ErrCode.INVALID_REQUEST, str(exc), http_status=404) from exc
-    _audit_admin(request, trace_id, "eval.run", {
-        "run_id": run["run_id"], "dataset": req.dataset,
-        "code_version": run.get("code_version"),
-    })
-    return ok_envelope(_eval_summary(run), trace_id, elapsed_ms_since(started))
-
-
-@router.get("/admin/eval/runs", response_model=Envelope)
-def list_runs(request: Request) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    runs = request.app.state.eval_store.list_runs()
-    return ok_envelope([_eval_summary(r) for r in runs], trace_id, elapsed_ms_since(started))
-
-
-@router.get("/admin/eval/compare", response_model=Envelope)
-def compare_eval_runs(
-    request: Request,
-    a: str = Query(min_length=1, max_length=64),
-    b: str = Query(min_length=1, max_length=64),
-) -> Envelope:
-    """两次运行的逐指标对比 + 失败样本差异（前端"v1.0 vs v1.2.0 ↑+3.5%"的数据源）。
-
-    单独一个端点而不是让前端拉两次 run 自己算：差值口径（样本对齐、失败判定阈值）
-    必须只有一份实现，否则两次"对比"会给出不同结论。
-    """
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    try:
-        result = request.app.state.eval_store.compare(a, b)
-    except FileNotFoundError as exc:
-        raise ApiError(ErrCode.INVALID_REQUEST, str(exc), http_status=404) from exc
-    _audit_admin(request, trace_id, "eval.compare", {"a": a, "b": b})
-    return ok_envelope(result, trace_id, elapsed_ms_since(started))
-
-
-@router.get("/admin/eval/runs/{run_id}", response_model=Envelope)
-def get_run(run_id: str, request: Request) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    run = request.app.state.eval_store.get_run(run_id)
-    if run is None:
-        raise ApiError(ErrCode.INVALID_REQUEST, f"评测运行不存在: {run_id}", http_status=404)
-    return ok_envelope(run, trace_id, elapsed_ms_since(started))
-
-
 @router.get("/admin/tools", response_model=Envelope, dependencies=[Depends(require_role("admin"))])
 def list_tools(request: Request) -> Envelope:
     """工具目录与健康状态（TASK-109）。
@@ -397,7 +334,6 @@ CAPABILITIES: list[dict] = [
     {"key": "manage_quota", "label": "配额管理", "enforced": "backend", "by": "/admin/quota"},
     {"key": "view_audit", "label": "审计查询", "enforced": "backend", "by": "/admin/audit"},
     {"key": "manage_sensitive", "label": "敏感词管理", "enforced": "backend", "by": "/admin/sensitive"},
-    {"key": "run_eval", "label": "评测运行", "enforced": "backend", "by": "/admin/eval"},
 ]
 _ALL_CAPABILITIES = tuple(c["key"] for c in CAPABILITIES)
 _ASK_CAPABILITIES = ("ask", "view_own_data")

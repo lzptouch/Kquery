@@ -118,6 +118,35 @@ def reset_retrieval_config(request: Request) -> Envelope:
     )
 
 
+@router.get("/costs", response_model=Envelope)
+def cost_dashboard(
+    request: Request,
+    from_ts: float = Query(default=0.0, alias="from"),
+    to_ts: float = Query(default=0.0, alias="to"),
+    group_by: str = Query(default="phase", pattern="^(phase|model|tenant_id)$"),
+    tenant_id: str = Query(default=""),
+) -> Envelope:
+    """成本看板（TASK-134）。按 phase/model/tenant 聚合，并可看消耗最高的问答。
+
+    原先寄居在 `api/reports.py`，与多智能体报告无关，报告中心下线时随迁到此处。
+    本 router 已带 `prefix="/admin"` 与整 router 的 admin 门禁，故不再重复声明。
+    """
+    trace_id = new_trace_id()
+    set_trace_id(trace_id)
+    started = now_ms()
+    from app.services.agent.cost import get_ledger
+
+    ledger = get_ledger()
+    data = ledger.aggregate(
+        since=from_ts or None,
+        until=to_ts or None,
+        tenant_id=tenant_id or None,
+        group_by=group_by,
+    )
+    data["top_traces"] = ledger.top_traces(limit=10)
+    return ok_envelope(data, trace_id, elapsed_ms_since(started))
+
+
 def time_fmt(epoch: float) -> str:
     import datetime
 

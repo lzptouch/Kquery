@@ -10,6 +10,7 @@ import { AgentTraceTimeline } from "./AgentTraceTimeline";
 import { ConfidenceBar } from "./ConfidenceBar";
 import { EvidenceCard } from "./EvidenceCard";
 import { EvidenceScoreTable } from "./EvidenceScoreTable";
+import { ParametricNotice } from "./ParametricNotice";
 import { QueryAnalysisPanel } from "./QueryAnalysisPanel";
 import { RefusalCard } from "./RefusalCard";
 import { RetrievalTracePanel } from "./RetrievalTracePanel";
@@ -129,7 +130,17 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
               ⚠ 已达上限
             </span>
           )}
+          {/* 通用知识兜底：答案不来自知识库，来源必须显式标注（诚实性原则） */}
+          {message.answerSource === "parametric" && (
+            <span className="parametric-badge" title="知识库未收录相关内容，以下由大模型自身知识回答">
+              模型自身知识
+            </span>
+          )}
         </div>
+
+        {message.answerSource === "parametric" && !message.streaming && (
+          <ParametricNotice traceId={message.traceId} />
+        )}
 
         {(message.confidence !== undefined || message.regenerated) && !message.streaming && (
           <ConfidenceBar

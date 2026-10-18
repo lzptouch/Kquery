@@ -8,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # backend/ 根目录
 
+logger = logging.getLogger(__name__)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -89,6 +91,15 @@ class Settings(BaseSettings):
     crag_max_iterations: int = 2  # 精炼-重检索循环上限（必需，防无限循环）
     selfcheck_enabled: bool = True  # 幻觉自检（qwen-plus 判定）
 
+    # ---- 通用知识兜底（TASK-新）：知识库未覆盖时由模型自身知识回答 ----
+    # 原则：诚实但有用——承认知识库没有，同时不浪费用户一次提问。
+    # 红线：敏感词/HITL stop/预算耗尽的拒答不兜底（见 doc/analysis/通用知识兜底回答.md §4.2）。
+    parametric_fallback_enabled: bool = True  # 总开关；False 恢复纯拒答行为
+    # 判据口径与 reflect 的 ANSWER_THRESHOLD（reflector.py）一致：evidence_score < 阈值
+    # 或零证据时走兜底。不要用 crag_correct_th（重排分口径，与综合分不可比较）。
+    parametric_fallback_score_threshold: float = 0.6
+    parametric_fallback_confidence: float = 0.3  # 固定置信度（低于有据回答，不参与自检）
+
     # ---- 阶段 6：Agentic RAG ----
     agent_enabled: bool = True  # /ask 带 session_id 或 mode=agent 时走状态机
     agent_max_steps: int = 6  # 单次规划最大步骤数
@@ -154,11 +165,6 @@ class Settings(BaseSettings):
     otel_exporter_endpoint: str = ""  # 如 http://localhost:4318/v1/traces
     otel_service_name: str = "kquery"
     otel_sample_ratio: float = 1.0  # 无上游 trace 时的本地采样比例
-    # ---- TASK-181：后台任务队列 ----
-    # workers=0 时同步执行（测试与单机轻量部署的降级路径）
-    report_workers: int = 2
-    # 排队上限：超出即背压拒绝并明确告知用户，避免内存无界增长（拒绝优于 OOM）
-    report_queue_size: int = 100
     graph_path: str = ""  # 空则用 {data_dir}/graph/graph.json（sqlite 时自动换 .db 后缀）
     entity_sim_threshold: float = 0.85  # 实体消歧向量相似度阈值（经验值，需按数据调优）
     graph_bfs_depth: int = 2  # 遍历深度（≥3 噪声剧增）
@@ -174,14 +180,6 @@ class Settings(BaseSettings):
     community_merge_threshold: float = 0.3
     image_caption_model: str = "qwen-vl-max"  # 图像描述模型（换版本需全量重编码）
 
-    # ---- 阶段 8：多智能体报告 ----
-    multiagent_enabled: bool = True
-    writer_model: str = "qwen-max"  # 报告撰写（长文组织对档位最敏感；不可用自动降级）
-    critic_model: str = "qwen-plus"  # 评审（多轮循环下档位差异被轮次放大，平衡成本）
-    critic_pass_score: float = 8.0  # 通过阈值（0-10）
-    critic_max_rounds: int = 3  # 第 3 轮后问题通常在数据层而非写作层
-    report_max_subtasks: int = 8
-
     # ---- 阶段 9：企业护栏 ----
     # 默认开启认证（TASK-161：拒绝静默裸奔）。无凭证来源时启动校验失败——
     # 要么给静态凭证表（auth_tokens_json），要么启用 JWT（auth_jwt_enabled + secret），
@@ -194,6 +192,14 @@ class Settings(BaseSettings):
     auth_jwt_secret: str = ""  # HS256 签名密钥（生产应由 Secret 注入）
     auth_jwt_issuer: str = ""
     auth_jwt_audience: str = ""
+    # ---- 账号密码登录（第四档：登录端点自签发上面这套 JWT）----
+    # 默认关闭：不改变任何现有部署的认证路径。开启后 auth_jwt_secret 成为必需
+    # （签发与验签共用同一把密钥），且必须保证至少有一个账号有口令，否则服务起来了
+    # 却谁也进不去——那种故障比启动失败难查得多，故在 validate_startup 里硬拦。
+    auth_password_enabled: bool = False
+    auth_registration_enabled: bool = False  # 自助注册总开关；新账号一律最小权限
+    auth_session_ttl_s: int = 900  # 登录令牌有效期（默认 15 分钟）
+    auth_bootstrap_admin_password: str = ""  # 首次启动为 admin 写入口令；仅当其尚无口令时生效
     acl_enabled: bool = True  # 文档级 ACL（检索前租户过滤 + 检索后 ACL 双保险）
     quota_per_minute: int = 60  # 租户分钟滑动窗口上限
     quota_per_day: int = 10000  # 租户每日调用上限
@@ -267,7 +273,18 @@ class Settings(BaseSettings):
             {"key": "data_dir", "value": str(self.data_dir), "required": True, "is_secret": False,
              "effective_scope": "process"},
             {"key": "auth_jwt_secret", "value": "***" if self.auth_jwt_secret else "",
-             "required": self.auth_jwt_enabled, "is_secret": True, "effective_scope": "process"},
+             "required": self.auth_jwt_enabled or self.auth_password_enabled,
+             "is_secret": True, "effective_scope": "process"},
+            {"key": "auth_password_enabled", "value": self.auth_password_enabled,
+             "required": False, "is_secret": False, "effective_scope": "process"},
+            {"key": "auth_registration_enabled", "value": self.auth_registration_enabled,
+             "required": False, "is_secret": False, "effective_scope": "process"},
+            {"key": "auth_session_ttl_s", "value": self.auth_session_ttl_s,
+             "required": self.auth_password_enabled, "is_secret": False, "effective_scope": "request"},
+            # 明文口令，必须与 auth_jwt_secret 同样掩码——它出现在启动自检输出里
+            {"key": "auth_bootstrap_admin_password",
+             "value": "***" if self.auth_bootstrap_admin_password else "",
+             "required": False, "is_secret": True, "effective_scope": "process"},
             {"key": "default_tenant_id", "value": self.default_tenant_id, "required": True,
              "is_secret": False, "effective_scope": "process"},
             {"key": "cors_origins", "value": self.cors_origins, "required": True,
@@ -302,12 +319,19 @@ class Settings(BaseSettings):
                 "补齐 KQUERY_DASHSCOPE_API_KEY，或显式设置 model_provider=mock 以承认测试环境")
         if self.vector_store not in {"milvus", "faiss"}:
             add("vector_store", f"非法取值 {self.vector_store}", "只能取 milvus | faiss")
-        if self.auth_enabled and not self.auth_jwt_enabled and not self.auth_tokens_json.strip():
-            add("auth_tokens_json", "auth_enabled=true 但无静态凭证表，认证将无人可通过",
-                "提供 KQUERY_AUTH_TOKENS_JSON（静态凭证表），或启用 auth_jwt_enabled 走标准令牌，"
-                "或显式设置 auth_enabled=false 承认开发/测试模式")
-        if self.auth_jwt_enabled and len(self.auth_jwt_secret) < 16:
-            add("auth_jwt_secret", "JWT 密钥过短（<16 字符）", "使用至少 32 字节随机串")
+        if (self.auth_enabled and not self.auth_jwt_enabled
+                and not self.auth_password_enabled and not self.auth_tokens_json.strip()):
+            add("auth_tokens_json", "auth_enabled=true 但无任何凭证来源，认证将无人可通过",
+                "启用 auth_password_enabled 走账号密码登录，或提供 auth_tokens_json（静态凭证表），"
+                "或启用 auth_jwt_enabled 走标准令牌，或显式设置 auth_enabled=false 承认开发/测试模式")
+        if (self.auth_jwt_enabled or self.auth_password_enabled) and len(self.auth_jwt_secret) < 16:
+            add("auth_jwt_secret", "JWT 密钥过短（<16 字符）",
+                "使用至少 32 字节随机串；账号密码登录模式下签发与验签共用这把密钥")
+        if self.auth_password_enabled and self.auth_session_ttl_s <= 0:
+            add("auth_session_ttl_s", "登录令牌有效期必须为正", "建议 900（15 分钟）")
+        if self.auth_password_enabled and self.auth_registration_enabled and self.auth_enabled is False:
+            # 不致命：auth_enabled=false 时登录端点本就无法通过认证，此处只避免误配的困惑
+            logger.warning("已开启自助注册，但 auth_enabled=false，登录端点不会生效")
         if self.top_k <= 0:
             add("top_k", "top_k 必须为正整数", "推荐 4")
         if self.chunk_overlap >= self.chunk_size:
@@ -316,12 +340,20 @@ class Settings(BaseSettings):
             add("rrf_k", "RRF 平滑常数必须为正", "论文默认 60")
         if not 0.0 <= self.cache_sim_threshold <= 1.0:
             add("cache_sim_threshold", "语义缓存阈值必须落在 [0,1]", "推荐 0.95")
+        if not 0.0 <= self.parametric_fallback_score_threshold <= 1.0:
+            add("parametric_fallback_score_threshold", "兜底判定阈值必须落在 [0,1]",
+                "推荐 0.6（与 reflect 的 ANSWER_THRESHOLD 同口径）")
+        if not 0.0 <= self.parametric_fallback_confidence <= 1.0:
+            add("parametric_fallback_confidence", "兜底置信度必须落在 [0,1]", "推荐 0.3")
         if self.quota_per_minute <= 0:
             add("quota_per_minute", "分钟配额必须为正整数", "推荐 60")
         if self.platform_quota_warn_ratio <= 0 or self.platform_quota_warn_ratio >= 1:
             add("platform_quota_warn_ratio", "告警水位必须落在 (0,1)", "推荐 0.8")
         if issues:
-            logger = logging.getLogger(__name__)
+            # 注意：这里**不能**再 `logger = logging.getLogger(__name__)`。
+            # 同一函数上方（如自助注册告警）已引用过模块级 logger，Python 见到
+            # 局部赋值就会把整个函数里的 logger 当作局部变量，于是前面的引用
+            # 变成 UnboundLocalError——只在走到告警分支时才暴露，极难定位。
             detail = "; ".join(f"{i['field']}（{i['reason']}）" for i in issues)
             logger.error("启动期配置校验未通过：%s", detail)
         return issues

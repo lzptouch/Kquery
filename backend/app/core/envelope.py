@@ -66,6 +66,8 @@ class ErrCode(IntEnum):
 
     # 44xx/45xx：降级语义（阶段 2）
     RERANK_DEGRADED = 4401  # 重排服务不可用（warn 信封，仍返回结果）
+    # 通用知识兜底：知识库未收录相关内容，答案来自模型自身知识（warn 信封，仍返回结果）
+    PARAMETRIC_FALLBACK = 4402
     CACHE_UNAVAILABLE = 4501  # 缓存服务不可用（无感降级，只上报指标）
 
     # 46xx/47xx/48xx：Query 预处理（阶段 4）
@@ -85,18 +87,12 @@ class ErrCode(IntEnum):
     RATE_LIMITED = 6101  # 触发租户配额：黄色横幅 + Retry-After 倒计时
     QUOTA_EXCEEDED = 6201  # 平台/每日配额不足：运维事件
 
-    # ---- 8xxx 多智能体报告（阶段 8）----
-    REPORT_NOT_FOUND = 8004  # 报告不存在
-    REPORT_PLAN_FAILED = 8101  # 任务拆解失败（提供重试与降级普通问答入口）
-    REPORT_TASKS_ALL_FAILED = 8201  # 子任务全部失败：不产出空报告（硬约束）
-    REPORT_CRITIC_CAPPED = 8301  # 评审达到轮次上限（正常展示 + 未通过标记 + 遗留问题）
-    REPORT_CRITIC_FAILED = 8401  # 评审环节本身异常（标记"未评审"，与"未通过"严格区分）
-
     @classmethod
     def is_degraded_code(cls, code: int) -> bool:
         """降级类错误码：走 warn 信封，不阻断结果。"""
         return code in {
             int(cls.RERANK_DEGRADED),
+            int(cls.PARAMETRIC_FALLBACK),
             int(cls.CACHE_UNAVAILABLE),
             int(cls.SCORER_UNAVAILABLE),
             int(cls.SELFCHECK_UNAVAILABLE),

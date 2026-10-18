@@ -23,6 +23,7 @@ from app.services.agent.reflector import ANSWER_THRESHOLD, Reflector
 from app.services.agent.state import AgentState
 from app.services.agent.tools import ToolRegistry
 from app.services.llm import LLM
+from app.services.pipeline import GENERAL_KNOWLEDGE_PROMPT, NO_INFO_ANSWER
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +110,12 @@ def build_agent_graph(
     planner: Planner,
     reflector: Reflector,
     answer_llm: LLM,
-    prompt_builder,  # (question, evidence_dicts) -> str
+    prompt_builder,  # (question, evidence_dicts, *, parametric=False) -> str
     no_progress_limit: int = NO_PROGRESS_LIMIT,
     checkpointer=None,  # BaseCheckpointSaver | None（TASK-115）；None = 不启用续跑
+    # 通用知识兜底（doc/analysis/通用知识兜底回答.md §6.4）：闭包注入，测试可独立覆盖
+    parametric_fallback_enabled: bool = True,
+    parametric_fallback_score_threshold: float = ANSWER_THRESHOLD,
 ) -> CompiledStateGraph:
     deps = {"registry": registry, "planner": planner, "reflector": reflector, "llm": answer_llm}
 
@@ -540,60 +544,99 @@ def build_agent_graph(
 
     def answer_node(state: AgentState, config: RunnableConfig) -> dict:
         emit = (config.get("configurable") or {}).get("emit")
-        evidence = state.get("evidence", [])
-        if state.get("skip_retrieval") or not evidence:
-            if state.get("skip_retrieval"):
-                prompt = state["question"]  # 闲聊直答
-            else:
-                return {"final_answer": "", "refusal": True, "status": _final_status(state)}
-        else:
-            prompt = prompt_builder(state["question"], evidence)
-            if state.get("incomplete"):
-                prompt += "\n\n（注意：检索已达执行上限，请基于现有证据尽力回答，并在开头说明答案可能不完整。）"
+        # ACL 提示条目只是 UI 提示，不进判据与证据编号（与 runner._build_result 同口径）
+        evidence = [e for e in state.get("evidence", []) if e.get("modality") != "acl_notice"]
+        evidence_score = float(state.get("evidence_score", 0.0) or 0.0)
 
-        # ---- TASK-124 人在环（HITL）----
-        # 位置很关键：必须在**任何副作用之前**（这里指 LLM 流式输出与 token 事件）。
-        # LangGraph 恢复时会**从头重跑整个节点**，若在 interrupt() 之前已经 emit 过
-        # token，恢复后会重复发一遍——前端会看到答案被拼两次。
-        hitl = (config.get("configurable") or {}).get("hitl")
-        if hitl is not None and not state.get("hitl_resolved"):
-            reason = hitl_trigger(state, hitl)
-            if reason:
-                decision = interrupt({
-                    "run_id": (config.get("configurable") or {}).get("thread_id", ""),
-                    "reason": reason,
-                    "question": state["question"],
-                    "evidence_score": round(float(state.get("evidence_score", 0.0)), 4),
-                    "evidence_count": len(evidence),
-                    "iteration": state.get("iteration", 0),
-                    "refusal": bool(state.get("refusal")),
-                    "actions": ["hint", "force_answer", "stop"],
-                })
-                action, hint = _parse_hitl_decision(decision)
-                if action == "stop":
-                    _emit(config, "hitl_resolved", {"action": "stop", "reason": reason})
-                    return {
-                        "final_answer": "",
-                        "refusal": True,
-                        "incomplete": True,
-                        "status": "cancelled",
-                        "hitl_resolved": "stop",
-                    }
-                if hint:
-                    prompt += f"\n\n（用户补充线索：{hint}）"
-                if action == "force_answer":
+        # 通用知识兜底（doc/analysis/通用知识兜底回答.md §6.4）与 HITL 的边界：
+        # - 零证据：直接兜底——没有可审的证据，挂起等人工也等不到更多信息；
+        # - 有证据但低分：HITL 优先——开启 HITL 即表明"低置信要人工确认"；
+        #   用户 hint / force_answer 授权后按证据作答（此时兜底会违背授权语义）；
+        # - HITL 未启用或未介入时，低分证据走兜底。
+        if state.get("skip_retrieval"):
+            prompt = state["question"]  # 闲聊直答
+            answer_source = ""
+        elif not evidence:
+            if parametric_fallback_enabled:
+                prompt = GENERAL_KNOWLEDGE_PROMPT.format(question=state["question"])
+                answer_source = "parametric"
+            else:
+                return {"final_answer": "", "refusal": True, "status": _final_status(state),
+                        "answer_source": ""}
+        else:
+            # ---- TASK-124 人在环（HITL）：仅证据路径可挂起 ----
+            # 位置很关键：必须在**任何副作用之前**（这里指 LLM 流式输出与 token 事件）。
+            # LangGraph 恢复时会**从头重跑整个节点**，若在 interrupt() 之前已经 emit 过
+            # token，恢复后会重复发一遍——前端会看到答案被拼两次。
+            force_answered = False
+            hint_text = ""
+            hitl = (config.get("configurable") or {}).get("hitl")
+            if hitl is not None and not state.get("hitl_resolved"):
+                reason = hitl_trigger(state, hitl)
+                if reason:
+                    decision = interrupt({
+                        "run_id": (config.get("configurable") or {}).get("thread_id", ""),
+                        "reason": reason,
+                        "question": state["question"],
+                        "evidence_score": round(float(state.get("evidence_score", 0.0)), 4),
+                        "evidence_count": len(evidence),
+                        "iteration": state.get("iteration", 0),
+                        "refusal": bool(state.get("refusal")),
+                        "actions": ["hint", "force_answer", "stop"],
+                    })
+                    action, hint = _parse_hitl_decision(decision)
+                    if action == "stop":
+                        _emit(config, "hitl_resolved", {"action": "stop", "reason": reason})
+                        return {
+                            "final_answer": "",
+                            "refusal": True,
+                            "incomplete": True,
+                            "status": "cancelled",
+                            "hitl_resolved": "stop",
+                            "answer_source": "",
+                        }
+                    if hint:
+                        hint_text = f"\n\n（用户补充线索：{hint}）"
+                    if action == "force_answer":
+                        force_answered = True
+                    _emit(config, "hitl_resolved", {"action": action, "reason": reason})
+
+            if (
+                parametric_fallback_enabled
+                and not force_answered
+                and not hint_text
+                and evidence_score < parametric_fallback_score_threshold
+            ):
+                # 有证据但反思综合分不足，且无人工作答授权 → 通用知识兜底
+                prompt = GENERAL_KNOWLEDGE_PROMPT.format(question=state["question"])
+                answer_source = "parametric"
+            else:
+                prompt = prompt_builder(state["question"], state.get("evidence", []))
+                answer_source = "evidence"
+                if state.get("incomplete"):
+                    prompt += "\n\n（注意：检索已达执行上限，请基于现有证据尽力回答，并在开头说明答案可能不完整。）"
+                if hint_text:
+                    prompt += hint_text
+                if force_answered:
                     prompt += (
                         "\n\n（用户已知悉证据可能不足并授权作答：请基于现有证据尽力回答，"
                         "并在开头明确说明答案可能不完整。）"
                     )
-                _emit(config, "hitl_resolved", {"action": action, "reason": reason})
 
         chunks: list[str] = []
         for piece in deps["llm"].stream(prompt):
             chunks.append(piece)
             if emit:
                 emit("token", {"content": piece})
-        return {"final_answer": "".join(chunks), "status": _final_status(state)}
+        answer = "".join(chunks)
+
+        # 兜底重生成（仅一次）：证据路径下模型仍输出拒答话术 → 切换为通用知识。
+        # 覆盖「反思分刚过阈值但证据实际不足」的残余缺口（模型比阈值更诚实）。
+        # token 经 runner 缓冲后按终稿重放，中间文本不会泄露给前端。
+        if answer.strip().startswith(NO_INFO_ANSWER) and parametric_fallback_enabled:
+            answer = deps["llm"].generate(GENERAL_KNOWLEDGE_PROMPT.format(question=state["question"]))
+            answer_source = "parametric"
+        return {"final_answer": answer, "status": _final_status(state), "answer_source": answer_source}
 
     # ---------- 路由 ----------
 
@@ -620,6 +663,9 @@ def build_agent_graph(
             return "end"
         # 已拒答/已取消/预算耗尽的收尾不必再校验：没有答案可校验
         if state.get("refusal") or state.get("status") in ("cancelled", "budget_exhausted"):
+            return "end"
+        # 通用知识兜底回答本就无据可核，verify 会判幻觉并回退 replan 形成无意义回环
+        if state.get("answer_source") == "parametric":
             return "end"
         return "verify"
 

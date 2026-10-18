@@ -27,6 +27,7 @@ from app.services.agent.react import ReActThinker
 from app.services.agent.sessions import SessionStore
 from app.services.agent.state import initial_state
 from app.services.pipeline import (
+    GENERAL_KNOWLEDGE_PROMPT,
     NO_INFO_ANSWER,
     PROMPT_TEMPLATE,
     REFUSAL_TEXT,
@@ -42,18 +43,23 @@ _DONE = object()  # 事件流终止哨兵
 RETRIEVAL_TOOLS = frozenset({"vector_search", "graph_search", "image_search", "sql_search", "web_search"})
 
 # TASK-121：单次工具调用伴随的 LLM 开销估算（规划/反思各一次量级的保守值）。
-# 与 multiagent/roles.py 与 query/orchestrator.py 的估算口径保持一致——
+# 与 query/orchestrator.py 的估算口径保持一致——
 # 预算判定宁可保守（高估），也不要用乐观值把钱烧穿。
 ESTIMATED_TOKENS_PER_TOOL_CALL = 800
 
 
-def agent_prompt_builder(question: str, evidence_dicts: list[dict]) -> str:
+def agent_prompt_builder(question: str, evidence_dicts: list[dict], *, parametric: bool = False) -> str:
     """answer 节点的提示词：只读最终入选证据，不读 plan/reflect 中间结果（§8.3）。
 
     图谱/图像证据需要额外指引：关系三元组可以综合推理直接与间接关系；
     "无相关内容"话术要么不出现、要么是答案的全部（不得在分析后追加，
     否则会被拒答归一误判）。
+
+    parametric=True 时切换为通用知识兜底提示词，不注入证据块
+    （低分无关片段会干扰回答；doc/analysis/通用知识兜底回答.md §6.2）。
     """
+    if parametric:
+        return GENERAL_KNOWLEDGE_PROMPT.format(question=question)
     # ACL 提示条目（"另有 N 条因权限未展示"）只是 UI 提示，不进提示词与证据编号
     evidence_dicts = [e for e in evidence_dicts if e.get("modality") != "acl_notice"]
     evidence = [
@@ -397,6 +403,7 @@ class AgentRunner:
 
         # ---- 敏感词扫描（输出侧，响应前）----
         raw_answer = (final_state or {}).get("final_answer", "")
+        answer_source = (final_state or {}).get("answer_source", "")
         # ---- 幻觉自检（TASK-112）----
         # Agent 路径此前完全不逐句校验，答案里出现无据陈述也照原样返回，
         # 只是把 confidence 硬编码为 unvalidated=True（对外等于"没检过"）。
@@ -405,7 +412,8 @@ class AgentRunner:
         self_check_record = None
         confidence: float | None = None
         unsupported_count = 0
-        if self._self_checker is not None and raw_answer:
+        # 通用知识兜底回答无据可核：自检会把全部陈述判为无据并把 confidence 压到 0
+        if self._self_checker is not None and raw_answer and answer_source != "parametric":
             evidence_list = (final_state or {}).get("evidence", []) or []
             evidence_block = "\n".join(
                 f"[{i + 1}]（来源：{e.get('source', '未知')}）\n{e.get('content', '')}"
@@ -466,6 +474,7 @@ class AgentRunner:
         yield "confidence", {
             "verdict": result["verdict"],
             "score": result["confidence"],
+            "answer_source": result.get("answer_source", ""),
             "unsupported_claims_count": result["unsupported_claims_count"],
             "regenerated": result["regenerated"],
             # TASK-112：Agent 路径已接上同一套幻觉自检，不再硬编码 unvalidated
@@ -486,6 +495,7 @@ class AgentRunner:
                 self._sessions.save_turn(
                     session_id, tenant_id, user_id,
                     question, result["answer"], result["verdict"], final_state,
+                    answer_source=result.get("answer_source", ""),
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("会话快照写入失败（不影响本次应答）")
@@ -506,6 +516,7 @@ class AgentRunner:
                 confidence=result["confidence"],
                 branch=None,
                 regenerated=False,
+                answer_source=result.get("answer_source", ""),
             )
             self._metrics.record_agent_run(
                 iterations=final_state.get("iteration", 0) if final_state else 0,
@@ -817,6 +828,7 @@ class AgentRunner:
         self, state: dict, question: str, doc_name_resolver, elapsed_ms: int, trace_id: str = ""
     ) -> dict:
         answer = state.get("final_answer", "")
+        answer_source = state.get("answer_source", "")
         all_evidence = state.get("evidence", [])
         # ACL 提示条目只用于 UI 提示，不进证据编号（安全红线：只报数量）
         acl_filtered = sum(
@@ -853,7 +865,10 @@ class AgentRunner:
         ]
 
         # 拒答归一：无证据 / 提示词级拒答 / 敏感词整体拒答
-        refusal = state.get("refusal", False) or answer.strip().startswith(NO_INFO_ANSWER)
+        # 通用知识兜底豁免：parametric 答案不以知识库证据为依据，不参与拒答归一
+        refusal = (
+            state.get("refusal", False) or answer.strip().startswith(NO_INFO_ANSWER)
+        ) and answer_source != "parametric"
         if refusal:
             # ⚠️ 必须回写 state["refusal"]。此前只在"证据为空"时由 answer_node 置位，
             # 而**更常见的**拒答形态是"检索到了候选但反思判定不相关"——那种情况下
@@ -869,8 +884,20 @@ class AgentRunner:
         else:
             verdict = "answered"
             answer_out = answer
-            confidence = round(min(0.95, state.get("evidence_score", 0.5)), 4)
+            if answer_source == "parametric":
+                # 兜底回答固定置信度（明确低于有据回答的不确定性），不经自检评分
+                confidence = round(
+                    float(getattr(self._settings, "parametric_fallback_confidence", 0.3)
+                          if self._settings is not None else 0.3),
+                    4,
+                )
+            else:
+                confidence = round(min(0.95, state.get("evidence_score", 0.5)), 4)
             refusal_reason = ""
+
+        # 兜底回答不引用证据：前端不展示无关片段（acl_filtered 计数保留）
+        if answer_source == "parametric":
+            evidence = []
 
         # 证据充分度：Top-N 均值（与线性路径 crag_score_top_n 同口径）
         top_scores = sorted(
@@ -894,6 +921,7 @@ class AgentRunner:
             "evidence": evidence,
             "verdict": verdict,
             "refusal_reason": refusal_reason,
+            "answer_source": answer_source,
             "confidence": confidence,
             "incomplete": incomplete,
             "fuse_reason": state.get("fuse_reason", ""),

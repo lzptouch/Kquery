@@ -6,7 +6,6 @@
  * - 熔断 → 黄色"已达上限"提示（不完整的成功，不是错误）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import {
   createSession,
   deleteSession,
@@ -170,13 +169,14 @@ export function ChatPage() {
               m.id === assistantId ? { ...m, refineFrom: before, refineTo: after } : m,
             ),
           ),
-        onConfidence: ({ score, unsupported_claims_count, regenerated, unvalidated, removed_claims }) =>
+        onConfidence: ({ score, unsupported_claims_count, regenerated, unvalidated, removed_claims, answer_source }) =>
           patchMessage(assistantId, {
             confidence: score ?? undefined,
             unsupportedClaimsCount: unsupported_claims_count,
             regenerated,
             unvalidated,
             removedClaims: removed_claims ?? [],
+            ...(answer_source ? { answerSource: answer_source } : {}),
           }),
         // ---- Agent 轨迹事件 ----
         onPlan: ({ steps, replan }) =>
@@ -224,9 +224,10 @@ export function ChatPage() {
           patchMessage(assistantId, {
             verdict: "refused", refusalReason: reason, confidence: 0,
           }),
-        onDone: ({ trace_id, agent, incomplete, fuse_reason, session_id, evidence, verdict, confidence, acl_filtered, retrieval, crag, from_cache, refusal_reason, regenerated, unsupported_claims_count }) => {
+        onDone: ({ trace_id, agent, incomplete, fuse_reason, session_id, evidence, verdict, confidence, acl_filtered, retrieval, crag, from_cache, refusal_reason, regenerated, unsupported_claims_count, answer_source }) => {
           patchMessage(assistantId, {
             streaming: false, traceId: trace_id,
+            ...(answer_source ? { answerSource: answer_source } : {}),
             agent: agent ?? null, incomplete, fuseReason: fuse_reason,
             // 最终编号后的证据替换临时累积（rank 从 1 连续，与答案引用对位）
             ...(evidence ? { evidence } : {}),
@@ -296,6 +297,7 @@ export function ChatPage() {
       restored.push({
         id: nextId(), role: "assistant", content: turn.answer, evidence: [],
         verdict: turn.verdict as ChatMessage["verdict"],
+        answerSource: turn.answer_source as ChatMessage["answerSource"],
       });
     }
     setMessages(restored);
@@ -375,11 +377,6 @@ export function ChatPage() {
         </div>
 
         <div className="chat-input-area">
-          <div style={{ textAlign: "right", paddingBottom: 4 }}>
-            <Link to="/reports" className="btn-text" title="多智能体深度报告：拆解→检索→撰写→评审">
-              📊 需要深度报告？前往报告中心 →
-            </Link>
-          </div>
           <ChatInput disabled={false} streaming={streaming} onSend={(q) => void send(q)} onStop={stop} />
         </div>
       </div>

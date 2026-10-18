@@ -111,9 +111,39 @@ class JwtAuthProvider:
         padding = "=" * (-len(segment) % 4)
         return base64.urlsafe_b64decode(segment + padding)
 
+    @staticmethod
+    def _b64url_encode(raw: bytes) -> str:
+        """与 `_b64url_decode` 对称。JWT 要求无 padding，故去掉尾部 `=`。"""
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
     def _verify_signature(self, signing_input: bytes, signature: bytes) -> bool:
         expected = hmac.new(self._secret, signing_input, hashlib.sha256).digest()
         return hmac.compare_digest(expected, signature)
+
+    def encode(self, payload: dict, ttl_s: int) -> str:
+        """自签发 HS256 令牌——账号密码登录成功后用它换取后续请求的身份。
+
+        与 `decode` 严格成对：这里写入的每一条声明都是 `decode` 会回头校验的。
+        少写一条就会出现"签发成功、下一次请求立刻 401"的组合，且日志里看不出原因，
+        所以 `iss`/`aud`/`exp`/`sub` 必须按 `decode` 的期望逐条对齐，而不是各写各的。
+        """
+        now = int(time.time())
+        claims = dict(payload)
+        # decode 强制要求 sub（否则 152 行抛错），这里兜住"调用方忘了给"的情况
+        claims["sub"] = str(claims.get("sub") or "")
+        claims.setdefault("iat", now)
+        claims["exp"] = now + int(ttl_s)
+        if self._issuer:
+            claims["iss"] = self._issuer
+        if self._audience:
+            claims["aud"] = self._audience
+        # compact JSON：分隔符无空格、键排序——保证同一份声明签两次结果一致，便于排查
+        def _seg(obj: dict) -> str:
+            return self._b64url_encode(json.dumps(obj, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+
+        signing_input = f"{_seg({'alg': 'HS256', 'typ': 'JWT'})}.{_seg(claims)}".encode("ascii")
+        signature = hmac.new(self._secret, signing_input, hashlib.sha256).digest()
+        return f"{signing_input.decode('ascii')}.{self._b64url_encode(signature)}"
 
     def decode(self, token: str) -> dict:
         parts = token.split(".")
@@ -221,6 +251,39 @@ class UserDirectory:
             record = self._users.get(user_id)
             return dict(record) if record else None
 
+    def find_by_username(self, username: str) -> dict | None:
+        """按登录名查账号。
+
+        登录名**就是** `user_id` 主键，刻意不引入独立的 `username` 字段：
+        多一套标识就意味着要处理重名映射、改名后审计记录失联、
+        ACL 里的 `user:` 表达式与登录名不一致等一连串问题，收益为零。
+        """
+        if not username:
+            return None
+        return self.get(username)
+
+    def identity_of(self, user_id: str) -> dict | None:
+        """取签发令牌所需的身份四要素（**不含** password_hash）。"""
+        record = self.get(user_id)
+        if record is None:
+            return None
+        return {
+            "user_id": record.get("user_id", user_id),
+            "tenant_id": record.get("tenant_id") or "default",
+            "roles": list(record.get("roles") or []),
+            "groups": list(record.get("groups") or []),
+        }
+
+    def set_password(self, user_id: str, encoded: str) -> dict:
+        """写入口令哈希。账号必须已存在——**不隐式建号**。
+
+        隐式建号会让"给 zhangsan 设密码"意外产生一个新账号，
+        而管理员以为自己只是改了一个人的密码。
+        """
+        if self.get(user_id) is None:
+            raise KeyError(f"用户不存在: {user_id}")
+        return self.upsert(user_id, {"password_hash": encoded})
+
     def upsert(self, user_id: str, patch: dict) -> dict:
         """新增或更新。user_id 与 tenant_id 不允许被 patch 改掉（它们是主键语义）。"""
         with self._lock:
@@ -277,9 +340,22 @@ def build_auth_provider(
     token_table: dict[str, dict],
     jwt_settings=None,
 ) -> AuthProvider:
-    """三档认证：JWT（生产）> 静态凭证表（演示）> 头部透传（默认兼容）。"""
-    if enabled and jwt_settings is not None and jwt_settings.auth_jwt_enabled:
-        logger.info("认证启用：标准令牌模式（HS256 JWT）")
+    """认证档位：JWT（含账号密码自签发）> 静态凭证表 > 头部透传。
+
+    账号密码模式与外部 IdP 模式**共用 `JwtAuthProvider`**——两者产出的都是
+    HS256 令牌，验签路径完全相同。拆成两个 Provider 只会多出一处
+    "有 token 时验签、无 token 时怎么办"的分支歧义，而那条分支在两种模式下
+    的答案都是一样的：不回落身份头（回落就等于给未认证请求开后门）。
+    """
+    password_enabled = bool(getattr(jwt_settings, "auth_password_enabled", False))
+    if enabled and jwt_settings is not None and (jwt_settings.auth_jwt_enabled or password_enabled):
+        if password_enabled:
+            logger.info("认证启用：账号密码登录模式（登录自签发 HS256 令牌）")
+        else:
+            logger.info("认证启用：标准令牌模式（HS256 JWT）")
+        if password_enabled and token_table:
+            # 静态表会被完全忽略，必须明说——否则排查"我配的 token 为什么不生效"很痛苦
+            logger.warning("已启用账号密码登录，auth_tokens_json 静态凭证表被忽略")
         return JwtAuthProvider(
             jwt_settings.auth_jwt_secret,
             issuer=jwt_settings.auth_jwt_issuer,

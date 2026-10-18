@@ -135,7 +135,7 @@ class MetricsStore:
             "abnormal": deque(maxlen=20),  # 异常执行列表（熔断/工具失败）
         }
         self._quality = {
-            "total": 0, "answered": 0, "refused": 0,
+            "total": 0, "answered": 0, "refused": 0, "parametric": 0,
             "confidence_sum": 0.0, "confidence_n": 0,
             "regenerated": 0, "branches": {},
         }
@@ -263,7 +263,8 @@ class MetricsStore:
 
     # ---- 阶段 5：质量指标（Faithfulness / 拒答率 / 重生成 / CRAG 分支占比）----
 
-    def record_quality(self, verdict: str, confidence: float | None, branch: str | None, regenerated: bool) -> None:
+    def record_quality(self, verdict: str, confidence: float | None, branch: str | None,
+                       regenerated: bool, answer_source: str = "") -> None:
         with self._lock:
             q = self._quality
             q["total"] += 1
@@ -271,6 +272,9 @@ class MetricsStore:
                 q["refused"] += 1
             else:
                 q["answered"] += 1
+                # 兜底单独计数：拒答率下降要能区分"兜底生效"与"检索退化"（看板不混口径）
+                if answer_source == "parametric":
+                    q["parametric"] += 1
                 if confidence is not None:
                     q["confidence_sum"] += confidence
                     q["confidence_n"] += 1
@@ -301,6 +305,8 @@ class MetricsStore:
             "crag_branch_ratio": {b: round(c / branch_total, 4) for b, c in q["branches"].items()},
             "answered": q["answered"],
             "refused": q["refused"],
+            "parametric": q["parametric"],
+            "parametric_rate": round(q["parametric"] / total, 4),
         }
 
     # ---- 阶段 6：Agent 执行指标 ----

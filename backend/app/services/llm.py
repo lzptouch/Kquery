@@ -287,6 +287,15 @@ class MockLLM:
             return self._mock_stepback(prompt)
         if "拆解为 2~4 个可独立检索" in prompt:
             return self._mock_decompose(prompt)
+        # 通用知识兜底提示词的确定性应答：不含 [n] 引用、不以拒答话术开头
+        # （否则 parametric 路径在测试里永远走不到，退化为"兜底失败回退拒答"）
+        if "用户的问题在知识库中没有检索到相关内容" in prompt:
+            m = re.search(r"用户问题：(.+?)(?:\n|$)", prompt)
+            q = m.group(1).strip() if m else "该问题"
+            return (
+                "以下回答基于大模型通用知识，知识库中未收录相关内容。"
+                f"{q}的通用说明：这是模型基于自身知识生成的兜底回答，仅供测试参考。"
+            )
 
         question, evidence = self._parse(prompt)
         if not evidence:

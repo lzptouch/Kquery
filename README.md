@@ -45,6 +45,6 @@ cd backend && uv run ruff check app tests            # 静态检查
 - [x] 阶段 5：自反思与自校正（CRAG 三分支 + 证据评分 + 幻觉自检 + 受限重生成 + 显式拒答 + 置信度 + 拒答反馈工单 + 质量指标）
 - [x] 阶段 6：Agentic RAG（LangGraph 状态机 Plan/Tool/Reflect/Replan/Answer + 工具注册表与幻觉兜底 + 三层熔断 + 多轮会话存档 + 执行轨迹可视化）
 - [x] 阶段 7：GraphRAG 与多模态（qwen-plus 实体关系抽取 + 消歧归一 + 内存图 BFS + 稳定编号社区摘要 + qwen-vl-max 结构化描述统一向量空间 + graph_search/image_search 工具 + 图谱浏览器）
-- [x] 阶段 8：多智能体报告（Planner/Researcher/Validator/Writer/Critic 五角色 + Blackboard 黑板 + 拓扑分层并行 + Writer↔Critic 评分循环 + 报告中心）
-- [x] 阶段 9：企业级护栏（认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 审计三事件只存哈希 + 敏感词长词优先扫描与掩码 + 租户滑动窗口配额 + 评测集与四指标运行 + 六个管理页面）
+- [x] 阶段 8：多智能体报告（Planner/Researcher/Validator/Writer/Critic 五角色 + Blackboard 黑板 + 拓扑分层并行 + Writer↔Critic 评分循环 + 报告中心）—— **已于 2026-10-17 下线**（见 `doc/plan/移除评测平台与报告中心-分析与实施计划.md`）
+- [x] 阶段 9：企业级护栏（认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 审计三事件只存哈希 + 敏感词长词优先扫描与掩码 + 租户滑动窗口配额 + 六个管理页面）—— 其中**评测平台已下线**
 - [ ] 阶段 10：见 `doc/series/stage-10-deployment/README.md`

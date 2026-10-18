@@ -83,6 +83,7 @@ class AgentState(TypedDict, total=False):
 
     # ---- 输出 ----
     final_answer: str
+    answer_source: str  # 答案来源：evidence（有据）/ parametric（通用知识兜底）/ ""（拒答）
     skip_retrieval: bool  # 闲聊短路
     hitl_resolved: str  # TASK-124：人工介入结果（""/hint/force_answer/stop），防二次打断
     budget: dict  # TASK-121：预算快照（跨 HITL 中断点保持计数单调，防 resume 绕过）
@@ -124,6 +125,7 @@ def initial_state(question: str, tenant_id: str, history: list[dict] | None = No
         "incomplete": False,
         "fuse_reason": "",
         "final_answer": "",
+        "answer_source": "",
         "skip_retrieval": False,
         "refusal": False,
     }

@@ -1,6 +1,6 @@
-/** 用户与权限（阶段 9 前端规范 §二）：列表 + 行内编辑角色/组/状态。 */
+/** 用户与权限（阶段 9 前端规范 §二）：列表 + 行内编辑角色/组/状态 + 重置口令。 */
 import { useCallback, useEffect, useState } from "react";
-import { editUser, fetchUsers } from "../../../lib/api-client";
+import { editUser, fetchUsers, setUserPassword } from "../../../lib/api-client";
 import type { UserRecord } from "../../../types";
 import { PermissionMatrix } from "./PermissionMatrix";
 
@@ -8,6 +8,11 @@ export function UsersPage() {
   const [users, setUsers] = useState<UserRecord[]>([]);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState<{ roles: string; groups: string; enabled: boolean }>({ roles: "", groups: "", enabled: true });
+  // 口令重置：没有它就只有 admin 能登录（只有 admin 拿得到初始口令），
+  // 管理员无法给其他账号开通使用
+  const [pwdFor, setPwdFor] = useState<string | null>(null);
+  const [pwd, setPwd] = useState("");
+  const [pwdMsg, setPwdMsg] = useState("");
   // 四态补齐：此前本页面连 error 态都没有，请求失败时静默显示空表格，
   // 管理员会以为"库里就是一个用户都没有"
   const [loading, setLoading] = useState(true);
@@ -122,15 +127,60 @@ export function UsersPage() {
                         <button type="button" className="btn-text" onClick={() => setEditing(null)}>取消</button>
                       </>
                     ) : (
-                      <button
-                        type="button" className="btn-text"
-                        onClick={() => {
-                          setEditing(u.user_id);
-                          setDraft({ roles: u.roles.join(","), groups: u.groups.join(","), enabled: u.enabled });
-                        }}
-                      >
-                        编辑
-                      </button>
+                      <>
+                        <button
+                          type="button" className="btn-text"
+                          onClick={() => {
+                            setEditing(u.user_id);
+                            setDraft({ roles: u.roles.join(","), groups: u.groups.join(","), enabled: u.enabled });
+                          }}
+                        >
+                          编辑
+                        </button>
+                        <button
+                          type="button" className="btn-text"
+                          style={{ marginLeft: 8 }}
+                          onClick={() => {
+                            setPwdFor(pwdFor === u.user_id ? null : u.user_id);
+                            setPwd("");
+                            setPwdMsg("");
+                          }}
+                        >
+                          重置口令
+                        </button>
+                      </>
+                    )}
+                    {pwdFor === u.user_id && (
+                      <div className="password-reset">
+                        <input
+                          className="input"
+                          type="password"
+                          style={{ width: 150 }}
+                          autoComplete="new-password"
+                          placeholder="至少 8 位，含字母与数字"
+                          value={pwd}
+                          onChange={(e) => setPwd(e.target.value)}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          style={{ marginLeft: 6 }}
+                          onClick={() => {
+                            void setUserPassword(u.user_id, pwd).then((env) => {
+                              if (env.status === "ok") {
+                                setPwdMsg("已重置");
+                                setPwd("");
+                                setPwdFor(null);
+                              } else {
+                                setPwdMsg(env.error?.message ?? "重置失败");
+                              }
+                            });
+                          }}
+                        >
+                          确认
+                        </button>
+                        {pwdMsg && <span className="auth-error" style={{ marginLeft: 6 }}>{pwdMsg}</span>}
+                      </div>
                     )}
                   </td>
                 </tr>

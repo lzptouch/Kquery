@@ -32,11 +32,11 @@ export default defineConfig({
     // 看起来"通了"，实际拿不到任何探针数据（dev/prod 行为不一致很难察觉）。
     proxy: {
       "/ask": apiProxy,
+      "/auth": apiProxy,
       "/knowledge": apiProxy,
       "/admin": apiProxy,
       "/feedback": apiProxy,
       "/sessions": apiProxy,
-      "/reports": apiProxy,
       "/graph": apiProxy,
       "/search": apiProxy,
       "/media": apiProxy,

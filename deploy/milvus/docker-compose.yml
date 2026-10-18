@@ -32,8 +32,10 @@ services:
       - ./volumes/milvus:/var/lib/milvus
       - ./user.yaml:/milvus/configs/user.yaml:ro
     ports:
-      - "19530:19530"
-      - "9091:9091"
+      # 宿主 19530 已被本机其它容器（svc04-milvus）占用，Kquery 改用 19531；
+      # backend/.env 的 KQUERY_MILVUS_URI 需与之对应。
+      - "19531:19530"
+      - "9092:9091"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 30s

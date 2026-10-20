@@ -1,6 +1,6 @@
-"""成本账单（TASK-134）。
+"""成本账单。
 
-TASK-120 之后 token 用量已经能采到，但只有总量、没有"这次花了多少钱、花在哪"。
+ 之后 token 用量已经能采到，但只有总量、没有"这次花了多少钱、花在哪"。
 本模块把用量按 **阶段（phase）× 模型** 归集成可查询的账单：
 
 - 单次问答：`GET /ask/{trace_id}/cost` —— 用户/运维问"这次为什么贵"
@@ -57,10 +57,16 @@ class CostLedger:
                 tokens=int(tokens), cost_yuan=float(cost_yuan), priced=bool(priced),
             ))
 
-    def for_trace(self, trace_id: str) -> dict:
-        """单次问答账单（按阶段归集）。"""
+    def for_trace(self, trace_id: str, tenant_id: str | None = None) -> dict:
+        """单次问答账单（按阶段归集）。
+
+        tenant_id 给定时只归集该租户的记录：成本账单含模型与金额，
+        跨租户读取属于越权（对照分析文档 KQ-02）。
+        """
         with self._lock:
             rows = [r for r in self._records if r.trace_id == trace_id]
+        if tenant_id:
+            rows = [r for r in rows if r.tenant_id == tenant_id]
         if not rows:
             return {
                 "trace_id": trace_id, "total_yuan": 0.0, "total_tokens": 0,

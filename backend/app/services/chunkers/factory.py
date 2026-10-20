@@ -1,4 +1,4 @@
-"""切块器工厂（阶段 3 §1.1 Chunker Factory）。
+"""切块器工厂。
 
 按 chunk_policy 选择策略并产出块：
 - recursive（默认）：零额外开销、可预测；

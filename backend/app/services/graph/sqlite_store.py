@@ -1,4 +1,4 @@
-"""SQLite 图存储（TASK-180）。
+"""SQLite 图存储。
 
 ## 为什么要换掉 JSON 落盘
 
@@ -366,7 +366,7 @@ class SqliteGraphStore:
         }
 
     def save(self) -> None:
-        """空操作：数据在每次写操作时已提交（TASK-180 相比 JSON 全量落盘的核心改进）。"""
+        """空操作：数据在每次写操作时已提交（ 相比 JSON 全量落盘的核心改进）。"""
 
     def close(self) -> None:
         with self._lock:
@@ -377,7 +377,7 @@ class SqliteGraphStore:
 
 
 def build_graph_store(settings, data_dir: Path):
-    """按配置构造图存储（TASK-180）。
+    """按配置构造图存储。
 
     - `graph_store_backend=sqlite`（默认）：SQLite 增量持久化
     - `graph_store_backend=memory`：内存 + JSON 全量落盘（旧行为，兼容与测试）

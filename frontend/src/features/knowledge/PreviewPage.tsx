@@ -1,4 +1,4 @@
-/** 文档解析预览（/knowledge/preview/:docId，阶段 3 前端规范 §4）。
+/** 文档解析预览（/knowledge/preview/:docId， §4）。
  *
  * 三栏布局：左（大纲/表格索引/RAPTOR 树）｜中（切块列表，含切块器色板/父子双层）｜右（单块详情）。
  * 切块器色板：Recursive 灰 / ParentChild 蓝 / RAPTOR 紫 / Semantic 青。
@@ -192,7 +192,7 @@ export function PreviewPage() {
           )}
         </aside>
 
-        {/* 中栏：切块列表。stage-3 §11 要求 500+ 块走虚拟滚动，
+        {/* 中栏：切块列表。 要求 500+ 块走虚拟滚动，
             否则一次性创建上千个 DOM 节点，页签切换直接卡住。 */}
         <section className="preview-mid card" aria-label="切块列表">
           <div className="nav-section" style={{ paddingTop: 0 }}>切块列表（{organizedChunks.length}）</div>

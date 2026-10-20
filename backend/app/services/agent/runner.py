@@ -1,4 +1,4 @@
-"""Agent 运行器（阶段 6 装配层）。
+"""Agent 运行器。
 
 职责：
 - 以事件队列驱动图执行（SSE 流式与同步共用一条路径）；
@@ -8,12 +8,14 @@
 """
 import logging
 import queue
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator
 
 from langgraph.graph.state import CompiledStateGraph
 
-from app.core.tracing import spawn_thread
+from app.core.envelope import ApiError, ErrCode
 from app.domain.schemas import Evidence
 from app.services.agent.budget import (
     AgentBudget,
@@ -42,14 +44,14 @@ _DONE = object()  # 事件流终止哨兵
 # 参与"检索耗时/召回数"聚合的工具（calculator 不计入，否则统计无意义）
 RETRIEVAL_TOOLS = frozenset({"vector_search", "graph_search", "image_search", "sql_search", "web_search"})
 
-# TASK-121：单次工具调用伴随的 LLM 开销估算（规划/反思各一次量级的保守值）。
+# 单次工具调用伴随的 LLM 开销估算（规划/反思各一次量级的保守值）。
 # 与 query/orchestrator.py 的估算口径保持一致——
 # 预算判定宁可保守（高估），也不要用乐观值把钱烧穿。
 ESTIMATED_TOKENS_PER_TOOL_CALL = 800
 
 
 def agent_prompt_builder(question: str, evidence_dicts: list[dict], *, parametric: bool = False) -> str:
-    """answer 节点的提示词：只读最终入选证据，不读 plan/reflect 中间结果（§8.3）。
+    """answer 节点的提示词：只读最终入选证据，不读 plan/reflect 中间结果。
 
     图谱/图像证据需要额外指引：关系三元组可以综合推理直接与间接关系；
     "无相关内容"话术要么不出现、要么是答案的全部（不得在分析后追加，
@@ -123,18 +125,20 @@ class AgentRunner:
         sessions: SessionStore,
         metrics_store=None,
         top_k: int = 4,
-        registry=None,  # ToolRegistry：ReAct 模式需要工具目录（TASK-101）
-        memory=None,  # LongTermMemory：租户级长期记忆（TASK-117）
-        audit=None,  # AuditStore（阶段 9：三事件审计）
+        registry=None,  # ToolRegistry：ReAct 模式需要工具目录
+        memory=None,  # LongTermMemory：租户级长期记忆
+        audit=None,  # AuditStore
         scanner=None,  # SensitiveScanner（输出侧扫描）
         crag_router=None,  # CragRouter：与线性路径同一阈值口径，产 crag_branch
         history_store=None,  # ValidationHistoryStore：CRAG 轮次落库
         score_top_n: int = 2,  # 证据充分度聚合的 Top-N（与 crag_score_top_n 对齐）
-        settings=None,  # Settings：读取三预算配置（TASK-121），可缺省（测试用默认预算）
-        checkpointer=None,  # BaseCheckpointSaver：HITL 挂起与续跑的前提（TASK-124）
-        prom=None,  # PromMetrics：Agent 路径埋点（TASK-131），可缺省（测试）
+        settings=None,  # Settings：读取三预算配置，可缺省（测试用默认预算）
+        checkpointer=None,  # BaseCheckpointSaver：HITL 挂起与续跑的前提
+        prom=None,  # PromMetrics：Agent 路径埋点，可缺省（测试）
         llm=None,  # LLM：仅用于读取 last_usage 做 token 埋点，不参与生成（图闭包持有）
-        self_checker=None,  # HallucinationChecker：逐句自检（TASK-112）
+        self_checker=None,  # HallucinationChecker：逐句自检
+        executor=None,  # ThreadPoolExecutor：run/resume 工作线程来源（批次 1）
+        run_permits: int = 16,  # Agent 并发闸门：在飞 run 上限，超出 429（批次 1）
     ):
         self._graph = graph
         self._sessions = sessions
@@ -146,7 +150,7 @@ class AgentRunner:
         self._history = history_store
         self._score_top_n = max(1, score_top_n)
         self._settings = settings
-        # TASK-101：按 agent_mode 决定是否启用 ReAct（None = 走既有计划式路径）
+        # 按 agent_mode 决定是否启用 ReAct（None = 走既有计划式路径）
         mode = str(getattr(settings, "agent_mode", "plan_execute") or "plan_execute").lower()
         self._thinker = ReActThinker(llm) if (mode == "react" and llm is not None) else None
         self._registry = registry
@@ -155,13 +159,29 @@ class AgentRunner:
         self._prom = prom
         self._llm = llm
         self._self_checker = self_checker
-        # TASK-121：成本折算所需的价格表与模型名（从 settings 一次性解析）
+        # 成本折算所需的价格表与模型名（从 settings 一次性解析）
         self._prices = price_table(settings) if settings else {}
         self._model_name = str(getattr(settings, "llm_model", "") or "")
+        # 批次 1：此前每次 run 新建 daemon 线程（无上限），高并发下线程数线性增长。
+        # 改为固定池 + 许可闸门；池必须与工具池分离（图线程等待工具 future，同池死锁）。
+        self._executor = executor or ThreadPoolExecutor(max_workers=8, thread_name_prefix="agent-run")
+        self._permits = threading.Semaphore(max(1, int(run_permits)))
 
     # ---- 对外主入口：事件流 ----
 
-    def run(
+    def run(self, *args, **kwargs) -> Iterator[tuple[str, dict]]:
+        """带并发闸门的 run：在飞 run 超限时 429（快速失败，不排队）。"""
+        if not self._permits.acquire(blocking=False):
+            raise ApiError(
+                ErrCode.RATE_LIMITED, "Agent 并发已达上限，请稍后重试",
+                http_status=429, retry_after=5,
+            )
+        try:
+            yield from self._run_events(*args, **kwargs)
+        finally:
+            self._permits.release()
+
+    def _run_events(
         self,
         question: str,
         tenant_id: str,
@@ -169,12 +189,12 @@ class AgentRunner:
         session_id: str | None = None,
         skip_retrieval: bool = False,
         doc_name_resolver=None,
-        acl_filter=None,  # (doc_id) -> bool（阶段 9：检索后 ACL 过滤）
+        acl_filter=None,  # (doc_id) -> bool
         trace_id: str = "",
     ) -> Iterator[tuple[str, dict]]:
         """事件流：plan/tool_start/tool_end/reflect/iteration/token/fuse/_final。
 
-        阶段 9 网关语义：token 事件被缓冲——答案经敏感词扫描后才放行
+         网关语义：token 事件被缓冲——答案经敏感词扫描后才放行
         （输出侧扫描必须在响应返回前完成，不能"先漏后遮"）。
         """
         events: queue.Queue = queue.Queue()
@@ -204,12 +224,12 @@ class AgentRunner:
         def emit(event: str, payload: dict) -> None:
             events.put((event, payload))
 
-        # TASK-121：每次 run 新建一份预算账本（预算是一次性的，不是会话级的）
+        # 每次 run 新建一份预算账本（预算是一次性的，不是会话级的）
         budget = (
             budget_from_settings(self._settings, tenant_id) if self._settings else AgentBudget()
         )
 
-        # TASK-115：LangGraph 启用 checkpointer 后**必须**提供 thread_id，
+        # LangGraph 启用 checkpointer 后**必须**提供 thread_id，
         # 否则 invoke 直接抛 ValueError。这里按 `{session_id}:{turn}` 约定传入：
         # 有 session_id 时可断点续跑/回放，无 session_id（一次性问答）时
         # 回退到 trace_id —— 保证仍然可用，且不同请求不会互相覆盖状态。
@@ -223,7 +243,7 @@ class AgentRunner:
         else:
             thread_id = f"trace:{trace_id}" if trace_id else None
 
-        # TASK-124：只有同时具备 checkpointer 与 thread_id 时才允许挂起——interrupt()
+        # 只有同时具备 checkpointer 与 thread_id 时才允许挂起——interrupt()
         # 没有 checkpointer 会直接抛错。条件性判定（低置信/拒答/全工具失败）在
         # answer 节点内做，这里只负责"是否具备挂起能力 + 阈值"。
         hitl_cfg = None
@@ -248,20 +268,20 @@ class AgentRunner:
                     "configurable": {
                         "emit": emit,
                         "acl_filter": acl_filter,
-                        # TASK-121：预算账本注入图，tool_node 每轮调用前检查
+                        # 预算账本注入图，tool_node 每轮调用前检查
                         "budget": budget,
-                        # TASK-124：HITL 配置（None = 不挂起）
+                        # HITL 配置（None = 不挂起）
                         "hitl": hitl_cfg,
-                        # TASK-113：独立校验器（None = 跳过校验，行为同改造前）
+                        # 独立校验器（None = 跳过校验，行为同改造前）
                         "verifier": (
                             self._self_checker
                             if (self._settings is not None
                                 and getattr(self._settings, "agent_verify_enabled", False))
                             else None
                         ),
-                        # TASK-117：长期记忆提示（注入规划/思考的提示词）
+                        # 长期记忆提示（注入规划/思考的提示词）
                         "memory_hint": self._memory_hint(tenant_id),
-                        # TASK-101：react 模式注入 thinker（None = 走 plan_execute）
+                        # react 模式注入 thinker（None = 走 plan_execute）
                         "thinker": self._thinker,
                         "tool_catalog": (
                             self._registry.catalog() if self._registry is not None else []
@@ -282,15 +302,14 @@ class AgentRunner:
             finally:
                 events.put(_DONE)
 
-        thread = spawn_thread(work, name="agent-run")
-        thread.start()
+        self._executor.submit(work)
 
         final_state: dict | None = None
         buffered_tokens: list[str] = []
-        interrupted = False  # TASK-124：图是否停在 interrupt() 上等人
+        interrupted = False  # 图是否停在 interrupt() 上等人
         hitl_payload: dict = {}
-        # TASK-121：deadline 兜底。此前 events.get() 无 timeout，上游 LLM 卡死
-        # 会让请求线程永久挂起（DEF-A-5）。这里给一个硬上限：到期即放弃等待，
+        # deadline 兜底。此前 events.get() 无 timeout，上游 LLM 卡死
+        # 会让请求线程永久挂起。这里给一个硬上限：到期即放弃等待，
         # 走降级作答——预算控制的目的是保护资源，不是无限期占着连接。
         wait_slice = 0.5
         while True:
@@ -308,7 +327,7 @@ class AgentRunner:
             event, payload = item
             if event == "_state":
                 final_state = payload
-                # TASK-124：图在 answer 节点内 interrupt() → invoke 返回的 dict 带
+                # 图在 answer 节点内 interrupt() → invoke 返回的 dict 带
                 # `__interrupt__`。此时**不能**当正常结果处理：没有 final_answer，
                 # 必须让调用方知道"这是在等人"，否则前端只会看到一个空答案。
                 pending = payload.get("__interrupt__") if isinstance(payload, dict) else None
@@ -331,7 +350,7 @@ class AgentRunner:
                     ESTIMATED_TOKENS_PER_TOOL_CALL, self._prices, self._model_name
                 )
                 budget.settle_tokens(ESTIMATED_TOKENS_PER_TOOL_CALL, phase_cost)
-                # TASK-134：成本账单按阶段归集（think 阶段含规划+反思）
+                # 成本账单按阶段归集（think 阶段含规划+反思）
                 get_ledger().record(
                     trace_id, tenant_id, "think", self._model_name,
                     ESTIMATED_TOKENS_PER_TOOL_CALL, phase_cost,
@@ -342,7 +361,7 @@ class AgentRunner:
                 buffered_tokens.append(payload.get("content", ""))
                 continue
             if event == "tool_end":
-                # TASK-131：Agent 路径埋点。工具结果与耗时是判断"Agent 好不好用"的
+                # Agent 路径埋点。工具结果与耗时是判断"Agent 好不好用"的
                 # 第一手信号——此前这条路径一个指标都没有（大盘只有线性路径数据）。
                 if self._prom is not None:
                     tool = str(payload.get("tool", "unknown"))
@@ -377,7 +396,7 @@ class AgentRunner:
                 ).inc()
             yield event, payload
 
-        # TASK-124：中断时短路——没有答案可扫描/自检/落快照，
+        # 中断时短路——没有答案可扫描/自检/落快照，
         # 直接把"待人工"作为终态返回（快照留到 resume 后的那一轮再写）。
         if interrupted:
             result = {
@@ -404,7 +423,7 @@ class AgentRunner:
         # ---- 敏感词扫描（输出侧，响应前）----
         raw_answer = (final_state or {}).get("final_answer", "")
         answer_source = (final_state or {}).get("answer_source", "")
-        # ---- 幻觉自检（TASK-112）----
+        # ---- 幻觉自检----
         # Agent 路径此前完全不逐句校验，答案里出现无据陈述也照原样返回，
         # 只是把 confidence 硬编码为 unvalidated=True（对外等于"没检过"）。
         # 这里接上与线性路径同一套 HallucinationChecker：只**下调置信度**并留痕，
@@ -477,14 +496,14 @@ class AgentRunner:
             "answer_source": result.get("answer_source", ""),
             "unsupported_claims_count": result["unsupported_claims_count"],
             "regenerated": result["regenerated"],
-            # TASK-112：Agent 路径已接上同一套幻觉自检，不再硬编码 unvalidated
+            # Agent 路径已接上同一套幻觉自检，不再硬编码 unvalidated
             "unvalidated": self_check_record is None,
             "removed_claims": [],
             "confidence": confidence,
             "self_check": (
                 self_check_record.model_dump() if self_check_record is not None else None
             ),
-            # TASK-121：预算视图进响应，前端据此解释"为什么答得这么短/这么快"
+            # 预算视图进响应，前端据此解释"为什么答得这么短/这么快"
             "budget": budget.snapshot(),
         }
         # 预算快照同时并入最终结果（/ask 聚合路径与落库快照都要能读到）
@@ -499,7 +518,7 @@ class AgentRunner:
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("会话快照写入失败（不影响本次应答）")
-        # TASK-117：提炼本次经验（写入侧）
+        # 提炼本次经验（写入侧）
         self._record_memory(tenant_id, final_state or {})
         # Agent 执行指标（熔断率是先于质量下降的预警信号，必须计入）
         if self._metrics is not None:
@@ -525,7 +544,7 @@ class AgentRunner:
                 tool_calls=(final_state or {}).get("tool_calls", []),
                 session_id=session_id or "",
             )
-        # TASK-131：终态与迭代轮数进 Prometheus（此前 Agent 路径零埋点）
+        # 终态与迭代轮数进 Prometheus（此前 Agent 路径零埋点）
         if self._prom is not None:
             state = final_state or {}
             mode = "agent"
@@ -537,7 +556,7 @@ class AgentRunner:
             usage = getattr(self._llm, "last_usage", None)
             if usage is not None and getattr(usage, "total", 0):
                 self._prom.agent_tokens_total.labels(phase="answer").inc(int(usage.total))
-                # TASK-134：answer 阶段真实用量入账单（这里能拿到供应商返回的 usage）
+                # answer 阶段真实用量入账单（这里能拿到供应商返回的 usage）
                 answer_cost = estimate_cost_yuan(
                     int(usage.total), self._prices, self._model_name
                 )
@@ -548,7 +567,7 @@ class AgentRunner:
                 )
         yield "_final", result
 
-    # ---- TASK-117：长期记忆 ----
+    # ---- 长期记忆 ----
 
     def _memory_hint(self, tenant_id: str) -> str:
         """取该租户的经验并渲染成提示词片段（无记忆时返回空串）。
@@ -576,7 +595,7 @@ class AgentRunner:
         except Exception as exc:  # noqa: BLE001 - 记忆写入绝不阻断主流程
             logger.debug("长期记忆提炼失败（忽略）: %s", exc)
 
-    # ---- TASK-124：人在环 ----
+    # ---- 人在环 ----
 
     def interrupt_state(self, run_id: str) -> dict:
         """查询某个 run 是否停在人工介入点（供前端刷新后恢复现场）。
@@ -599,7 +618,19 @@ class AgentRunner:
                 break
         return {"awaiting": bool(pending), "next": list(pending), "payload": payload}
 
-    def resume(
+    def resume(self, *args, **kwargs) -> Iterator[tuple[str, dict]]:
+        """带并发闸门的 resume：与 run 共用许可池（同上限口径）。"""
+        if not self._permits.acquire(blocking=False):
+            raise ApiError(
+                ErrCode.RATE_LIMITED, "Agent 并发已达上限，请稍后重试",
+                http_status=429, retry_after=5,
+            )
+        try:
+            yield from self._resume_events(*args, **kwargs)
+        finally:
+            self._permits.release()
+
+    def _resume_events(
         self,
         run_id: str,
         decision,
@@ -653,8 +684,7 @@ class AgentRunner:
             finally:
                 events.put(_DONE)
 
-        worker = spawn_thread(work, name="agent-resume")
-        worker.start()
+        self._executor.submit(work)
 
         final_state: dict | None = None
         buffered: list[str] = []

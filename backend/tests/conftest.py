@@ -34,7 +34,7 @@ def client():
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["DATA_DIR"] = tmp
         os.environ["MODEL_PROVIDER"] = "mock"
-        # 测试走头部透传（HeaderAuthProvider），用例不受凭证约束；生产默认开启见 TASK-161
+        # 测试走头部透传（HeaderAuthProvider），用例不受凭证约束；生产默认开启见
         os.environ["AUTH_ENABLED"] = "false"
         os.environ["RETRIEVAL_CONFIG_APPLY_DELAY_S"] = "0"  # 测试中配置变更立即生效
         # 向量库：默认 Milvus Lite（内嵌文件库，真实 Milvus API）。Windows 下 milvus-lite

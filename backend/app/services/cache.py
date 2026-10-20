@@ -1,4 +1,4 @@
-"""语义级缓存（阶段 2 README §2.2 / §3.5）。
+"""语义级缓存。
 
 - 缓存键 = 摘要（租户 + 问题原文 + 模型版本标识 + 检索与生成配置摘要），
   三者任一变化即换键——换模型后旧条目自然失效，无需手动清缓存；
@@ -49,8 +49,11 @@ class CacheEntry:
     # 语义近似检索用：问题向量 + 规范化后的问题文本
     vector: list = field(default_factory=list)
     question: str = ""
-    # 租户归属（DEF-R-22）：近似命中必须按它过滤，否则跨租户串答案
+    # 租户归属：近似命中必须按它过滤，否则跨租户串答案
     tenant_id: str = ""
+    # 维度签名（KQ-04）：模型版本 + 配置摘要（含 user/acl_version/index_version）。
+    # 近似命中必须签名完全一致——只按租户过滤会把 A 用户的答案命中给同租户 B 用户。
+    signature: str = ""
 
 
 class SemanticCache(Protocol):
@@ -105,6 +108,7 @@ class InMemorySemanticCache:
         question: str = "",
         vector: list | None = None,
         tenant_id: str = "",
+        signature: str = "",
     ) -> None:
         with self._lock:
             if len(self._entries) >= self._max_entries:
@@ -121,6 +125,7 @@ class InMemorySemanticCache:
                 vector=list(vector or []),
                 question=question or str(payload.get("question", "")),
                 tenant_id=tenant_id,
+                signature=signature,
             )
 
     def lookup(
@@ -129,20 +134,22 @@ class InMemorySemanticCache:
         exact_key: str,
         vector: list | None = None,
         tenant_id: str = "",
+        signature: str = "",
     ) -> tuple[CacheEntry | None, str]:
         """语义级查找：先按键精确命中，再退回向量近似命中。
 
         返回 (entry, hit_kind)，hit_kind ∈ {"exact", "semantic", "miss"}。
-        近似命中会把候选按余弦从高到低扫描一遍，只认**同一租户**的条目——
-        此前实现遍历全部 entries 并未按租户过滤（与下方注释自相矛盾），
-        导致 A 租户的答案可被 B 租户近似命中（DEF-R-22 跨租户串答案）。
+        近似命中的两个硬条件（KQ-04）：
+        - 同一租户（否则跨租户串答案，）；
+        - 维度签名完全一致（模型版本 + user + acl_version + index_version + 配置摘要），
+          否则同租户内 A 用户的答案会命中给 B 用户，权限/配置变更后还会命中旧条目。
         """
         exact = self.get(exact_key)
         if exact is not None:
             return exact, "exact"
         # 只要求调用方给得出问题向量：是否持有编码器是调用侧的职责，
         # 缓存自己不该把"没装编码器"等同于"不能近似命中"
-        if not vector:
+        if not vector or not signature:
             return None, "miss"
         now = time.time()
         best: CacheEntry | None = None
@@ -152,6 +159,9 @@ class InMemorySemanticCache:
             for entry in self._entries.values():
                 # 租户隔离第一闸：近似命中只认同租户条目（兑现上方注释承诺）
                 if entry.tenant_id != tenant_id:
+                    continue
+                # 维度签名第二闸：主体/权限/数据版本/模型/配置任一不同即不可命中
+                if entry.signature != signature:
                     continue
                 if now - entry.created_at > entry.ttl_seconds:
                     continue

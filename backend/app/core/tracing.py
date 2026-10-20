@@ -50,13 +50,13 @@ current_trace_id = get_trace_id
 
 
 def spawn_thread(target, *, name: str, daemon: bool = True, args: tuple = (), kwargs: dict | None = None) -> "Thread":
-    """创建线程并**继承当前上下文**（TASK-132：修 trace 断链）。
+    """创建线程并**继承当前上下文**（修 trace 断链）。
 
     `contextvars` 不随 `threading.Thread` 传播——这是 Python 的既定行为，不是 bug。
     后果是：图内所有日志的 trace_id 为空（`get_trace_id()` 会**新生成**一个），
     于是"一次请求的日志"在日志平台上被切成两段互不相关的记录，排障时根本串不起来。
 
-    DEF-A-7 记录了这个缺陷。这里用 `contextvars.copy_context().run(...)` 把当前
+     记录了这个缺陷。这里用 `contextvars.copy_context().run(...)` 把当前
     上下文快照带进新线程——注意必须 `copy_context()`（快照）而不是共享同一 context
     对象，否则两个线程会互相覆盖 trace_id。
 

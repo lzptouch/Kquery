@@ -1,4 +1,4 @@
-"""图谱与多模态检索端点（阶段 7 前端规范 §六）。
+"""图谱与多模态检索端点。
 
 - GET /graph/entities：实体列表（搜索 + 类型过滤）；
 - GET /graph/entity/{name}：实体详情（入边/出边带方向）；
@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import get_principal, require_role
+from app.dependencies import audit_admin, require_role
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ def _graph_store(request: Request):
 
 
 def _tenant(request: Request) -> str:
-    """当前租户（图谱数据按租户分区，TASK-142 / P0-4：不得跨租户可见）。"""
+    """当前租户（图谱数据按租户分区，不得跨租户可见）。"""
     return request.state.principal.tenant_id
 
 
@@ -65,8 +65,8 @@ def entity_detail(name: str, request: Request) -> Envelope:
     set_trace_id(trace_id)
     started = now_ms()
     store = _graph_store(request)
-    # 别名归一查找
-    canonical = request.app.state.entity_resolver.lookup(name) or name
+    # 别名归一查找（按本租户分区，KQ-06）
+    canonical = request.app.state.entity_resolver.lookup(name, tenant_id=_tenant(request)) or name
     entity = store.get_entity(canonical, _tenant(request))
     if entity is None:
         raise ApiError(ErrCode.ENTITY_NOT_FOUND, f"实体未在图谱中: {name}", http_status=404)
@@ -116,7 +116,7 @@ def subgraph(
             nodes[name] = {"id": name, "type": e.type, "degree": e.degree}
 
     if seed:
-        canonical = request.app.state.entity_resolver.lookup(seed) or seed
+        canonical = request.app.state.entity_resolver.lookup(seed, tenant_id=_tenant(request)) or seed
         for item in store.neighbors(canonical, depth=depth, tenant_id=_tenant(request)):
             if len(links) >= SUBGRAPH_MAX_EDGES:
                 truncated = True
@@ -180,14 +180,29 @@ def build_graph(req: BuildGraphRequest, request: Request) -> Envelope:
     started = now_ms()
     builder = request.app.state.graph_builder
     store = request.app.state.store
+    tenant = _tenant(request)
     chunks = store.all_chunks()
     if req.doc_id:
+        # KQ-02：按 id 取资源的端点必须先做租户断言，否则 admin 可替其它租户建图
+        doc = request.app.state.knowledge.get(req.doc_id)
+        if doc.tenant_id != tenant:
+            raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, f"文档不存在: {req.doc_id}", http_status=404)
         chunks = [c for c in chunks if c.doc_id == req.doc_id]
         if not chunks:
             raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, f"文档无块: {req.doc_id}", http_status=404)
-    result = builder.build_from_chunks(chunks, rebuild_doc_id=req.doc_id)
-    if req.rebuild_communities:
-        result["community"] = builder.rebuild_communities()
+        result = builder.build_from_chunks(chunks, rebuild_doc_id=req.doc_id, tenant_id=tenant)
+        if req.rebuild_communities:
+            result["community"] = builder.rebuild_communities(tenant_id=tenant)
+    else:
+        # 全量构建：只建本租户的块（跨租户全量构建会把其它租户的图改写掉）
+        chunks = [c for c in chunks if c.tenant_id == tenant]
+        result = builder.build_from_chunks(chunks, tenant_id=tenant)
+        if req.rebuild_communities:
+            result["community"] = builder.rebuild_communities(tenant_id=tenant)
+    audit_admin(request, "graph.build", {
+        "doc_id": req.doc_id or "*", "rebuild_communities": req.rebuild_communities,
+        "chunks": len(chunks),
+    })
     return ok_envelope(result, trace_id, elapsed_ms_since(started))
 
 
@@ -232,6 +247,8 @@ def index_images(req: IndexImagesRequest, request: Request) -> Envelope:
     settings = request.app.state.settings
     assets_dir = settings.data_dir / "assets"
     image_index = request.app.state.image_index
+    knowledge = request.app.state.knowledge
+    caller_tenant = _tenant(request)
     indexed, failed, skipped = 0, 0, 0
     if assets_dir.exists():
         for img in sorted(assets_dir.glob("*.png"))[: req.limit]:
@@ -246,14 +263,24 @@ def index_images(req: IndexImagesRequest, request: Request) -> Envelope:
                     page = int(asset_id.rsplit("#page-", 1)[1])
                 except ValueError:
                     page = 0
+            doc_id = asset_id.split("#")[0]
+            # KQ-02：租户取来源文档的租户，而不是一律 default
+            try:
+                doc_tenant = knowledge.get(doc_id).tenant_id
+            except Exception:  # noqa: BLE001 - 无主资产回落到调用主体租户
+                doc_tenant = caller_tenant
+            if doc_tenant != caller_tenant:
+                skipped += 1  # 不替其它租户建索引（也不报错，避免泄露存在性）
+                continue
             entry = image_index.index_image(
-                img, asset_id, doc_id=asset_id.split("#")[0], page=page,
-                tenant_id=settings.default_tenant_id,
+                img, asset_id, doc_id=doc_id, page=page,
+                tenant_id=doc_tenant,
             )
             if entry:
                 indexed += 1
             else:
                 failed += 1
+    audit_admin(request, "media.index", {"limit": req.limit, "indexed": indexed, "failed": failed})
     return ok_envelope(
         {"indexed": indexed, "failed": failed, "skipped": skipped},
         trace_id, elapsed_ms_since(started),
@@ -265,6 +292,18 @@ def serve_asset(name: str, request: Request) -> FileResponse:
     """图像资源服务（路径安全：只允许 assets 目录内的文件）。"""
     assets_dir: Path = request.app.state.settings.data_dir / "assets"
     path = (assets_dir / name).resolve()
-    if not str(path).startswith(str(assets_dir.resolve())) or not path.exists():
+    # is_relative_to：startswith 前缀比较会被同名前缀的兄弟目录绕过（assets2/...）
+    if not path.is_relative_to(assets_dir.resolve()) or not path.exists():
         raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, "资源不存在", http_status=404)
+    # KQ-02：资产归属来源文档的租户（资产名形如 "doc#page-N"）
+    doc_id = path.stem.split("#", 1)[0]
+    if doc_id:
+        try:
+            doc = request.app.state.knowledge.get(doc_id)
+            if doc.tenant_id != _tenant(request):
+                raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, "资源不存在", http_status=404)
+        except ApiError:
+            raise
+        except Exception:  # noqa: BLE001 - 无主资产不放行（默认拒绝）
+            raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, "资源不存在", http_status=404) from None
     return FileResponse(path)

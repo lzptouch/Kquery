@@ -113,20 +113,20 @@ def run(base: str, headed: bool, sample_file: str) -> int:
             page.wait_for_timeout(1000)
             check("点击引用后页面正常响应（未报错）", True, "")
 
-        # 证据卡与相关度评分（stage-2/5）
+        # 证据卡与相关度评分（/5）
         cards = page.locator(".evidence-card")
         check("证据卡已渲染", cards.count() > 0, f"{cards.count()} 张")
         check("证据显示相关度评分",
               bool(re.search(r"相关度\s*[\d.]+", page_text(page))),
               "未看到相关度分数")
 
-        # 置信度条（stage-5）
+        # 置信度条
         check("有置信度展示组件", page.locator(".confidence-bar").count() > 0, "无 .confidence-bar")
         check("置信度带文字等级（不只靠颜色）",
               bool(re.search(r"高可信|一般可信|低可信|可信度", page_text(page))),
               "只有分数没有等级文案")
 
-        # 检索轨迹（stage-2）
+        # 检索轨迹
         check("有检索过程轨迹（可展开）",
               page.locator(".process-toggle").count() > 0
               or bool(re.search(r"BM25|向量|重排|检索轨迹", page_text(page))),
@@ -194,7 +194,7 @@ def run(base: str, headed: bool, sample_file: str) -> int:
         box.wait_for(state="visible", timeout=10000)
         send = page.locator('button:has-text("发送"), button[type="submit"]').first
 
-        # 空输入时按钮应当是禁用的：这是设计（stage-1 前端规范"发送前禁用"）。
+        # 空输入时按钮应当是禁用的：这是设计（ 前端规范"发送前禁用"）。
         # 断言"禁用"而不是去点它——点一个 disabled 按钮只会让测试超时，
         # 说明不了任何问题。
         if send.count() > 0:

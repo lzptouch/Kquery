@@ -1,4 +1,4 @@
-"""工具集扩展（TASK-108）与可观测（TASK-133/134/135）测试。"""
+"""工具集扩展与可观测（/134/135）测试。"""
 import json
 import logging
 import sqlite3
@@ -81,7 +81,7 @@ class TestSqlSchemaTool:
         assert "sales" in text and "amount" in text
 
     def test_hides_table_without_tenant_column(self, db):
-        """与 TASK-143 同一白名单口径：这个工具本身不能成为跨租户泄漏通道。"""
+        """与  同一白名单口径：这个工具本身不能成为跨租户泄漏通道。"""
         from app.services.agent.tools_extra import SqlSchemaTool
 
         r = SqlSchemaTool(db, tenant_column="tenant_id").run("", "t1")
@@ -191,7 +191,7 @@ class TestListDocumentsTool:
 
 
 class TestStructuredLogging:
-    """TASK-133：JSON 日志 + 强制字段 + PII 脱敏。"""
+    """JSON 日志 + 强制字段 + PII 脱敏。"""
 
     def test_redact_phone_and_id(self):
         from app.core.logging_setup import redact
@@ -266,7 +266,7 @@ class TestStructuredLogging:
 
 
 class TestCostLedger:
-    """TASK-134：成本账单按阶段/模型/租户归集。"""
+    """成本账单按阶段/模型/租户归集。"""
 
     def _ledger(self):
         from app.services.agent.cost import CostLedger

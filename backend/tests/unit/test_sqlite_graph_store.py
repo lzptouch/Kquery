@@ -1,4 +1,4 @@
-"""TASK-180：SQLite 图存储。
+"""SQLite 图存储。
 
 核心验收不是"能存取"，而是**与内存版契约等价**——已有 20+ 个测试与
 GraphBuilder / GraphQuery / CommunityDetector 三个消费者都建立在既有语义上，

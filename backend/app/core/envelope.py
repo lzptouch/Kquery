@@ -1,4 +1,4 @@
-"""统一响应信封与错误码（阶段 0 前端规范 §7.1 / §7.3）。
+"""统一响应信封与错误码。
 
 所有非流式接口返回统一信封，业务数据放在 data 字段内；
 错误码分区段，前端按区段映射用户可读文案，不直接展示后端 message。
@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 
 class ErrCode(IntEnum):
-    """错误码区段（stage-0 §7.3）：1xxx 认证 / 2xxx 输入 / 3xxx 资源 / 4xxx 检索生成 / 5xxx 服务端 / 6xxx 限流配额 / 8xxx 报告。
+    """错误码区段（）：1xxx 认证 / 2xxx 输入 / 3xxx 资源 / 4xxx 检索生成 / 5xxx 服务端 / 6xxx 限流配额 / 8xxx 报告。
 
     编号全局唯一——IntEnum 中重复数值会产生别名，导致"按码分流"失效
     （曾出现 TASK_NOT_FOUND 与 ASSET_NOT_FOUND 同为 3301 的事故）。
@@ -20,7 +20,7 @@ class ErrCode(IntEnum):
     - 45xx 缓存不可用：**无感降级**，只上报指标不回传用户。
     """
 
-    # ---- 1xxx 认证与权限（阶段 9）----
+    # ---- 1xxx 认证与权限----
     AUTH_FAILED = 1001  # 凭证校验不通过
     INVALID_REQUEST = 1004  # 请求参数不合法（评测集缺字段等）
     UNAUTHORIZED = 1101  # 未认证或凭证过期
@@ -38,7 +38,7 @@ class ErrCode(IntEnum):
     DOCUMENT_NOT_FOUND = 3002
     DOCUMENT_PARSE_FAILED = 3003
 
-    # ---- 31xx~38xx 入库与解析（阶段 3）----
+    # ---- 31xx~38xx 入库与解析----
     UNSUPPORTED_FILE_TYPE = 3101  # 文件格式不支持（向导已拦截，此处兜底）
     PARSE_FAILED = 3201  # 解析失败（损坏/加密/OCR 失败），可单文件重试或跳过
     PARSE_ENCRYPTED = 3202  # 文件加密，需人工解密后重传
@@ -51,31 +51,31 @@ class ErrCode(IntEnum):
     VISION_UNAVAILABLE = 3801  # 图片解析不可用
     AUDIO_TRANSCRIBE_FAILED = 3802  # 音频转写不可用
 
-    # ---- 4xxx 检索与生成（阶段 0/2/4/5）----
+    # ---- 4xxx 检索与生成----
     RETRIEVAL_FAILED = 4001
     GENERATION_FAILED = 4002
     GENERATION_TIMEOUT = 4003
 
-    # 41xx/42xx：Agent 编排（阶段 6）
+    # 41xx/42xx：Agent 编排
     AGENT_ITERATION_LIMIT = 4101  # 达到迭代上限（"不完整的成功"，仍走成功码）
     TOOL_EXECUTION_FAILED = 4201
 
-    # 43xx：会话（阶段 6）
+    # 43xx：会话
     SESSION_NOT_FOUND = 4301  # 会话不存在或归属不符
     SESSION_EXPIRED = 4302  # 会话已过期（前端提示"已为你开启新对话"）
 
-    # 44xx/45xx：降级语义（阶段 2）
+    # 44xx/45xx：降级语义
     RERANK_DEGRADED = 4401  # 重排服务不可用（warn 信封，仍返回结果）
     # 通用知识兜底：知识库未收录相关内容，答案来自模型自身知识（warn 信封，仍返回结果）
     PARAMETRIC_FALLBACK = 4402
     CACHE_UNAVAILABLE = 4501  # 缓存服务不可用（无感降级，只上报指标）
 
-    # 46xx/47xx/48xx：Query 预处理（阶段 4）
+    # 46xx/47xx/48xx：Query 预处理
     INTENT_FAILED = 4601  # 意图识别失败 → 静默降级为"需要检索"
     REWRITE_FAILED = 4701  # 查询改写全部失败 → 降级为原始查询
     DECOMPOSE_FAILED = 4801  # 拆解失败 → 降级为单跳
 
-    # 49xx：校验链路（阶段 5）。文档里的"4Axx"无十进制表示，语义映射到 4902。
+    # 49xx：校验链路。文档里的"4Axx"无十进制表示，语义映射到 4902。
     SCORER_UNAVAILABLE = 4901  # 平台重排/评分接口不可用（限流或超时）
     SELFCHECK_UNAVAILABLE = 4902  # 幻觉自检不可用
 

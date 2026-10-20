@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""浏览器端到端：验证本轮新增能力（TASK-109/117/124/125/126/131/134/165）。
+"""浏览器端到端：验证本轮新增能力（/117/124/125/126/131/134/165）。
 
 与 e2e_browser.py 的分工：
 - e2e_browser.py 验**既有**核心流程（提问、引用、上传、图谱、报告、管理页）
@@ -177,19 +177,19 @@ def run(base: str, headed: bool) -> int:
               f"实际：{str(health)[:140]}")
         by_name = {d.get("name"): d for d in (deps or [])}
 
-        check("探针含共享状态后端（TASK-165）", "shared_state" in by_name,
+        check("探针含共享状态后端", "shared_state" in by_name,
               f"实际探针：{sorted(by_name)}")
         ss = by_name.get("shared_state") or {}
         check("共享状态标明实际后端（防「以为在用 Redis 其实已降级」）",
               bool(ss.get("backend")), f"shared_state={ss}")
 
-        check("探针含长期记忆（TASK-117）", "long_term_memory" in by_name,
+        check("探针含长期记忆", "long_term_memory" in by_name,
               f"实际探针：{sorted(by_name)}")
         ltm = by_name.get("long_term_memory") or {}
         check("长期记忆探针含容量与条目数（证明真的挂了存储）",
               {"entries", "max_per_tenant"} <= set(ltm), f"long_term_memory={ltm}")
 
-        check("探针含图谱存储（TASK-180 持久化后端）", "graph_store" in by_name,
+        check("探针含图谱存储（ 持久化后端）", "graph_store" in by_name,
               f"实际探针：{sorted(by_name)}")
         gs = by_name.get("graph_store") or {}
         check("图谱探针含实体/关系计数", {"entities", "relations"} <= set(gs), f"{gs}")

@@ -1,4 +1,4 @@
-"""阶段 4 功能测试：Query 预处理（意图/改写/拆解/路由/降级/分析记录）。
+""" 功能测试：Query 预处理（意图/改写/拆解/路由/降级/分析记录）。
 
 - JSON 容错：围栏 / 杂文本 / 结构校验；
 - 意图识别：闲聊短路（不展示证据区）/ 事实问答走检索；
@@ -178,5 +178,5 @@ class TestAnalysisEndpoints:
         preprocessor = client.app.state.pipeline._preprocessor
         preprocessor._enabled = False
         data = client.post("/ask", json={"question": "你好"}).json()["data"]
-        # 关闭预处理后闲聊也走检索（回到阶段 3 行为），分析标记 disabled
+        # 关闭预处理后闲聊也走检索（回到 行为），分析标记 disabled
         assert "disabled" in data["analysis"]["degraded"]

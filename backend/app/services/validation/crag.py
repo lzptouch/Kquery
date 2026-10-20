@@ -1,4 +1,4 @@
-"""CRAG 三分支路由（阶段 5 README §3）。
+"""CRAG 三分支路由。
 
 | 分支 | 平均分范围 | 行动 |
 | --- | --- | --- |
@@ -6,7 +6,7 @@
 | ambiguous | incorrect_th < avg < correct_th | 精炼查询 → 重检索（最多 max_iterations 轮） |
 | incorrect | ≤ incorrect_th | 兜底来源 / 拒答 |
 
-- 分数口径与阶段 2 重排一致（gte-rerank-v2 相关度分），不混用评分器；
+- 分数口径与 重排一致（gte-rerank-v2 相关度分），不混用评分器；
 - 循环上限必需：第二次仍不达标意味着问题在知识库本身而非检索措辞；
 - 每一轮都在改变提问角度（精炼），而不是重复提问。
 """
@@ -41,7 +41,7 @@ class CragRound(BaseModel):
 class CragRouter:
     """CRAG 三分支路由。
 
-    TASK-155：**阈值必须显式传入**（此前有 `0.7/0.3` 的构造默认值，与
+    **阈值必须显式传入**（此前有 `0.7/0.3` 的构造默认值，与
     `config.crag_correct_th/crag_incorrect_th` 的标定值 `0.14/0.08` 构成
     两个来源）。这两个默认值在生产里从未生效（`main.py` 总是显式传参），
     但它们是纯粹的陷阱——任何不传参的构造都会得到与标定口径不一致的阈值，

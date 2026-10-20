@@ -1,4 +1,4 @@
-"""OpenTelemetry 接入（TASK-132）。
+"""OpenTelemetry 接入。
 
 ## 在此之前
 

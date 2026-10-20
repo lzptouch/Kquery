@@ -28,13 +28,13 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
     temperature: float = 0.0  # RAG 场景固定 0，事实性优先
 
-    # ---- RAG 参数（阶段 1 推荐值，见 stage-1 README §2.3）----
+    # ---- RAG 参数----
     chunk_size: int = 300
     chunk_overlap: int = 50
     top_k: int = 4
     min_chunk_chars: int = 20  # 超短块标记阈值
 
-    # ---- 阶段 2：混合检索（stage-2 README §2.1 / §7）----
+    # ---- 混合检索（ README §2.1 / §7）----
     retrieval_per_route_top_n: int = 20  # 单路召回条数（最终 Top-K 的 3~5 倍）
     retrieval_fused_top_n: int = 20  # 融合后进入重排的候选数
     rrf_k: int = 60  # RRF 平滑常数（论文默认值）
@@ -42,17 +42,17 @@ class Settings(BaseSettings):
     bm25_b: float = 0.75  # 长度归一
     rerank_model: str = "gte-rerank-v2"
 
-    # ---- 阶段 2：缓存 / 限流 ----
+    # ---- 缓存 / 限流 ----
     cache_ttl_s: int = 3600  # 语义缓存 TTL（1 小时）
     # 语义近似的相似度下限：问题向量余弦 ≥ 该值即视为"同一个问题"，
-    # 从而让"保修政策 vs 保修条款"这类改写也能命中（stage-2 §2.2 语义级缓存）。
+    # 从而让"保修政策 vs 保修条款"这类改写也能命中（ 语义级缓存）。
     cache_sim_threshold: float = 0.95
     cache_max_scan: int = 2000  # 近似检索每请求最多比对的候选条目数
     ratelimit_capacity: int = 60  # 令牌桶容量（突发峰值）
     ratelimit_refill_per_min: float = 60.0  # 令牌补充速率（个/分钟，按租户）
     retrieval_config_apply_delay_s: int = 300  # 检索参数变更延迟生效（秒）
 
-    # ---- 阶段 3 增强：扫描版 PDF 自动 OCR ----
+    # ----  增强：扫描版 PDF 自动 OCR ----
     pdf_ocr_enabled: bool = True  # 扫描页自动转 OCR（按页混合策略）
     pdf_ocr_dpi: int = 120  # 页面渲染分辨率（VL 模型识别质量与成本的平衡点）
     pdf_ocr_max_pages: int = 200  # 单文档 OCR 页数上限（成本护栏）
@@ -60,25 +60,25 @@ class Settings(BaseSettings):
     # 索引版本化：重新解析生成新版本而非覆盖，历史块保留供引用溯源
     index_version_keep: int = 3  # 保留的历史索引版本数（不含当前版；超出后按版本号从旧到新下线）
 
-    # ---- 阶段 3：音频转写 ----
+    # ---- 音频转写 ----
     transcribe_model: str = "paraformer-v2"  # 文档强制基线（千问平台，不引本地模型）
     audio_max_chunk_s: float = 600.0  # 单次转写提交的最长时长（超出切分后并行提交）
     audio_min_sample_rate: int = 16000  # 低于此采样率标"转写质量可能不佳"
     audio_split_on_silence: bool = True  # 切分点优先落在静音段，避免切断词
     audio_max_workers: int = 4  # 分片并行上限：再高只会加剧平台限流
-    # 业务代码版本（阶段 9 §6.3：评测必须同时记录模型版本与代码版本）
+    # 业务代码版本
     code_version: str = ""  # 留空则评测侧读 KQUERY_CODE_VERSION → git 短 SHA → unknown
 
-    # ---- 阶段 4：Query 预处理 ----
+    # ---- Query 预处理 ----
     preprocess_enabled: bool = True
     intent_model: str = "qwen-turbo"  # 意图识别：高频轻量判定压到最低档（成本控制）
     query_expanders: str = "fusion,stepback"  # 启用的改写器（hyde 与 fusion 互斥，不同时启用）
     fusion_n: int = 3  # RAG-Fusion 改写数量（经验最优点）
     query_budget: int = 6  # 单次提问的检索查询预算（超出截断并标记未使用）
 
-    # ---- 阶段 5：CRAG 校验与幻觉自检 ----
+    # ---- CRAG 校验与幻觉自检 ----
     crag_enabled: bool = True
-    # 阈值必须按自有评测集的分数分布标定（stage-5 §3.2 的红线）。
+    # 阈值必须按自有评测集的分数分布标定（ 的红线）。
     # 本系统标定口径（2026-10-02 混合语料实测）：
     #   干净 Markdown 的相关检索 Top-2 均分 ≈ 0.45~0.78；
     #   OCR 教材扫描件的相关检索 Top-2 均分 ≈ 0.18~0.25（版面噪声压缩分数）；
@@ -100,20 +100,20 @@ class Settings(BaseSettings):
     parametric_fallback_score_threshold: float = 0.6
     parametric_fallback_confidence: float = 0.3  # 固定置信度（低于有据回答，不参与自检）
 
-    # ---- 阶段 6：Agentic RAG ----
+    # ---- Agentic RAG ----
     agent_enabled: bool = True  # /ask 带 session_id 或 mode=agent 时走状态机
     agent_max_steps: int = 6  # 单次规划最大步骤数
     agent_planner_model: str = "qwen-plus"  # 规划/反思档位（过低会规划出无效步骤）
     agent_session_ttl_s: int = 30 * 86400  # 会话快照 30 天自动过期
     agent_tool_timeout_s: int = 30  # 单步工具超时（第三层熔断）
     agent_no_progress_limit: int = 3  # 无效进展熔断窗口
-    # ---- TASK-115：checkpointer（断点续跑 / 多轮状态继承 / 回放 / HITL 前提）----
+    # ---- checkpointer（断点续跑 / 多轮状态继承 / 回放 / HITL 前提）----
     # sqlite：单文件、事务安全、跨进程可读（推荐生产）
     # memory：进程内、不落盘（测试与单机轻量部署）
     # none  ：显式关闭，等价于不启用续跑与 HITL
     agent_checkpointer: str = "sqlite"
     agent_checkpoint_path: str = ""  # 空则用 {data_dir}/agent_checkpoints.db
-    # ---- TASK-121：三预算治理（0 = 不限）----
+    # ---- 三预算治理（0 = 不限）----
     # 预算耗尽**不报错**，降级为「基于已有证据作答 + incomplete 标记」。
     agent_token_budget: int = 20000      # 单次 Agent 运行的 token 上限
     agent_cost_limit_yuan: float = 0.5   # 单次运行成本上限（元）
@@ -121,44 +121,44 @@ class Settings(BaseSettings):
     # 每千 token 单价（元），按模型名配置；缺省则成本记为 0 且前端标「未知」。
     # 显式配置而非内置：内置价格会过期，过期价格比没有价格更危险。
     agent_price_per_1k_json: str = '{"qwen-plus": 0.0008, "qwen-max": 0.02, "qwen-turbo": 0.0003}'
-    # ---- TASK-124：人在环（HITL）----
+    # ---- 人在环（HITL）----
     # 默认关闭：HITL 对用户是**打断**，需要前端配合渲染"待补充"卡片才能用，
     # 在后端单方面打开会让所有低置信问题都变成空答案。
     # 启用前提：agent_checkpointer != none（否则无法挂起）。
     agent_hitl_enabled: bool = False
     agent_hitl_score_threshold: float = 0.5  # 低于此充分度触发人工介入
-    # ---- TASK-116 / TASK-150：上下文组装治理 ----
+    # ---- 上下文组装治理 ----
     # 0 = 不限制（按条数控制）。默认给明确预算：条数相同不代表长度相同，
     # 一段 3000 字的表格块能直接撑爆上下文。
     context_token_budget: int = 6000
     # MMR 相关性权重：1.0 = 纯按相关分（关闭多样性）；0.7 = 兼顾多样性
     context_mmr_lambda: float = 0.7
-    # ---- TASK-133：结构化日志 ----
+    # ---- 结构化日志 ----
     log_level: str = "INFO"
     log_format: str = "text"  # text（本地开发友好）/ json（生产，日志平台可索引）
     log_debug_sample_rate: float = 0.1  # 仅对 DEBUG 生效；INFO 及以上不采样
-    # ---- TASK-113：答案校验节点 ----
+    # ---- 答案校验节点 ----
     # 默认关闭：它多花一次 LLM 调用，且会把"先答后发"变成"可能答两次"。
     # 与 reflect 互补——reflect 评证据够不够，verify 评答案站不站得住。
-    # ---- TASK-101：ReAct 单步决策循环 ----
+    # ---- ReAct 单步决策循环 ----
     # 默认仍走 plan_execute：ReAct 每轮多一次 LLM 调用、行为变化大，
-    # 在检索评测集（TASK-130）落地前贸然切换等于无法验证的改动。
+    # 在检索评测集落地前贸然切换等于无法验证的改动。
     agent_mode: str = "plan_execute"  # plan_execute | react
-    # ---- TASK-117：长期记忆 ----
+    # ---- 长期记忆 ----
     memory_enabled: bool = True
     memory_max_per_tenant: int = 500  # 上限：记忆不能无限增长（注入成本会失控）
-    # ---- TASK-165：共享状态后端 ----
+    # ---- 共享状态后端 ----
     # 空 = 进程内（单副本）。多副本必须配 Redis，否则限流/配额实际额度 × 副本数
     redis_url: str = ""
     redis_key_prefix: str = "kquery:"
     agent_verify_enabled: bool = False
     agent_max_verify_rounds: int = 1  # 最多回退重做几轮（防"改了还是不通过"死循环）
 
-    # ---- 阶段 7：GraphRAG 与多模态 ----
+    # ---- GraphRAG 与多模态 ----
     graph_enabled: bool = True
-    # TASK-180：图存储后端（sqlite = 增量持久化且原子；memory = 旧的内存 + JSON 全量落盘）
+    # 图存储后端（sqlite = 增量持久化且原子；memory = 旧的内存 + JSON 全量落盘）
     graph_store_backend: str = "sqlite"
-    # ---- TASK-132：OpenTelemetry ----
+    # ---- OpenTelemetry ----
     # 默认关闭：未部署 collector 时开启只会白占内存与 CPU。
     # 启用但未配 endpoint 会明确告警并降级为 NoOp（不阻断启动）。
     otel_enabled: bool = False
@@ -171,8 +171,8 @@ class Settings(BaseSettings):
     graph_seed_top_k: int = 3  # 种子实体上限（防子图爆炸）
     community_max: int = 20  # 社区摘要数量上限（成本控制）
     # 社区层级数：1 = 单层连通分量（默认，成本最低）；
-    # >1 逐级重叠合并出粗粒度主题，摘要成本随层级线性增长（stage-7 §5.2/§5.3）
-    # TASK-158：默认 2 层（原为 1 = 层级关闭）。1 层只有连通分量级别的社区，
+    # >1 逐级重叠合并出粗粒度主题，摘要成本随层级线性增长（）
+    # 默认 2 层（原为 1 = 层级关闭）。1 层只有连通分量级别的社区，
     # GraphRAG 论文里的"层级摘要"（社区套社区）完全没启用；2 层能覆盖
     # "全局问题用粗粒度摘要、局部问题用细粒度"这一核心用法。
     community_levels: int = 2
@@ -180,8 +180,8 @@ class Settings(BaseSettings):
     community_merge_threshold: float = 0.3
     image_caption_model: str = "qwen-vl-max"  # 图像描述模型（换版本需全量重编码）
 
-    # ---- 阶段 9：企业护栏 ----
-    # 默认开启认证（TASK-161：拒绝静默裸奔）。无凭证来源时启动校验失败——
+    # ---- 企业护栏 ----
+    # 默认开启认证（拒绝静默裸奔）。无凭证来源时启动校验失败——
     # 要么给静态凭证表（auth_tokens_json），要么启用 JWT（auth_jwt_enabled + secret），
     # 要么显式 auth_enabled=false 承认开发/测试模式。
     auth_enabled: bool = True
@@ -209,11 +209,11 @@ class Settings(BaseSettings):
     platform_quota_warn_ratio: float = 0.8  # 余量低于该比例进入 warning
     sensitive_scan_enabled: bool = True  # 输出侧敏感词扫描
 
-    # ---- 阶段 6 工具：业务库 / 联网检索（未配置 DSN 时工具不注册）----
+    # ----  工具：业务库 / 联网检索（未配置 DSN 时工具不注册）----
     sql_dsn: str = ""  # 只读业务库 DSN（sqlite/duckdb/postgres），空则不提供 sql_search
     sql_readonly: bool = True  # 强制只读：禁止 INSERT/UPDATE/DELETE/DDL
     sql_max_rows: int = 50
-    # 租户隔离列（TASK-143）：配置后 sql_search 强制「单表查询 + 表白名单 + 谓词包装」。
+    # 租户隔离列：配置后 sql_search 强制「单表查询 + 表白名单 + 谓词包装」。
     # 空 = 不做租户过滤（仅限单租户业务库，多租户下启用 sql_search 必须配置）
     sql_tenant_column: str = ""
     web_search_endpoint: str = ""  # 联网搜索 HTTP 端点，空则不提供 web_search
@@ -228,12 +228,34 @@ class Settings(BaseSettings):
     milvus_uri: str = Field(default="http://localhost:19530", validation_alias="KQUERY_MILVUS_URI")
     milvus_collection: str = "kquery_chunks"
 
-    # ---- 租户（阶段 1 单租户默认值，字段从第一天就存在）----
+    # ---- 租户----
     default_tenant_id: str = "default"
 
     # ---- 云端调用失败模式治理：超时 / 重试（限流退避）----
     llm_timeout_s: float = 60.0
     llm_max_retries: int = 3
+
+    # ---- 并发提容（批次 1/2/4，单体进程内机制）----
+    # 在飞问答线程数：按"上游并发配额"而不是 CPU 设；真实模型 8s/req 时
+    # 32 在飞 ≈ 4 QPS 的承载（Little's Law）。排队满即 503 + Retry-After。
+    pipeline_workers: int = 32
+    pipeline_queue_size: int = 200
+    # Agent 路径独立的并发闸门：每 run 一个执行线程 + 每工具一次池调用
+    agent_run_permits: int = 16
+    # 上游隔离仓许可数（之和必须 ≤ pipeline_workers，否则线程被等许可占满）
+    upstream_llm_permits: int = 12
+    upstream_embedding_permits: int = 4
+    upstream_rerank_permits: int = 2
+    upstream_milvus_permits: int = 8
+    # 熔断：window 次窗口内失败率超过 ratio 即打开 open_seconds，半开 half_open 次探测
+    upstream_breaker_window: int = 20
+    upstream_breaker_fail_ratio: float = 0.5
+    upstream_breaker_open_s: float = 30.0
+    # 自适应并发（批次 4）：默认关闭，按 AIMD 在 [1, permits] 间伸缩
+    upstream_adaptive: bool = False
+    # 降级阶梯（批次 4）：默认关闭；开启后按水位收缩改写/CRAG 与低优先级流量
+    degrade_ladder_enabled: bool = False
+    degrade_upstream_slow_ms: int = 2000
 
     # ---- 上传约束 ----
     max_upload_mb: int = 50
@@ -246,7 +268,7 @@ class Settings(BaseSettings):
             return self.model_provider
         return "dashscope" if self.dashscope_api_key else "mock"
 
-    # ---- 启动期校验（stage-10 §5.1：缺项宁可在 boot 时崩，也不要运行期才暴露）----
+    # ---- 启动期校验（：缺项宁可在 boot 时崩，也不要运行期才暴露）----
 
     def config_items(self) -> list[dict]:
         """结构化配置声明：驱动启动期校验报告与前端"系统配置"页。

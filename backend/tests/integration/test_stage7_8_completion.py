@@ -1,4 +1,4 @@
-"""阶段 7/8 补全项的回归测试（图存储抽象、社区层级、入库联动、权限矩阵）。
+"""/8 补全项的回归测试（图存储抽象、社区层级、入库联动、权限矩阵）。
 
 对应本轮修复的每个真实缺陷：
 
@@ -6,12 +6,11 @@
 2.  社区多级 level：层级数、编号稳定性、parent_id 指向
 3.  图构建与图像索引改为入库联动（此前只能手动打端点）
 4.  权限矩阵端点：能力矩阵 + enforced 标注 + 审计
-5.  Query 分析 cost 字段（stage-4 §7「成本最容易被忽略」）
+5.  Query 分析 cost 字段（「成本最容易被忽略」）
 
 注：原第 4/5/8 项（报告 SSE 事件、`rejected`/`capped` 区分、`_run_layer` 事件归属）
 属多智能体报告链路，已随报告中心下线移除。
 """
-import threading
 
 import pytest
 
@@ -188,7 +187,7 @@ class TestHierarchicalCommunities:
 
 
 class TestIngestGraphIndexing:
-    """stage-7 §5.1：入库应自动触发图构建与图像索引。
+    """：入库应自动触发图构建与图像索引。
 
     测试环境用 mock 抽取器（抽不出实体），所以断言的是"联动钩子确实被调用"，
     而不是"图谱里一定有实体"——后者取决于抽取器，不是联动逻辑。
@@ -248,7 +247,7 @@ class TestPermissionMatrix:
         data = client.get("/admin/users/permission-matrix").json()["data"]
         assert data["capabilities"] and data["matrix"]
         for cap in data["capabilities"]:
-            # TASK-164：新增 `by`（把守该能力的端点），便于运维核对而非只信字符串
+            # 新增 `by`（把守该能力的端点），便于运维核对而非只信字符串
             assert set(cap) == {"key", "label", "enforced", "by"}
 
     def test_every_role_row_has_granted_and_denied(self, client):
@@ -270,10 +269,10 @@ class TestPermissionMatrix:
             assert set(row["granted"]) <= admin, f"{role} 的能力超出 admin"
 
     def test_capabilities_are_actually_enforced(self, client):
-        """TASK-164：管理类能力必须**真的**被后端把守，且能说出由谁把守。
+        """管理类能力必须**真的**被后端把守，且能说出由谁把守。
 
         此前 6 项标 `declared`（"后端未做角色门禁"）——那是当时的事实。
-        TASK-160 给全部 `/admin/*` 挂上 `require_role("admin")` 之后，
+         给全部 `/admin/*` 挂上 `require_role("admin")` 之后，
         继续标 declared 就变成了**低估**实际防护。
         这里改为断言"不再有纸面权限"，并要求每项都给出把守出处。
         """
@@ -309,7 +308,7 @@ class TestPermissionMatrix:
 
 class TestQueryCost:
     def test_cost_is_computed(self):
-        """stage-4 §7：没有成本数字，"关掉 HyDE 省了多少"无法回答。"""
+        """：没有成本数字，"关掉 HyDE 省了多少"无法回答。"""
         from app.services.query.schemas import (
             ESTIMATED_TOKENS_PER_CALL, INTENT_TOKEN_PRICE_YUAN,
         )

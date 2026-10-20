@@ -1,10 +1,10 @@
-"""多模态图像索引（阶段 7 §4）。
+"""多模态图像索引。
 
 路线：生成式描述 + 文本向量（不为图像另起向量空间）——
 qwen-vl-max 生成四段结构化描述（主体/属性/场景/图中文字），
 text-embedding-v3 编码后与正文向量同库存放（doc_id=__images__）。
 
-三条硬约束（§4.1）：
+三条硬约束：
 1. 描述由同一模型生成（换模型需全量重编码，元数据记录 model_version）；
 2. 描述用与正文相同的向量模型；
 3. 描述结构化（自由格式会让命中率不可控）。
@@ -124,7 +124,7 @@ class ImageIndex:
         content_hash = hashlib.sha256(image_path.read_bytes()).hexdigest()
         for entry in self._entries.values():
             if entry.hash == content_hash and entry.tenant_id == tenant_id:
-                return entry  # 同图多处出现 → 去重入库（§5.5）
+                return entry  # 同图多处出现 → 去重入库
         try:
             caption = _parse_caption(self._captioner.caption(image_path))
         except Exception as exc:  # noqa: BLE001
@@ -179,6 +179,21 @@ class ImageIndex:
             "images": len(self._entries),
             "model_version": CAPTION_MODEL_VERSION,
         }
+
+    def remove_doc(self, doc_id: str) -> int:
+        """删除某文档的图像索引条目（文档删除时联动，KQ-08）。
+
+        条目移除后 `search()` 会跳过对应结果，图像即不可达。
+        已知残留：图像描述块存活在共享 doc_id（`__image__`）的统一向量库里，
+        存储层目前不提供按 chunk_id 删除的接口——残留块不再被 image_search 返回，
+        但理论上仍可能出现在通用向量检索中（后续应在存储层补 chunk 级删除）。
+        """
+        victims = [aid for aid, e in self._entries.items() if e.doc_id == doc_id]
+        for asset_id in victims:
+            self._entries.pop(asset_id)
+        if victims:
+            self._save()
+        return len(victims)
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

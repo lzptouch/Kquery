@@ -1,4 +1,4 @@
-"""管理与观测端点（阶段 2 前端规范 §3 / §4 / §6）。
+"""管理与观测端点。
 
 - /admin/metrics/*：监控大盘（首屏指标 / 趋势 / 高频查询榜）；
 - /admin/retrieval-config：检索参数读写（PUT 延迟生效，返回生效时刻）；
@@ -54,7 +54,7 @@ def metrics_top_queries(request: Request, limit: int = Query(default=10, ge=1, l
 
 @router.get("/metrics/agent", response_model=Envelope)
 def metrics_agent(request: Request) -> Envelope:
-    """Agent 执行指标（阶段 6 §4.1）：平均迭代/熔断率/工具分布/异常列表。"""
+    """Agent 执行指标：平均迭代/熔断率/工具分布/异常列表。"""
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
@@ -63,7 +63,7 @@ def metrics_agent(request: Request) -> Envelope:
 
 @router.get("/metrics/quality", response_model=Envelope)
 def metrics_quality(request: Request) -> Envelope:
-    """质量指标（阶段 5 前端规范 §4.1）：Faithfulness / 拒答率 / 平均重生成 / CRAG 分支占比。"""
+    """质量指标：Faithfulness / 拒答率 / 平均重生成 / CRAG 分支占比。"""
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
@@ -126,7 +126,7 @@ def cost_dashboard(
     group_by: str = Query(default="phase", pattern="^(phase|model|tenant_id)$"),
     tenant_id: str = Query(default=""),
 ) -> Envelope:
-    """成本看板（TASK-134）。按 phase/model/tenant 聚合，并可看消耗最高的问答。
+    """成本看板。按 phase/model/tenant 聚合，并可看消耗最高的问答。
 
     原先寄居在 `api/reports.py`，与多智能体报告无关，报告中心下线时随迁到此处。
     本 router 已带 `prefix="/admin"` 与整 router 的 admin 门禁，故不再重复声明。

@@ -1,4 +1,4 @@
-"""查询分析记录存储（阶段 4 §5.4）。
+"""查询分析记录存储。
 
 - 全量留存意图统计（不含原文即可），原话记录按最小化原则随对话策略滚动；
 - 提供列表/详情/模式统计三个查询面，支撑前端历史页与模式分析卡片；
@@ -18,11 +18,18 @@ MAX_RECORDS = 1000  # 滚动保留上限（最小化原则）
 
 
 class AnalysisStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, flush_interval_s: float = 2.0):
         self._path = path
         self._lock = threading.Lock()
         self._records: list[QueryAnalysis] = []
+        self._dirty = False
+        self._flush_interval_s = max(0.5, flush_interval_s)
+        self._stopping = threading.Event()
         self._load()
+        self._flusher = threading.Thread(
+            target=self._flush_loop, name="analysis-flush", daemon=True
+        )
+        self._flusher.start()
 
     def _load(self) -> None:
         if not self._path.exists():
@@ -43,11 +50,34 @@ class AnalysisStore:
         tmp.replace(self._path)
 
     def save(self, analysis: QueryAnalysis) -> None:
+        """请求路径只改内存（批次 1）：此前每次问答都把最多 1000 条记录整体
+        JSON dump 一次（O(记录数) 写放大），500 QPS 下会成为全局串行点。
+        落盘由后台线程按脏标记批量 flush（崩溃最多丢最近 flush 间隔内的记录，
+        分析记录是可再生的观测数据，不是合规审计）。"""
         with self._lock:
             self._records.append(analysis)
             if len(self._records) > MAX_RECORDS:
                 self._records = self._records[-MAX_RECORDS:]
-            self._save()
+            self._dirty = True
+
+    def _flush_loop(self) -> None:
+        while not self._stopping.wait(self._flush_interval_s):
+            self.flush()
+
+    def flush(self) -> None:
+        """立即落盘（后台线程与 lifespan 收尾调用；测试也可直接调）。"""
+        with self._lock:
+            if not self._dirty:
+                return
+            try:
+                self._save()
+                self._dirty = False
+            except OSError as exc:
+                logger.warning("分析记录落盘失败（下轮重试）: %s", exc)
+
+    def close(self) -> None:
+        self._stopping.set()
+        self.flush()
 
     def get(self, analysis_id: str) -> QueryAnalysis | None:
         for r in self._records:

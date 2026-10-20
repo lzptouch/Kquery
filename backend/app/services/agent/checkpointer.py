@@ -1,13 +1,13 @@
-"""Checkpointer 装配（TASK-115）。
+"""Checkpointer 装配。
 
-stage-6 §1.2 曾把 "Checkpointer + thread_id" 写进交付承诺，代码里却一直是
+ 曾把 "Checkpointer + thread_id" 写进交付承诺，代码里却一直是
 `graph.compile()` 裸编译。本次补齐，一次解锁四项能力：
 
 1. **断点续跑**：同一 thread_id 二次调用能取到上一轮 state；
 2. **多轮状态继承**：跨轮携带的工具指纹/无进展计数不再靠 snapshots 手搓；
 3. **完整回放**：step 级快照让"为什么这么答"可事后追溯；
 4. **HITL 前提**：LangGraph 的 `interrupt()` 必须依赖 checkpointer 才能挂起与恢复
-   （见 TASK-124）。
+   （见 ）。
 
 设计取舍：
 - **生产用 SqliteSaver**（单文件、事务安全、跨进程可读），**测试用 MemorySaver**
@@ -15,7 +15,7 @@ stage-6 §1.2 曾把 "Checkpointer + thread_id" 写进交付承诺，代码里�
 - **不可用时降级为 None**（等价于不启用续跑），并由调用方在 state 里打 degraded 标记——
   绝不让 checkpointer 故障阻断 Agent 主流程。
 - 刻意**不设置 TTL 清理**：sqlite 行数由 TTL 任务定期清理，避免在装配期引入定时器
-  （进程内线程定时器在多副本下不可靠，见 TASK-181）。
+  （进程内线程定时器在多副本下不可靠，见 ）。
 """
 import logging
 import sqlite3

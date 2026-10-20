@@ -1,15 +1,14 @@
-"""并发安全与 API 契约补齐（TASK-186）。
+"""并发安全与 API 契约补齐。
 
 此前缺失的覆盖：
 - `/graph/*`、`/analysis/*`、`/ingest/*` 的 HTTP 契约（只测过 service 层）
 - 审计并发追加 / 分页
 
-注：原覆盖 `Orchestrator` 多连接 SSE 串流（DEF-S-11）与 `Blackboard` 并发追加原子性，
+注：原覆盖 `Orchestrator` 多连接 SSE 串流与 `Blackboard` 并发追加原子性，
 二者属多智能体报告链路，已随报告中心下线移除。
 """
 import concurrent.futures
 import json
-import threading
 import time
 
 import pytest
@@ -45,7 +44,7 @@ class TestApiContracts:
         body = r.json()
         assert {"status", "data", "meta"} <= set(body)
 class TestAuditConcurrencyAndPaging:
-    """TASK-166：审计查询改流式 + 分页，并发读写下不得丢行。"""
+    """审计查询改流式 + 分页，并发读写下不得丢行。"""
 
     def _store(self, tmp_path):
         from app.services.security.audit import AuditStore
@@ -132,7 +131,7 @@ def test_trace_id_isolated_between_requests(client):
 
 
 def test_session_file_survives_concurrent_writes(client):
-    """会话原子写（TASK-118）：并发创建后所有文件都必须是合法 JSON。"""
+    """会话原子写：并发创建后所有文件都必须是合法 JSON。"""
     def create(i):
         return client.post("/sessions", json={"title": f"会话{i}"})
 

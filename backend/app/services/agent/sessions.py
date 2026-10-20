@@ -1,4 +1,4 @@
-"""会话存档（阶段 6 §6 / §7.4）。
+"""会话存档。
 
 - 会话标识 = 租户 + 用户 + 随机号（防枚举）；服务端校验归属；
 - 快照 JSON 落盘（单实例方案，接口可换 Redis/DB）：30 天自动过期、
@@ -49,7 +49,7 @@ class SessionStore:
 
     @staticmethod
     def _atomic_write(path: Path, content: str) -> None:
-        """原子写：先写临时文件再 os.replace（TASK-118）。
+        """原子写：先写临时文件再 os.replace。
 
         此前直接 write_text 覆盖，多 worker / 并发下会产生半截 JSON，
         而 get() 读到半截即抛 JSONDecodeError → 整个会话 500 且无法自愈。
@@ -101,7 +101,7 @@ class SessionStore:
         try:
             session = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as exc:
-            # TASK-118：损坏的会话文件此前直接抛 JSONDecodeError → 500。
+            # 损坏的会话文件此前直接抛 JSONDecodeError → 500。
             # 数据已不可用，按"不存在"处理并隔离坏文件，比整站 500 更合理。
             logger.error("会话文件损坏，已隔离: %s (%s)", path, exc)
             try:

@@ -1,4 +1,4 @@
-"""Query 分析端点（阶段 4 前端规范 §4 / §6）。
+"""Query 分析端点。
 
 - GET /knowledge/query-analysis：分析历史（意图/是否检索/时间范围过滤）；
 - GET /knowledge/query-analysis/{id}：单条详情（改写/子问题/路由全字段）；
@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import get_principal, require_role
+from app.dependencies import require_role
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 
 logger = logging.getLogger(__name__)

@@ -70,7 +70,7 @@ class TestErrorCodes:
         assert ErrCode.is_degraded_code(int(ErrCode.UNAUTHORIZED)) is False
 
     def test_documented_segments_exist(self):
-        """stage-3/4/6/7 前端规范点名的错误码段全部落地。"""
+        """/4/6/7 前端规范点名的错误码段全部落地。"""
         for code in (
             ErrCode.UNSUPPORTED_FILE_TYPE,   # 31xx
             ErrCode.PARSE_FAILED,            # 32xx
@@ -646,16 +646,18 @@ class TestSemanticCache:
     def test_semantic_lookup_hits_on_paraphrase(self):
         """此前只有 SHA256 精确哈希，"保修政策 vs 保修条款"不命中。"""
         cache = InMemorySemanticCache(sim_threshold=0.9)
-        cache.set("k1", {"answer": "两年"}, 60, question="保修政策", vector=[1.0, 0.0])
-        entry, kind = cache.lookup("保修条款", "missing-key", [0.995, 0.1])
+        cache.set("k1", {"answer": "两年"}, 60, question="保修政策", vector=[1.0, 0.0],
+                  signature="sig")
+        entry, kind = cache.lookup("保修条款", "missing-key", [0.995, 0.1], signature="sig")
         assert kind == "semantic", f"近似查询未命中（cos={_cosine([0.995, 0.1], [1.0, 0.0]):.4f}）"
         assert entry is not None
         assert entry.payload["answer"] == "两年"
 
     def test_dissimilar_query_misses(self):
         cache = InMemorySemanticCache(sim_threshold=0.95)
-        cache.set("k1", {"answer": "两年"}, 60, question="保修政策", vector=[1.0, 0.0])
-        entry, kind = cache.lookup("电池容量", "missing", [0.0, 1.0])
+        cache.set("k1", {"answer": "两年"}, 60, question="保修政策", vector=[1.0, 0.0],
+                  signature="sig")
+        entry, kind = cache.lookup("电池容量", "missing", [0.0, 1.0], signature="sig")
         assert kind == "miss"
         assert entry is None
 
@@ -674,8 +676,8 @@ class TestSemanticCache:
 
     def test_expired_entries_not_returned_by_lookup(self):
         cache = InMemorySemanticCache(sim_threshold=0.5)
-        cache.set("k1", {"answer": "x"}, -1, question="q", vector=[1.0, 0.0])
-        entry, kind = cache.lookup("q", "k1", [1.0, 0.0])
+        cache.set("k1", {"answer": "x"}, -1, question="q", vector=[1.0, 0.0], signature="sig")
+        entry, kind = cache.lookup("q", "k1", [1.0, 0.0], signature="sig")
         assert entry is None
 
     def test_cache_failure_degrades_silently(self, client):
@@ -961,7 +963,9 @@ class TestToolRegistry:
 
 class TestStartupValidationAndProbes:
     def test_default_settings_pass_validation(self):
-        assert Settings().validate_startup() == []
+        # 显式承认测试环境（mock + 关闭认证）应当通过校验；
+        # 裸 defaults（auto 无凭据 / 认证无凭证来源）本来就该被拒绝
+        assert Settings(model_provider="mock", auth_enabled=False).validate_startup() == []
 
     def test_dashscope_without_key_is_rejected(self):
         """显式要求走平台却没凭据是配置错误，不该静默降级成 mock。"""

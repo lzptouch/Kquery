@@ -1,5 +1,5 @@
-/** 问题输入框（阶段 1 §2.6）：自适应高度，Enter 发送 / Shift+Enter 换行，
- * 草稿本地存储防刷新丢失，附件按钮阶段 1 禁用（阶段 6 启用）。
+/** 问题输入框：自适应高度，Enter 发送 / Shift+Enter 换行，
+ * 草稿本地存储防刷新丢失，附件按钮 禁用。
  */
 import { useEffect, useRef, useState } from "react";
 
@@ -36,7 +36,7 @@ export function ChatInput({ placeholder = "输入你的问题…", disabled, onS
 
   return (
     <div className="chat-input-box">
-      <button type="button" className="btn" disabled title="附件提问（阶段 6 引入）" aria-label="附件（暂未开放）">
+      <button type="button" className="btn" disabled title="附件提问" aria-label="附件（暂未开放）">
         📎
       </button>
       <textarea

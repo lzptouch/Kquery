@@ -166,7 +166,7 @@ class DocxParser:
         return result
 
     def _extract_images(self, document: Document, doc_id: str, tenant_id: str) -> list[MediaAsset]:
-        """word/media/ 嵌入图存档（描述文本由阶段 7 的 qwen-vl 图像理解生成，本阶段先存档）。"""
+        """word/media/ 嵌入图存档（描述文本由 的 qwen-vl 图像理解生成，本阶段先存档）。"""
         assets: list[MediaAsset] = []
         self._assets_dir.mkdir(parents=True, exist_ok=True)
         idx = 0

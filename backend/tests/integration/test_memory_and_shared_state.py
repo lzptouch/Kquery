@@ -1,4 +1,4 @@
-"""TASK-117 长期记忆 + TASK-165 共享状态后端。
+""" 长期记忆 +  共享状态后端。
 
 长期记忆最关键的约束：**不存用户原话**（与审计只存 hash 的纪律一致）。
 共享状态最关键的约束：**Redis 挂了要降级而不是报错**。
@@ -314,7 +314,7 @@ class TestSharedStateDegradation:
 
 
 class TestRefusalWriteBack:
-    """拒答必须回写 state（TASK-117 依赖它，快照也依赖它）。
+    """拒答必须回写 state（ 依赖它，快照也依赖它）。
 
     线上探针显示长期记忆 entries 恒为 0，追下去发现两层问题：
     1. `record_from_run` 曾要求"拒答 **且** 无证据"，而真实拒答是"检索到候选但

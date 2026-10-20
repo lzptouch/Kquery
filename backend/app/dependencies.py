@@ -1,19 +1,24 @@
 """共享依赖：路由通过 Depends 获取 lifespan 装配在 app.state 上的服务。
 
 依赖统一从这里出口，路由不直接触碰 app.state。
-阶段 9：认证（get_principal）与配额（滑动窗口）在此统一叠加——
+认证（get_principal）与配额（滑动窗口）在此统一叠加——
 这正是当初"依赖统一出口"设计预留的挂载点。
 """
+import logging
+
 from fastapi import Depends, Request
 
 from app.core.config import Settings
 from app.core.envelope import ApiError, ErrCode
+from app.core.tracing import get_trace_id
 from app.services.agent.runner import AgentRunner
 from app.services.agent.sessions import SessionStore
 from app.services.knowledge import KnowledgeService
 from app.services.pipeline import RagPipeline
 from app.services.ratelimit import resolve_bucket_limits
 from app.services.security.auth import Principal
+
+logger = logging.getLogger(__name__)
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -36,10 +41,32 @@ def get_session_store(request: Request) -> SessionStore:
     return request.app.state.session_store
 
 
+def audit_admin(request: Request, action: str, detail: dict) -> None:
+    """管理动作审计（知识库/入库/图谱等写端点共用，对照分析文档 KQ-24）。
+
+    身份以认证主体为准而不是请求头——审计的目的是事后追责，
+    写可伪造的身份等于没有审计。审计失败只告警不阻断主流程。
+    """
+    store = getattr(request.app.state, "audit_store", None)
+    if store is None:
+        return
+    principal = getattr(request.state, "principal", None)
+    try:
+        store.log_admin(
+            get_trace_id(),
+            principal.tenant_id if principal else "",
+            principal.user_id if principal else "",
+            action,
+            detail,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("管理动作审计写入失败（不影响主流程）: %s", exc)
+
+
 def acl_filter_of(request: Request, principal: Principal):
     """构造 ACL 过滤函数（缺文档一律拒绝——默认拒绝原则）。
 
-    TASK-142 收口：原先此逻辑只在 `api/ask.py` 内私有。现提取为共享依赖，
+     收口：原先此逻辑只在 `api/ask.py` 内私有。现提取为共享依赖，
     所有需要按文档收口权限的检索路径共用同一实现与同一默认拒绝语义。
     """
     settings: Settings = request.app.state.settings
@@ -47,15 +74,22 @@ def acl_filter_of(request: Request, principal: Principal):
         return None
     acl = request.app.state.acl_service
     knowledge = request.app.state.knowledge
+    # 请求级记忆化（批次 2 / KQ-12）：同一请求内同一文档只查一次——
+    # 候选过滤、被拒候选、证据装配三处都会对同一 doc 判定，未缓存时是 3 次查询
+    memo: dict[str, bool] = {}
 
     def check(doc_id: str) -> bool:
         if doc_id.startswith("__"):  # 系统内置块（社区摘要/图像/计算器）租户内可见
             return True
+        if doc_id in memo:
+            return memo[doc_id]
         try:
             doc = knowledge.get(doc_id)
         except Exception:  # noqa: BLE001
-            return False  # 无主文档不可见
-        return acl.check(principal, doc)
+            memo[doc_id] = False  # 无主文档不可见
+            return False
+        memo[doc_id] = acl.check(principal, doc)
+        return memo[doc_id]
 
     return check
 
@@ -120,7 +154,7 @@ def require_role(role: str):
 def enforce_rate_limit(request: Request) -> None:
     """配额：租户滑动窗口（分钟 + 每日 + token 三维度）。超额 429 + Retry-After。
 
-    令牌桶（阶段 2 突发控制）与滑动窗口（阶段 9 平稳流量）并存：
+    令牌桶与滑动窗口并存：
     任一超限即拒绝。
 
     租户取**认证结果**而非请求头——按请求头分桶意味着任何人改一个 header
@@ -174,7 +208,7 @@ def enforce_rate_limit(request: Request) -> None:
             retry_after=retry_after,
         )
 
-    # 令牌桶（突发控制，保持阶段 2 语义；**按真实租户**分桶）
+    # 令牌桶（突发控制，保持 语义；**按真实租户**分桶）
     rate, capacity = resolve_bucket_limits(config, settings)
     allowed, retry_after = limiter.allow(tenant, rate, capacity)
     if not allowed:

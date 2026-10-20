@@ -1,4 +1,4 @@
-"""阶段 7：GraphRAG 与多模态测试。
+"""GraphRAG 与多模态测试。
 
 覆盖：抽取解析（坏 JSON/非法类型/空结果）/ 实体消歧（精确/别名/阈值/同类型硬约束）/
 图存储 BFS（方向/深度/强度剪枝/按块删除）/ 社区编号稳定性 / 图检索种子策略 /
@@ -13,7 +13,7 @@ from app.services.graph.community import ConnectedComponentsDetector, build_comm
 from app.services.graph.extractor import parse_extraction
 from app.services.graph.images import ImageIndex, MockCaptioner, _parse_caption
 from app.services.graph.query import GraphQueryService
-from app.services.graph.resolver import EntityResolver, normalize_name
+from app.services.graph.resolver import EntityResolver
 from app.services.graph.store import InMemoryGraphStore
 
 
@@ -210,12 +210,10 @@ class TestGraphQuery:
     def _service(self):
         store = TestGraphStore()._store_with_data()
         resolver = EntityResolver(FakeEmbeddings())
+        # resolver 已按租户分区（KQ-06）：实体必须经 resolve 注册到 default 租户，
+        # 直接写 _entities 的裸 key 不会被任何租户检索到
         for name, t in [("Acme", "Org"), ("Beta", "Org"), ("张三", "Person"), ("Gamma", "Org")]:
-            resolver._entities[name] = {
-                "name": name, "type": t, "description": "", "aliases": [],
-                "vector": np.ones(8, dtype=np.float32),
-            }
-            resolver._alias_map[normalize_name(name)] = name
+            resolver.resolve(name, t, tenant_id="default")
         return GraphQueryService(store, resolver, FakeEmbeddings())
 
     def test_seed_exact_match_and_paths(self):

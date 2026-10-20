@@ -1,4 +1,4 @@
-"""企业护栏管理端点（阶段 9 前端规范 §九）。
+"""企业护栏管理端点。
 
 - /admin/users：用户列表与编辑（静态用户目录，演示用）；
 - /admin/documents/acl：ACL 列表 / 修改（返回影响人数，供前端风险提示）；
@@ -294,7 +294,7 @@ def delete_sensitive(word: str, request: Request, tenant_id: str = "default") ->
 
 @router.get("/admin/tools", response_model=Envelope, dependencies=[Depends(require_role("admin"))])
 def list_tools(request: Request) -> Envelope:
-    """工具目录与健康状态（TASK-109）。
+    """工具目录与健康状态。
 
     没有这个端点时，"某个工具挂了导致大量报告证据不足"只能靠翻日志发现。
     前端「工具」面板据此显示每个工具的可用性徽标。
@@ -319,8 +319,8 @@ def list_tools(request: Request) -> Envelope:
 # 能力清单：enforced 说明这一列到底由谁把守，`by` 给出**把守它的端点**。
 #   backend  = 后端端点/护栏真正强制；
 #   acl      = 由文档 ACL 身份表达式（role:/group:/user:）决定。
-# TASK-164：原先 6 项标 `declared`（"管理台声明的约定，后端未做门禁"）。
-# 那时是事实——`/admin/*` 端点完全没有角色校验。TASK-160 给全部 28 个
+# 原先 6 项标 `declared`（"管理台声明的约定，后端未做门禁"）。
+# 那时是事实——`/admin/*` 端点完全没有角色校验。 给全部 28 个
 # `/admin/*` 端点挂上 `require_role("admin")` 之后，这 6 项**已经是真的**，
 # 继续标 declared 反而低估了实际防护等级。这里改为 backend 并注明把守端点，
 # 让运维能顺着 `by` 去核对，而不是只能相信这个字符串。

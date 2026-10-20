@@ -1,4 +1,4 @@
-"""租户级长期记忆（TASK-117）。
+"""租户级长期记忆。
 
 ## 为什么需要
 
@@ -206,7 +206,7 @@ class LongTermMemory:
 
 
 def record_from_run(memory: LongTermMemory, tenant_id: str, state: dict) -> None:
-    """从一次运行的结果中提炼经验（TASK-117 的写入侧）。
+    """从一次运行的结果中提炼经验（ 的写入侧）。
 
     三条提炼规则：
     1. **判定为拒答** → 记「这类问题知识库答不上来」；

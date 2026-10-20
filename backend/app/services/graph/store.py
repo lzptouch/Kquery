@@ -1,4 +1,4 @@
-"""图存储抽象与内存实现（阶段 7 §2.3）。
+"""图存储抽象与内存实现。
 
 - 接口抽象：测试用内存图，生产可换 Neo4j / Redis，互不污染；
 - 内存实现 + JSON 落盘（重启可恢复）；
@@ -35,7 +35,7 @@ class BaseGraphStore(Protocol):
     - `upsert_entity` / `upsert_relation` 按 `name` / `(source, relation, target)`
       幂等，重复写入是合并而非追加；
     - `neighbors` 返回的每条边必须带 `direction`（out / in），否则前端画不出箭头方向；
-    - `delete_doc_chunks` 只删"当前版本"的块对应实体，历史版本块仍需留在图里（§6.3）；
+    - `delete_doc_chunks` 只删"当前版本"的块对应实体，历史版本块仍需留在图里；
     - 线程安全：所有写操作内部加锁。
     """
 
@@ -60,7 +60,7 @@ _SEP = "\x1f"  # 单元分隔符：实体名里不会出现，用它做租户分
 def _k(tenant_id: str | None, name: str) -> str:
     """租户分区的复合 key。
 
-    TASK-142 / P0-4：此前 `_entities` / `_out` / `_in` 都是全局单层 dict 且 key 只有实体名，
+    此前 `_entities` / `_out` / `_in` 都是全局单层 dict 且 key 只有实体名，
     导致 ① 不同租户的同名实体互相覆盖 ② 任一租户可看到全量图谱。
     改为 (tenant, name) 复合 key 后，两者同时解决。
     """
@@ -156,7 +156,7 @@ class InMemoryGraphStore:
     ) -> list[dict]:
         """BFS 遍历（先近后远）。返回带方向的关系路径项。
 
-        传 tenant_id 时全程限定在该租户分区内（P0-4：不得跨租户遍历）。
+        传 tenant_id 时全程限定在该租户分区内（不得跨租户遍历）。
         """
         root_key = _k(tenant_id, name)
         if root_key not in self._entities:

@@ -1,6 +1,6 @@
 """知识库服务：上传 → 解析（Router）→ 切块（策略工厂）→ Embedding → 索引。
 
-阶段 3 重构：
+ 重构：
 - 解析走 ParserRouter（md / pdf 文字+表格 / OCR / 音频）；
 - 切块走策略工厂（recursive / semantic / parent_child / raptor）；
 - 表格单独成块（modality=table），不被切块器拦腰切断；
@@ -60,7 +60,7 @@ class KnowledgeService:
         parser_router: ParserRouter,
     ):
         self._settings = settings
-        self._post_index = None  # 入库后置钩子（stage-7 §5.1），由 main.py 装配
+        self._post_index = None  # 入库后置钩子（），由 main.py 装配
         self._embeddings = embeddings
         self._llm = llm
         self._store = store
@@ -90,8 +90,12 @@ class KnowledgeService:
     def data_version(self) -> int:
         return self._data_version
 
+    @property
+    def default_tenant_id(self) -> str:
+        return self._settings.default_tenant_id
+
     def version_of(self, doc_id: str) -> int:
-        """文档的当前索引版本号（召回侧版本过滤的依据，DEF-R-2 / P0-7）。
+        """文档的当前索引版本号（召回侧版本过滤的依据， / ）。
 
         与 chunks_of 的预览过滤同源：reparse 后旧块改名 @v{旧} 保留供溯源，
         召回时只应返回版本号 == 当前版本的块。未收录的文档按 1 处理。
@@ -123,8 +127,15 @@ class KnowledgeService:
 
     # ---- 查询 ----
 
-    def list_files(self) -> list[DocumentRecord]:
-        return sorted(self._docs.values(), key=lambda d: d.uploaded_at, reverse=True)
+    def list_files(self, tenant_id: str | None = None) -> list[DocumentRecord]:
+        """文档列表。tenant_id 给定时只返回该租户文档（管理面列表用，对照 KQ-02）。
+
+        ACL 判定（visible_doc_ids）需要全量集合做逐文档判定，故不传 tenant_id 时返回全部。
+        """
+        docs = self._docs.values()
+        if tenant_id is not None:
+            docs = [d for d in docs if d.tenant_id == tenant_id]
+        return sorted(docs, key=lambda d: d.uploaded_at, reverse=True)
 
     def get(self, doc_id: str) -> DocumentRecord:
         doc = self._docs.get(doc_id)
@@ -187,24 +198,55 @@ class KnowledgeService:
             return base
         return f"{base}-{content_hash[:8]}"
 
-    def create_record(self, filename: str, content: bytes, source_path: Path | None = None) -> DocumentRecord:
-        """创建文档记录（简单路径与任务路径共用）。"""
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(block)
+        return h.hexdigest()
+
+    def create_record(
+        self,
+        filename: str,
+        content: bytes | None = None,
+        source_path: Path | None = None,
+        tenant_id: str | None = None,
+        relocate: bool = False,
+    ) -> DocumentRecord:
+        """创建文档记录（简单路径与任务路径共用）。
+
+        租户纪律（对照分析文档 KQ-02）：tenant_id 必须由调用方（认证主体）传入，
+        缺省回落 default_tenant_id 只用于无主体的系统内部调用。
+        content 为空时按 source_path 流式计算哈希（配合流式上传，不把整文件读进内存）。
+        """
         settings = self._settings
-        content_hash = hashlib.sha256(content).hexdigest()
+        if content is not None:
+            content_hash = hashlib.sha256(content).hexdigest()
+        else:
+            if source_path is None:
+                raise ApiError(ErrCode.INVALID_INPUT, "content 与 source_path 不能同时为空")
+            content_hash = self._hash_file(Path(source_path))
         doc_id = self._resolve_doc_id(Path(filename).stem, content_hash)
         if source_path is None:
             settings.upload_dir.mkdir(parents=True, exist_ok=True)
             source_path = settings.upload_dir / f"{doc_id}{Path(filename).suffix.lower()}"
             source_path.write_bytes(content)
+        elif relocate:
+            # 流式上传的临时文件改名到规范位置（doc_id 依赖哈希，必须先算完才能定名）
+            settings.upload_dir.mkdir(parents=True, exist_ok=True)
+            target = settings.upload_dir / f"{doc_id}{Path(filename).suffix.lower()}"
+            Path(source_path).replace(target)
+            source_path = target
         record = DocumentRecord(
             doc_id=doc_id,
             file_id=uuid.uuid4().hex[:12],
             filename=filename,
-            tenant_id=settings.default_tenant_id,
+            tenant_id=tenant_id or settings.default_tenant_id,
             source_path=str(source_path),
             content_hash=content_hash,
             status=DOC_STATUS_PARSING,
-            size=len(content),
+            size=len(content) if content is not None else Path(source_path).stat().st_size,
             uploaded_at=datetime.now(timezone.utc).isoformat(),
         )
         self._docs[doc_id] = record
@@ -302,21 +344,23 @@ class KnowledgeService:
             chunker_name = getattr(record, "_pending_chunker", "recursive")
 
         with self._lock:
-            if not getattr(record, "_skip_purge", False):
-                self._purge_chunks(record.doc_id)
+            # 写序纪律（对照分析文档 KQ-08）：先算好新向量再清旧索引。
+            # 先 purge 后 embed 的顺序下，Embedding 失败 = 旧索引已删、文档从检索消失。
             try:
                 vectors = self._embeddings.embed_texts([c.content for c in chunks])
             except Exception as exc:
                 raise ApiError(
                     ErrCode.INDEX_BUILD_FAILED, f"索引构建中断（Embedding 失败）: {exc}"
                 ) from exc
-            # 索引质量红线（§6.2）：向量条数必须严格等于块条数，不等即拒绝发布。
+            # 索引质量红线：向量条数必须严格等于块条数，不等即拒绝发布。
             # 少了这条断言，"块与向量不一致"会表现为检索静默漏召回，而不是报错。
             if len(vectors) != len(chunks):
                 raise ApiError(
                     ErrCode.INDEX_BUILD_FAILED,
                     f"索引发布中止：向量条数 {len(vectors)} 与块条数 {len(chunks)} 不一致",
                 )
+            if not getattr(record, "_skip_purge", False):
+                self._purge_chunks(record.doc_id)
             self._store.add(chunks, vectors)
             self._store.save()
             if self._bm25 is not None:
@@ -326,7 +370,7 @@ class KnowledgeService:
             if parsed.tables:
                 self._docstore.put_tables(parsed.tables)
             if parsed.assets:
-                # 跨文档去重：同一张图只入一次（§4.5）。此前方法实现了却零调用。
+                # 跨文档去重：同一张图只入一次。此前方法实现了却零调用。
                 self._docstore.put_assets(
                     parsed.assets, dedupe_by_hash=self._store.total > 0
                 )
@@ -370,6 +414,7 @@ class KnowledgeService:
         content: bytes,
         chunk_policy: dict | None = None,
         parse_policy: dict | None = None,
+        tenant_id: str | None = None,
     ) -> DocumentRecord:
         ext = Path(filename).suffix.lower()
         if ext not in SUPPORTED_EXTENSIONS:
@@ -377,7 +422,32 @@ class KnowledgeService:
         if len(content) > self._settings.max_upload_mb * 1024 * 1024:
             raise ApiError(ErrCode.FILE_TOO_LARGE, f"文件超过 {self._settings.max_upload_mb}MB 限制")
 
-        record = self.create_record(filename, content)
+        record = self.create_record(filename, content, tenant_id=tenant_id)
+        return self._index_record(record, chunk_policy, parse_policy)
+
+    def ingest_path(
+        self,
+        filename: str,
+        source_path: Path,
+        chunk_policy: dict | None = None,
+        parse_policy: dict | None = None,
+        tenant_id: str | None = None,
+    ) -> DocumentRecord:
+        """流式上传路径：文件已在磁盘上（边写边校验过大小），直接建档入库。"""
+        ext = Path(filename).suffix.lower()
+        if ext not in SUPPORTED_EXTENSIONS:
+            raise ApiError(ErrCode.UNSUPPORTED_FILE, f"仅支持 {sorted(SUPPORTED_EXTENSIONS)} 文件")
+        record = self.create_record(
+            filename, source_path=source_path, tenant_id=tenant_id, relocate=True
+        )
+        return self._index_record(record, chunk_policy, parse_policy)
+
+    def _index_record(
+        self,
+        record: DocumentRecord,
+        chunk_policy: dict | None,
+        parse_policy: dict | None,
+    ) -> DocumentRecord:
         try:
             parsed = self.parse_document(record, parse_policy)
             self.index_parsed(record, parsed, chunk_policy)
@@ -395,7 +465,7 @@ class KnowledgeService:
         return record
 
     def set_post_index(self, hook) -> None:
-        """注册入库后置钩子（图谱构建 + 图像索引，stage-7 §5.1）。
+        """注册入库后置钩子（图谱构建 + 图像索引，）。
 
         同步上传（`POST /knowledge/upload`）与异步任务（`TaskManager`）是两条
         入库路径，钩子必须挂在服务层，两条路径才会一致生效——只挂一边的话，
@@ -432,7 +502,7 @@ class KnowledgeService:
         return record
 
     def reparse(self, doc_id: str, chunk_policy: dict, parse_policy: dict | None = None) -> DocumentRecord:
-        """用新策略重新解析：**生成新版本块集合，旧版本下线但保留块**（stage-3 §4.4）。
+        """用新策略重新解析：**生成新版本块集合，旧版本下线但保留块**（）。
 
         旧实现先物理删除旧块再重建，且 chunk_id 复用同一序号空间——结果���所有历史答案
         里的引用编号全部指向不存在的块，溯源链在"重新解析"这个动作上静默断裂。
@@ -502,14 +572,74 @@ class KnowledgeService:
         self._save_metadata()
         return record
 
+    # ---- 删除编排（对照分析文档 KQ-08：派生副本必须随主数据一并收敛）----
+
+    def set_deletion_deps(
+        self, acl=None, graph_store=None, image_index=None, task_manager=None
+    ) -> None:
+        """装配期注入删除编排的协作者（main.py 在各组件就绪后回填）。"""
+        self._del_acl = acl
+        self._del_graph_store = graph_store
+        self._del_image_index = image_index
+        self._del_task_manager = task_manager
+
     def delete(self, doc_id: str) -> DocumentRecord:
-        """删除文档：索引与源文件一并删除（不可恢复）。"""
+        """删除文档：索引、派生副本（图谱/图像/资产/ACL/任务文件）与源文件一并删除。
+
+        派生副本按 best-effort 逐项清理：单项失败不中断整体删除，
+        失败的项写进 warning 日志（运维可据此做残留巡检）。
+        """
         record = self.get(doc_id)
+        # 先取清理所需的引用（purge 之后就拿不到了）
+        try:
+            chunk_ids = set(self._store.doc_chunk_ids(doc_id))
+        except Exception:  # noqa: BLE001
+            chunk_ids = set()
+        try:
+            assets = list(self._docstore.assets_of_doc(doc_id))
+        except Exception:  # noqa: BLE001
+            assets = []
         with self._lock:
             self._purge_chunks(doc_id)
         self._docs.pop(doc_id, None)
+
+        residuals: list[str] = []
+        acl = getattr(self, "_del_acl", None)
+        if acl is not None:
+            try:
+                acl.remove(doc_id)
+            except Exception as exc:  # noqa: BLE001
+                residuals.append(f"acl: {exc}")
+        graph_store = getattr(self, "_del_graph_store", None)
+        if graph_store is not None and chunk_ids:
+            try:
+                graph_store.delete_doc_chunks(chunk_ids)
+            except Exception as exc:  # noqa: BLE001
+                residuals.append(f"graph: {exc}")
+        image_index = getattr(self, "_del_image_index", None)
+        if image_index is not None:
+            try:
+                image_index.remove_doc(doc_id)
+            except Exception as exc:  # noqa: BLE001
+                residuals.append(f"images: {exc}")
+        for asset in assets:
+            try:
+                path = Path(getattr(asset, "path", "") or "")
+                if path.exists():
+                    path.unlink()
+            except Exception as exc:  # noqa: BLE001
+                residuals.append(f"asset: {exc}")
+        task_manager = getattr(self, "_del_task_manager", None)
+        if task_manager is not None:
+            try:
+                task_manager.remove_files_for_doc(doc_id)
+            except Exception as exc:  # noqa: BLE001
+                residuals.append(f"tasks: {exc}")
+
         source = Path(record.source_path)
         if source.exists():
             source.unlink()
         self._save_metadata()
+        if residuals:
+            logger.warning("文档 %s 已删除，但存在未清理残留: %s", doc_id, residuals)
         return record

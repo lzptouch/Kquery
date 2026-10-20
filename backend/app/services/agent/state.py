@@ -1,4 +1,4 @@
-"""Agent 状态定义（阶段 6 §2.3 / §7.3）。
+"""Agent 状态定义。
 
 合并规则在此集中声明，不允许散落各节点：
 - 累积型字段（evidence / executed_steps / tool_calls / tool_errors）：追加合并 + 去重；
@@ -19,7 +19,7 @@ def replace_list(old: list, new: list) -> list:
     "全量快照替换"（plan_node 追加新步骤后返回完整列表，tool_node 改单步状态后
     也返回完整列表）。此前 plan 未声明 reducer、走 TypedDict 默认覆盖，行为正确
     但意图不显式——一旦有人误以为它是追加语义而只返回增量，整张计划会被静默丢失。
-    这里显式声明为"替换"，把契约写死在代码里（TASK-138）。
+    这里显式声明为"替换"，把契约写死在代码里。
     """
     return new
 
@@ -85,12 +85,12 @@ class AgentState(TypedDict, total=False):
     final_answer: str
     answer_source: str  # 答案来源：evidence（有据）/ parametric（通用知识兜底）/ ""（拒答）
     skip_retrieval: bool  # 闲聊短路
-    hitl_resolved: str  # TASK-124：人工介入结果（""/hint/force_answer/stop），防二次打断
-    budget: dict  # TASK-121：预算快照（跨 HITL 中断点保持计数单调，防 resume 绕过）
-    verify_passed: bool  # TASK-113：答案校验是否通过
-    verify_rounds: int  # TASK-113：已校验轮数（受 max_verify_rounds 约束）
-    verify_notes: list[str]  # TASK-113：未通过时带回的"无据陈述"线索
-    # ---- TASK-101：ReAct 循环 ----
+    hitl_resolved: str  # 人工介入结果（""/hint/force_answer/stop），防二次打断
+    budget: dict  # 预算快照（跨 HITL 中断点保持计数单调，防 resume 绕过）
+    verify_passed: bool  # 答案校验是否通过
+    verify_rounds: int  # 已校验轮数（受 max_verify_rounds 约束）
+    verify_notes: list[str]  # 未通过时带回的"无据陈述"线索
+    # ---- ReAct 循环 ----
     # 注意这些字段**必须声明**：LangGraph 只持久化 TypedDict 里声明过的键，
     # 未声明的 key 会被静默丢弃（表现为"节点明明 return 了，读状态时却没有"）。
     react_rounds: int  # 已进行的 ReAct 轮数

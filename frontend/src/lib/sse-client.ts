@@ -1,4 +1,4 @@
-/** SSE 客户端（阶段 1 §4.2 + 阶段 2 §6 增量）。
+/** SSE 客户端。
  *
  * 协议纪律：
  * 1. 每类事件有唯一处理入口；
@@ -6,7 +6,7 @@
  * 3. done 与 error 互斥且必有其一；
  * 4. 容忍证据先于文本到达。
  *
- * 阶段 2 增量：retrieval_stats 事件（分阶段耗时）；
+ *  增量：retrieval_stats 事件（分阶段耗时）；
  * HTTP 429 时解析 Retry-After 并透传给界面（倒计时 + 自动重试）。
  */
 import { authErrorMessage, isAuthFailure, notifyUnauthorized, withAuth } from "./auth";
@@ -28,7 +28,7 @@ export interface ConfidencePayload {
   unvalidated?: boolean;
   /** 答案来源：parametric 表示知识库未收录、由模型自身知识回答 */
   answer_source?: AnswerSource;
-  /** 阶段 5：被剔除的无据声明原文（前端要告诉用户剔除了哪句） */
+  /** 被剔除的无据声明原文（前端要告诉用户剔除了哪句） */
   removed_claims?: string[];
   self_check?: import("../types").SelfCheckInfo | null;
   crag?: { branch: string; rounds: { round: number; branch: "correct" | "ambiguous" | "incorrect"; avg_score: number; evidence_count: number; refined_query: string }[] } | null;
@@ -55,7 +55,7 @@ export interface StreamHandlers {
     verdict?: string;
     confidence?: number;
     answer_source?: AnswerSource;
-    acl_filtered?: number;  // 阶段 9：权限过滤数
+    acl_filtered?: number;  // 权限过滤数
     retrieval?: import("../types").RetrievalStats | null;
     crag?: import("../types").CragInfo | null;
     refusal_reason?: string;
@@ -63,7 +63,7 @@ export interface StreamHandlers {
     unsupported_claims_count?: number;
   }) => void;
   onError: (error: { code: number; message: string; retry_after?: number }) => void;
-  // ---- 阶段 6：Agent 轨迹事件 ----
+  // ---- Agent 轨迹事件 ----
   onPlan?: (data: { steps: AgentPlanStep[]; max_iterations: number; replan?: boolean }) => void;
   onToolStart?: (data: { step_index: number; tool: string; input: string }) => void;
   onToolEnd?: (data: {
@@ -80,7 +80,7 @@ const KNOWN_EVENTS = new Set([
   "token", "evidence", "retrieval_stats", "query_analysis",
   "crag_branch", "refine", "confidence", "refused",
   "plan", "tool_start", "tool_end", "reflect", "iteration", "fuse", "replan",
-  // 阶段 7 预留：图谱关系路径。缺了它前端会把后端已发出的事件静默丢弃，
+  //  预留：图谱关系路径。缺了它前端会把后端已发出的事件静默丢弃，
   // 表现为"跨模态证据形态不完整"且无处排查。
   "graph_path",
   "done", "error",
@@ -96,7 +96,7 @@ export async function askStream(
   try {
     resp = await fetch("/ask/stream", {
       method: "POST",
-      // TASK-160 前端配套：SSE 走 fetch（非 EventSource），因此可以带身份头。
+      //  前端配套：SSE 走 fetch（非 EventSource），因此可以带身份头。
       // 若当初用 EventSource 就无法设置请求头，鉴权改造会在这里卡住。
       headers: withAuth({ "Content-Type": "application/json" }),
       body: JSON.stringify({
@@ -112,10 +112,11 @@ export async function askStream(
     return;
   }
   if (!resp.ok || !resp.body) {
-    if (resp.status === 429) {
-      // 限流（保护能力）：显式告知 + Retry-After 倒计时
+    if (resp.status === 429 || resp.status === 503) {
+      // 限流（429）与背压（503，并发闸门满）都是"稍后来"而不是"服务挂了"：
+      // 显式告知 + Retry-After 倒计时，与 5xx 服务区分开
       const retryAfter = Number(resp.headers.get("Retry-After") ?? "5") || 5;
-      let message = "请求过于频繁，请稍后重试";
+      let message = resp.status === 429 ? "请求过于频繁，请稍后重试" : "服务繁忙，请稍后重试";
       try {
         const body = await resp.json();
         message = body?.error?.message ?? message;

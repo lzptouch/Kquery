@@ -1,4 +1,4 @@
-"""幻觉自检与受限重生成（阶段 5 README §4 / §6）。
+"""幻觉自检与受限重生成。
 
 - 校验：每条事实声明是否能在已采纳证据中找到支持（qwen-plus 判定，需理由说明）；
 - 重生成只一次：把无据声明显式列给 LLM 强制删除或改写；二次校验仍有
@@ -99,7 +99,7 @@ class HallucinationChecker:
         raise JsonParseError(f"幻觉自检失败: {last_error}")
 
     def to_record(self, result: SelfCheckResult, answer: str, removed: int, passed: bool) -> SelfCheckRecord:
-        """转成可落库 / 可回传的 SELF_CHECK 实体（stage-5 §8.2）。"""
+        """转成可落库 / 可回传的 SELF_CHECK 实体（）。"""
         return SelfCheckRecord(
             method="llm_claim_review",
             checked_claims=result.effective_checked_claims(answer),

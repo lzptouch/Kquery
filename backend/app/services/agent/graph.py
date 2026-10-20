@@ -1,9 +1,9 @@
-"""LangGraph 状态机编排（阶段 6 §2.1 / §4 / §5）。
+"""LangGraph 状态机编排。
 
 拓扑：plan → tool → reflect → {continue: tool, replan: replan, answer: answer} → END
 节点是纯函数（state in, patch out），依赖经闭包注入，事件经 config.emit 发出。
 
-三层熔断（§5.1）：
+三层熔断：
 1. 总轮数上限（动态：计划步骤数 + 2 轮重规划余量）→ 强制作答；
 2. 无效进展熔断（连续 3 轮"继续"但证据未增加）→ 强制作答；
 3. 单步超时（工具层 30s）→ 标记该步失败，流程继续。
@@ -99,7 +99,7 @@ def _final_status(state: AgentState) -> str:
 
     只有"正常跑完"才叫 completed。此前把 circuit_breaker 之外的终态一律写成
     completed —— budget_exhausted / cancelled 这类**降级终态**会被静默吞掉，
-    监控与前端都看不到"这次是被预算拦下的"（TASK-121）。
+    监控与前端都看不到"这次是被预算拦下的"。
     """
     status = state.get("status") or ""
     return status if status and status != "running" else "completed"
@@ -112,7 +112,7 @@ def build_agent_graph(
     answer_llm: LLM,
     prompt_builder,  # (question, evidence_dicts, *, parametric=False) -> str
     no_progress_limit: int = NO_PROGRESS_LIMIT,
-    checkpointer=None,  # BaseCheckpointSaver | None（TASK-115）；None = 不启用续跑
+    checkpointer=None,  # BaseCheckpointSaver | None；None = 不启用续跑
     # 通用知识兜底（doc/analysis/通用知识兜底回答.md §6.4）：闭包注入，测试可独立覆盖
     parametric_fallback_enabled: bool = True,
     parametric_fallback_score_threshold: float = ANSWER_THRESHOLD,
@@ -124,7 +124,7 @@ def build_agent_graph(
     def plan_node(state: AgentState, config: RunnableConfig) -> dict:
         is_replan = state.get("needs_replan", False)
         replan_hint = REPLAN_HINT if is_replan else ""
-        # TASK-117：把该租户的经验作为额外提示（与 replan 提示同通道）
+        # 把该租户的经验作为额外提示（与 replan 提示同通道）
         memory_hint = str((config.get("configurable") or {}).get("memory_hint") or "")
         combined_hint = "\n".join(x for x in (replan_hint, memory_hint) if x)
         steps = planner.plan(state["question"], combined_hint)
@@ -133,7 +133,7 @@ def build_agent_graph(
             base = len(state.get("plan", []))
             for s in steps:
                 s["step_index"] = base + s["step_index"]
-                # TASK-103：depends_on 也必须同步偏移。新计划里的依赖写的是**局部序号**
+                # depends_on 也必须同步偏移。新计划里的依赖写的是**局部序号**
                 # （0..n-1，planner 只允许指向更小下标），步骤号顺延后若不偏移，
                 # 依赖就会指向错误的历史步骤 / 悬空 → 步骤被永久阻塞、打转到熔断。
                 s["depends_on"] = [base + d for d in s.get("depends_on", [])]
@@ -163,7 +163,7 @@ def build_agent_graph(
         }
 
     def tool_node(state: AgentState, config: RunnableConfig) -> dict:
-        # TASK-121 三预算闸门：在**调用任何工具之前**检查剩余额度。
+        #  三预算闸门：在**调用任何工具之前**检查剩余额度。
         # 放在这里而不是调用后，是因为"调用完才发现超限"等于钱已经花了——
         # 预算控制的目的是不花那笔钱。
         budget = (config.get("configurable") or {}).get("budget")
@@ -195,7 +195,7 @@ def build_agent_graph(
             # 无可执行步骤：要么 pending 全部耗尽，要么依赖被阻塞。
             # 此前只置 next_action="replan"，但下一步必经 reflect_node 而它会**无条件**
             # 用 reflector 的结论覆盖 next_action → 该信号是死字段；且此分支不递增
-            # iteration → 第一层熔断不可达，只能靠 no_progress 兜底（TASK-105）。
+            # iteration → 第一层熔断不可达，只能靠 no_progress 兜底。
             # 现在显式打标记 + 计轮次，让 reflect 短路并让熔断真正可达。
             return {
                 "next_action": "replan",
@@ -203,7 +203,7 @@ def build_agent_graph(
                 "iteration": state.get("iteration", 0) + 1,
             }
 
-        # TASK-122 循环检测：同一工具 + 同一入参重复调用没有信息增益，
+        #  循环检测：同一工具 + 同一入参重复调用没有信息增益，
         # 直接短路并计入无进展（否则 Agent 会反复检索同一个查询直到熔断）。
         fingerprint = f"{step['tool_name']}::{step['description'].strip().lower()}"
         seen_calls = set(state.get("call_fingerprints", []))
@@ -230,21 +230,21 @@ def build_agent_graph(
             "step_index": step["step_index"], "tool": step["tool_name"],
             "input": step["description"],
         })
-        # ACL 在 ToolRegistry 层对**所有工具**统一执行（DEF-A-3：原先只有
+        # ACL 在 ToolRegistry 层对**所有工具**统一执行（原先只有
         # vector_search 走 ACL，graph_search / image_search 证据可绕过）。
         acl_filter = (config.get("configurable") or {}).get("acl_filter")
         result, hallucinated, actual_tool = registry.run_with_timeout(
             step["tool_name"], step["description"], state["tenant_id"],
             acl_filter=acl_filter,
-            # TASK-126：取消标志 / TASK-125：写类工具审批结果
+            # 取消标志 / 写类工具审批结果
             run_id=str((config.get("configurable") or {}).get("thread_id") or ""),
             approved=(config.get("configurable") or {}).get("approved_tools"),
-            # TASK-104：结构化入参（计划里显式写了 arguments 就用它，
+            # 结构化入参（计划里显式写了 arguments 就用它，
             # 否则退回 description 作为 query —— 老计划仍可用）
             arguments=arguments_from_step(step),
         )
         acl_filtered = result.acl_filtered
-        # 工具返回的三种情况（§4.3）：有结果 / 0 条视为失败不重试 / 异常标记失败不中断
+        # 工具返回的三种情况：有结果 / 0 条视为失败不重试 / 异常标记失败不中断
         failed = bool(result.error) or not result.items
         step["status"] = "failed" if failed else "done"
         step["result_count"] = len(result.items)
@@ -299,7 +299,7 @@ def build_agent_graph(
             "iteration": state.get("iteration", 0) + 1,
             "current_step": step["step_index"],
             "degraded": state.get("degraded", False) or bool(result.error),
-            # TASK-124：预算计数进 state。HITL 恢复时若不带回计数，用户反复
+            # 预算计数进 state。HITL 恢复时若不带回计数，用户反复
             # resume 就能无限绕过 token 预算——预算必须跨中断点保持单调。
             **({"budget": budget.snapshot()} if budget is not None else {}),
         }
@@ -311,7 +311,7 @@ def build_agent_graph(
         prev_count = state.get("last_evidence_count", 0)
 
         # 工具层已判定"无可执行步骤"：此时再问 LLM"够不够"没有意义（它答什么都对
-        # 收敛没帮助），直接升级重规划并累加无进展计数（TASK-105）。
+        # 收敛没帮助），直接升级重规划并累加无进展计数。
         if state.get("tool_exhausted"):
             if iteration >= max_iterations:
                 _emit(config, "fuse", {"reason": "iteration_limit", "iteration": iteration, "max": max_iterations})
@@ -358,7 +358,7 @@ def build_agent_graph(
         next_action = verdict["next_action"]
         score = verdict["score"]
 
-        # 本轮反思结论先落事件（TASK-141）：熔断分支会直接 return，
+        # 本轮反思结论先落事件：熔断分支会直接 return，
         # 若只在末尾 emit，前端收不到 reflect/iteration，进度条会停在上一轮出现空档。
         _emit(config, "reflect", {
             "evidence_score": score, "next_action": next_action, "reason": verdict["reason"],
@@ -403,13 +403,13 @@ def build_agent_graph(
         return {
             "evidence_score": score,
             "next_action": next_action,
-            "reflect_reason": verdict["reason"],  # TASK-111：决策理由落 state，快照可复盘
+            "reflect_reason": verdict["reason"],  # 决策理由落 state，快照可复盘
             "no_progress_rounds": no_progress,
             "last_evidence_count": len(evidence),
         }
 
     def think_node(state: AgentState, config: RunnableConfig) -> dict:
-        """ReAct 单步决策节点（TASK-101）。
+        """ReAct 单步决策节点。
 
         与 `plan` 节点的根本区别：plan 一次性生成全量清单且**不可变**，
         think 每轮基于最新观察重新决策——这是"Agent 自主性"的实质所在。
@@ -440,7 +440,7 @@ def build_agent_graph(
 
         outcome = thinker.think(
             question, observations, catalog, evidence_count=len(evidence),
-            # TASK-117：把该租户的经验带进思考（如"这类问题库里通常没有"）
+            # 把该租户的经验带进思考（如"这类问题库里通常没有"）
             budget_hint=str(cfg.get("memory_hint") or ""),
         )
         if outcome.degraded:
@@ -482,7 +482,7 @@ def build_agent_graph(
         return patch
 
     def verify_node(state: AgentState, config: RunnableConfig) -> dict:
-        """答案校验节点（TASK-113）。
+        """答案校验节点。
 
         与 `reflect` 的区别：reflect 评的是**证据够不够**（要不要继续找），
         verify 评的是**答案站不站得住**（每句话是否有据、引用是否有效）。
@@ -564,7 +564,7 @@ def build_agent_graph(
                 return {"final_answer": "", "refusal": True, "status": _final_status(state),
                         "answer_source": ""}
         else:
-            # ---- TASK-124 人在环（HITL）：仅证据路径可挂起 ----
+            # ----  人在环（HITL）：仅证据路径可挂起 ----
             # 位置很关键：必须在**任何副作用之前**（这里指 LLM 流式输出与 token 事件）。
             # LangGraph 恢复时会**从头重跑整个节点**，若在 interrupt() 之前已经 emit 过
             # token，恢复后会重复发一遍——前端会看到答案被拼两次。
@@ -643,7 +643,7 @@ def build_agent_graph(
     def entry_router(state: AgentState, config: RunnableConfig) -> str:
         """入口路由。
 
-        TASK-101：注入 `thinker` 时走 ReAct（think → act → observe → think），
+        注入 `thinker` 时走 ReAct（think → act → observe → think），
         否则维持既有的 plan → tool → reflect 计划式路径。
         **模式由配置决定**，不由请求决定——避免"同一个问题这次走哪条路"不可预测。
         """
@@ -691,7 +691,7 @@ def build_agent_graph(
 
     def reflect_router(state: AgentState, config: RunnableConfig) -> str:
         action = state.get("next_action", "answer")
-        # TASK-101：react 模式下不要走 replan/plan 路径——那是计划式的产物。
+        # react 模式下不要走 replan/plan 路径——那是计划式的产物。
         # 回到 think 让 LLM 基于最新观察重新决策（这才是 ReAct 的循环）。
         if (config.get("configurable") or {}).get("thinker") is not None:
             if action in ("continue", "replan"):
@@ -724,7 +724,7 @@ def build_agent_graph(
         {"think": "think", "tool": "tool", "replan": "replan", "answer": "answer"},
     )
     graph.add_edge("replan", "plan")
-    # TASK-113：answer 之后接独立校验节点。图里 answer→END 的直连改成条件边，
+    # answer 之后接独立校验节点。图里 answer→END 的直连改成条件边，
     # 未启用校验时（verifier=None）verify_node 直接放行，仍等价于原来的一步到底。
     graph.add_conditional_edges(
         "answer", verify_router, {"verify": "verify", "end": END}
@@ -732,8 +732,8 @@ def build_agent_graph(
     graph.add_conditional_edges(
         "verify", verify_result_router, {"replan": "replan", "end": END}
     )
-    # TASK-115：checkpointer 是断点续跑 / 多轮状态继承 / 完整回放 / HITL 的共同前提。
+    # checkpointer 是断点续跑 / 多轮状态继承 / 完整回放 / HITL 的共同前提。
     # 刻意**不加** `interrupt_before`：那是**静态**中断（指定节点每次都挂起），
-    # 而 HITL 需要的是「低置信才挂起」的条件性中断——必须由 TASK-124 在
+    # 而 HITL 需要的是「低置信才挂起」的条件性中断——必须由  在
     # answer 节点内部动态调用 `interrupt()`，静态声明会让该节点每次都停。
     return graph.compile(checkpointer=checkpointer)

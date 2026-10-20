@@ -1,6 +1,6 @@
-"""TASK-142：ACL 下推与超额取数。
+"""ACL 下推与超额取数。
 
-要解决的问题（DEF-R-6）：三个检索后端都是"先按分数取 N 条，再过滤"。
+要解决的问题：三个检索后端都是"先按分数取 N 条，再过滤"。
 加入 ACL 后，排名靠前的不可见文档会**占满 top-k 名额**：
 
     用户可读 10 份中的 7 份，不可读的 3 份恰好排在前面
@@ -130,7 +130,7 @@ class TestVisibleEvidenceNotStarved:
         allowed = {"visible1", "visible2"}
         after = [d for d, _ in raw if d in allowed]
         # 固定 4 倍只取到 20 条，全被不可见文档占据
-        assert after == [], "这正是 DEF-R-6：后过滤把可见证据吃光了"
+        assert after == [], "这正是 后过滤把可见证据吃光了"
 
     def test_pushdown_returns_visible_evidence(self):
         """正例（改造后）：允许清单下推 → 不可见文档不参与竞争。"""
@@ -147,7 +147,7 @@ class TestVisibleEvidenceNotStarved:
 
 
 class TestFaissIterativeOverfetch:
-    """FAISS 不支持表达式过滤，靠迭代扩取兜住（TASK-142 第一道防线）。"""
+    """FAISS 不支持表达式过滤，靠迭代扩取兜住（ 第一道防线）。"""
 
     def _store(self, tmp_path, hidden: int, visible: int):
         from app.domain.schemas import Chunk

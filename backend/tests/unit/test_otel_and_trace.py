@@ -1,6 +1,6 @@
-"""TASK-132：OTel 接入 + trace 断链修复。
+"""OTel 接入 + trace 断链修复。
 
-DEF-A-7 记录的问题：`contextvars` 不随 `threading.Thread` 传播（Python 既定行为），
+ 记录的问题：`contextvars` 不随 `threading.Thread` 传播（Python 既定行为），
 导致图内所有日志的 trace_id 为空（`get_trace_id()` 会**新生成**一个），
 一次请求的日志在日志平台上被切成两段互不相关的记录。
 """

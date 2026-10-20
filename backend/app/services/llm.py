@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Iterator, Protocol
 
 from app.core.envelope import ErrCode
+from app.services.upstream import CircuitOpenError, bulkhead
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class LLMError(Exception):
 
 @dataclass
 class TokenUsage:
-    """单次调用的 token 用量（TASK-120）。
+    """单次调用的 token 用量。
 
     `estimated=True` 表示供应商未返回 usage、按字符数估算——**必须显式标注**，
     否则成本看板会把估算值当真值做归集与告警。
@@ -57,7 +58,7 @@ class LLM(Protocol):
 
     def stream(self, prompt: str) -> Iterator[str]: ...
 
-    # 最近一次调用的 token 用量（TASK-120）。刻意**不改 generate/stream 签名**：
+    # 最近一次调用的 token 用量。刻意**不改 generate/stream 签名**：
     # 那是 6 处调用方的公共契约，改返回值会让所有适配器一起返工；改为在实例上
     # 暴露只读属性，调用方用 getattr(llm, "last_usage", None) 兜底即可。
     last_usage: TokenUsage
@@ -79,7 +80,7 @@ class QwenLLM:
         self.temperature = temperature
         self._max_retries = max_retries
         self._timeout_s = timeout_s
-        # 最近一次调用的 token 用量（TASK-120），由 _call_stream 在流结束时刷新
+        # 最近一次调用的 token 用量，由 _call_stream 在流结束时刷新
         self._last_usage = TokenUsage()
 
     @property
@@ -114,24 +115,27 @@ class QwenLLM:
         for attempt in range(self._max_retries):
             try:
                 get_monitor().record_call(self.model)
-                responses = Generation.call(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.temperature,
-                    result_format="message",
-                    stream=True,
-                    incremental_output=True,
-                    api_key=self._api_key,
-                    timeout=self._timeout_s,
-                )
-                for resp in responses:
-                    if resp.status_code != 200:
-                        self._raise_for(resp.status_code, resp.message)
-                    chunk = resp.output.choices[0].message.content
-                    if chunk:
-                        produced.append(chunk)
-                        yield chunk
-                # TASK-120：流式末块才带 usage；读不到则用累计文本估算
+                # 批次 2：上游隔离仓。许可覆盖整段流式消费——并发控制的对象是
+                # "在飞的上游调用"，不是单次 HTTP 往返。熔断打开时快速失败不占线程。
+                with bulkhead("llm").acquire(timeout_s=self._timeout_s):
+                    responses = Generation.call(
+                        model=self.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.temperature,
+                        result_format="message",
+                        stream=True,
+                        incremental_output=True,
+                        api_key=self._api_key,
+                        timeout=self._timeout_s,
+                    )
+                    for resp in responses:
+                        if resp.status_code != 200:
+                            self._raise_for(resp.status_code, resp.message)
+                        chunk = resp.output.choices[0].message.content
+                        if chunk:
+                            produced.append(chunk)
+                            yield chunk
+                # 流式末块才带 usage；读不到则用累计文本估算
                 self._last_usage = self._extract_usage(resp, prompt, "".join(produced))
                 # 平台配额此前只记调用次数（record_call 的 tokens 形参从未被使用），
                 # 现在把真实 token 补记上去，成本才能按模型归集。
@@ -146,6 +150,9 @@ class QwenLLM:
                 return
             except LLMError:
                 raise
+            except CircuitOpenError as exc:
+                # 熔断打开不重试：打开期间重试只会放大等待，降级交由上层决定
+                raise LLMError(ErrCode.DEPENDENCY_UNAVAILABLE, f"上游熔断（{exc.upstream}），请稍后重试") from exc
             except Exception as exc:  # noqa: BLE001 - 网络类异常走重试
                 last_error = exc
                 if attempt == self._max_retries - 1:
@@ -185,7 +192,7 @@ class MockLLM:
     _NO_INFO = "知识库无相关内容"
 
     def __init__(self):
-        # Mock 模式也要有 usage，否则配额结算路径在测试里走不通（TASK-120）
+        # Mock 模式也要有 usage，否则配额结算路径在测试里走不通
         self._last_usage = TokenUsage()
 
     @staticmethod
@@ -214,7 +221,7 @@ class MockLLM:
             if (len(t) >= 2 or t.isascii()) and t not in self._STOPWORDS and t.isalnum()
         }
 
-    # ---- 阶段 4：Query 预处理类提示词的确定性应答 ----
+    # ---- Query 预处理类提示词的确定性应答 ----
 
     _GREETINGS = ("你好", "您好", "在吗", "你是谁", "谢谢", "再见", "hi", "hello")
 

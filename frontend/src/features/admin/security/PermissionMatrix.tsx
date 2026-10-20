@@ -1,10 +1,10 @@
-/** 角色 × 能力矩阵（stage-9 §2.3）。
+/** 角色 × 能力矩阵（）。
  *
  * 此前矩阵只存在于文档里，代码里既没有后端端点也没有前端组件——管理员
  * 只能靠猜来授权。现在数据源是 `GET /admin/users/permission-matrix`，
  * 策略声明只有后端一份，改权限不用改两处。
  *
- * 可访问性硬约束（stage-9 §12）：
+ * 可访问性硬约束（）：
  * - 可访问性**不能只靠颜色表达**，每格同时给 ✓ / ✗ 文字标记；
  * - 用真 `<table>` + `<th scope>`，屏幕阅读器能读出表头与行列关系；
  * - `enforced` 如实标注：declared = 管理台约定，当前后端未做角色门禁。
@@ -50,7 +50,7 @@ export function PermissionMatrix() {
     let alive = true;
     (async () => {
       try {
-        // TASK-160：/admin/* 需要管理员身份；裸 fetch 会 403
+        // /admin/* 需要管理员身份；裸 fetch 会 403
         const resp = await fetch("/admin/users/permission-matrix", {
           headers: authHeaders(),
         });

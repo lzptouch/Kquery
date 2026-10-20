@@ -1,4 +1,4 @@
-"""TASK-178：读写锁 + BM25 并发检索。
+"""读写锁 + BM25 并发检索。
 
 要证明的两件事：
 1. `ReadWriteLock` 语义正确（多读并发、写独占、写者优先不饥饿）；
@@ -144,7 +144,7 @@ class TestBm25ConcurrentSearch:
         elapsed = time.perf_counter() - t0
 
         assert in_flight["peak"] >= 2, (
-            "并发检索未重叠（读锁退化成互斥锁）——这正是 TASK-178 要修的问题"
+            "并发检索未重叠（读锁退化成互斥锁）——这正是  要修的问题"
         )
         assert elapsed < sleep_s * 2.2, (
             f"3 个并发检索串行执行了：耗时 {elapsed:.3f}s ≈ 3 × {sleep_s}s"

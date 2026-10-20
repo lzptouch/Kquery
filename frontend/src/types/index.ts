@@ -1,4 +1,4 @@
-/** 与后端 API 契约对应的类型定义（阶段 1 前端规范 §4）。 */
+/** 与后端 API 契约对应的类型定义。 */
 
 export interface Evidence {
   rank: number;
@@ -8,21 +8,21 @@ export interface Evidence {
   source: string;
   doc_id: string;
   filename: string;
-  /** keyword（关键词路）/ vector（语义路）/ both（两路融合命中）/ graph / image（阶段 7） */
+  /** keyword（关键词路）/ vector（语义路）/ both（两路融合命中）/ graph / image */
   source_route?: "keyword" | "vector" | "both" | "graph" | "image" | "tool";
   modality?: string;
   chunker?: string;
-  /** 阶段 4：该证据由哪条改写/子问题带回 */
+  /** 该证据由哪条改写/子问题带回 */
   origin?: { kind: string; text: string } | null;
-  /** 阶段 5：是否被采纳进生成上下文（未采纳也返回） */
+  /** 是否被采纳进生成上下文（未采纳也返回） */
   used?: boolean;
   rejected_reason?: string;
-  /** 阶段 7：图像证据资源地址 / 图谱关系支撑块 */
+  /** 图像证据资源地址 / 图谱关系支撑块 */
   uri?: string;
   source_chunks?: string[];
 }
 
-// ---------- 阶段 7：GraphRAG 与多模态 ----------
+// ---------- GraphRAG 与多模态 ----------
 
 export interface GraphEntity {
   name: string;
@@ -86,7 +86,7 @@ export interface MediaItem {
   score: number;
 }
 
-// ---------- 阶段 5：CRAG 与答案判定 ----------
+// ---------- CRAG 与答案判定 ----------
 
 export type Verdict = "answered" | "refused";
 export type RefusalReason = "no_content" | "insufficient_evidence" | "permission_denied" | "";
@@ -129,7 +129,7 @@ export interface FeedbackTicket {
   resolution: string;
 }
 
-// ---------- 阶段 4：Query 预处理 ----------
+// ---------- Query 预处理 ----------
 
 export interface Rewrite {
   type: "original" | "rewrite" | "hyde" | "stepback";
@@ -186,9 +186,9 @@ export interface QueryPattern {
   avg_elapsed_ms: number;
 }
 
-/** 检索统计（阶段 2）：四个计数 + 四段耗时。
+/** 检索统计：四个计数 + 四段耗时。
  *
- * 后端同时下发平铺字段（内部口径）与嵌套对象（前端规范口径）：
+ * 后端同时下发平铺字段（内部口径）与嵌套对象：
  * `latency_ms` / `candidates` 是文档要求的前端消费形态。
  */
 export interface RetrievalStats {
@@ -225,7 +225,7 @@ export interface RetrievalStats {
   reranked_flag?: boolean;
 }
 
-/** 幻觉自检明细（阶段 5 §8.2 SELF_CHECK 实体） */
+/** 幻觉自检明细 */
 export interface SelfCheckInfo {
   method: string;
   checked_claims: number;
@@ -272,7 +272,7 @@ export interface Envelope<T> {
   meta: { trace_id: string; elapsed_ms: number };
 }
 
-/** 当前身份（TASK-160 前端配套）。token 非空时后端只认令牌。 */
+/** 当前身份（ 前端配套）。token 非空时后端只认令牌。 */
 export interface Principal {
   user_id: string;
   tenant_id: string;
@@ -333,23 +333,23 @@ export interface ChatMessage {
   regenerated?: boolean;
   unsupportedClaimsCount?: number;
   crag?: CragInfo | null;
-  /** 阶段 5：本次未做答案校验（评分器/自检器降级），置信度应显示为"未知" */
+  /** 本次未做答案校验（评分器/自检器降级），置信度应显示为"未知" */
   unvalidated?: boolean;
   /** 被剔除的无据声明原文（前端要告诉用户剔除了哪句） */
   removedClaims?: string[];
-  /** CRAG 精炼前后对比（stage-5 §三） */
+  /** CRAG 精炼前后对比（ §三） */
   refineFrom?: string;
   refineTo?: string;
-  // 阶段 6：Agent 轨迹
+  // Agent 轨迹
   agent?: AgentTrace | null;
   traceNodes?: TraceNode[]; // 流式期间的实时轨迹
   incomplete?: boolean;
   fuseReason?: string;
-  /** 阶段 9：因权限被过滤的结果数（只报数量，绝不展示被过滤文档的元信息） */
+  /** 因权限被过滤的结果数（只报数量，绝不展示被过滤文档的元信息） */
   aclFiltered?: number;
 }
 
-// ---------- 阶段 6：Agentic RAG ----------
+// ---------- Agentic RAG ----------
 
 export interface AgentPlanStep {
   step_index: number;
@@ -420,7 +420,7 @@ export interface AgentMetrics {
   abnormal: { ts: number; session_id: string; kind: string; detail: string }[];
 }
 
-// ---------- 阶段 9：企业护栏 ----------
+// ---------- 企业护栏 ----------
 
 export interface UserRecord {
   user_id: string;
@@ -565,7 +565,7 @@ export interface ProbeResult {
   hits: ProbeHit[];
 }
 
-// ---------- 阶段 3：入库任务 ----------
+// ---------- 入库任务 ----------
 
 /** 文件级 7 态 */
 export type FileStage =
@@ -609,7 +609,7 @@ export interface ChunkPolicy {
   params: Record<string, number>;
 }
 
-// ---------- 阶段 3：文档预览 ----------
+// ---------- 文档预览 ----------
 
 export interface ChunkListItem {
   chunk_id: string;

@@ -1,4 +1,4 @@
-"""向量索引：FAISS IndexFlatIP + 元数据落盘（阶段 1 README §3.2 / §4.5）。
+"""向量索引：FAISS IndexFlatIP + 元数据落盘。
 
 - 向量已归一化，IndexFlatIP 的内积即余弦相似度；
 - 索引与块元数据一同落盘（可重建，由原始文件重建）；
@@ -112,7 +112,7 @@ class VectorStore:
     ) -> list[tuple[Chunk, float]]:
         """余弦相似度检索（向量已归一化）。
 
-        TASK-142：FAISS 不支持表达式过滤，因此靠**迭代扩取**兜住后过滤的名额损耗
+        FAISS 不支持表达式过滤，因此靠**迭代扩取**兜住后过滤的名额损耗
         （固定 4 倍在"可见文档排名靠后"时会取不满，见 filters.py 的说明）。
         """
         if self._index.ntotal == 0:
@@ -161,7 +161,7 @@ class VectorStore:
         return results
 
     def delete_doc(self, doc_id: str) -> int:
-        """按文档删除其全部块（阶段 1 直接重建索引，数据量小可接受）。"""
+        """按文档删除其全部块。"""
         with self._lock:
             keep_ids = [cid for cid in self._order if self._chunks[cid].doc_id != doc_id]
             removed = len(self._order) - len(keep_ids)
@@ -169,7 +169,7 @@ class VectorStore:
                 return 0
             for cid in set(self._order) - set(keep_ids):
                 self._chunks.pop(cid, None)
-            # 重建索引：从磁盘向量重取代价高，阶段 1 直接用空索引 + 全量重嵌入由上层处理；
+            # 重建索引：从磁盘向量重取代价高， 直接用空索引 + 全量重嵌入由上层处理；
             # 这里采用重建索引矩阵的方式（IndexFlat 支持 reconstruct）。
             new_index = faiss.IndexFlatIP(self._dim)
             if keep_ids:
@@ -195,7 +195,7 @@ class VectorStore:
     def delete_doc_versions(self, doc_id: str, keep_versions: int = 3) -> int:
         """删除该文档**最旧的**若干历史版本块，只保留最近 `keep_versions` 版。
 
-        阶段 3 §6.3 的"保留 3 版可回滚"落点。返回删除条数。
+         的"保留 3 版可回滚"落点。返回删除条数。
         """
         versions = self.doc_versions(doc_id)
         if len(versions) <= keep_versions:

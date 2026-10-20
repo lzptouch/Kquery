@@ -13,6 +13,8 @@ from typing import Protocol
 
 import numpy as np
 
+from app.services.upstream import CircuitOpenError, bulkhead
+
 logger = logging.getLogger(__name__)
 
 
@@ -104,12 +106,14 @@ class DashScopeEmbeddings:
         for attempt in range(self._max_retries):
             try:
                 get_monitor().record_call(self.model)
-                resp = dashscope.TextEmbedding.call(
-                    model=self.model,
-                    input=texts,
-                    dimension=self.dim,
-                    api_key=self._api_key,
-                )
+                # 批次 2：上游隔离仓（熔断打开时 CircuitOpenError 直接上抛，不重试）
+                with bulkhead("embedding").acquire(timeout_s=30.0):
+                    resp = dashscope.TextEmbedding.call(
+                        model=self.model,
+                        input=texts,
+                        dimension=self.dim,
+                        api_key=self._api_key,
+                    )
                 if resp.status_code == 200:
                     items = sorted(resp.output["embeddings"], key=lambda x: x["text_index"])
                     return [item["embedding"] for item in items]
@@ -117,6 +121,8 @@ class DashScopeEmbeddings:
                 # 限流 / 超时类错误退避重试；其余直接抛出
                 if "Throttl" not in str(resp.message) and resp.status_code not in (429, 500, 503):
                     raise last_error
+            except CircuitOpenError:
+                raise
             except Exception as exc:  # noqa: BLE001 - 统一转为重试或上抛
                 last_error = exc
                 if attempt == self._max_retries - 1:

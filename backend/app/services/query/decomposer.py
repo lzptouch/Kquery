@@ -1,4 +1,4 @@
-"""多跳问题拆解与数据源路由（阶段 4 §3.5 / §3.6）。
+"""多跳问题拆解与数据源路由。
 
 - 只在特定意图触发（compare / summarize）：默认不拆、按需拆，
   强制拆解会让简单问题消耗 2~3 倍 LLM 调用；
@@ -78,6 +78,6 @@ def mark_inactive_sources_skipped(sub_questions: list[SubQuestion]) -> list[SubQ
     for sq in sub_questions:
         if sq.expected_source not in ACTIVE_SOURCES and not sq.skipped:
             sq.skipped = True
-            sq.skip_reason = f"数据源 {sq.expected_source} 尚未接入（阶段 6/7 引入），已按 vector 兜底检索"
+            sq.skip_reason = f"数据源 {sq.expected_source} 尚未接入，已按 vector 兜底检索"
             sq.expected_source = "vector"
     return sub_questions

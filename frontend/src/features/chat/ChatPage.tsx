@@ -1,6 +1,6 @@
 /** 对话页（/）：问答主流程 —— 提问 → Agent 轨迹 → 流式渲染 → 引用跳转。
  *
- * 阶段 6 增量（前端规范 §1 / §2）：
+ *  增量：
  * - 默认走 Agent 状态机（mode=agent），实时渲染 plan/tool/reflect 轨迹；
  * - 多轮会话：侧边栏列表/新建/切换/重命名/删除，证据跨轮累积；
  * - 熔断 → 黄色"已达上限"提示（不完整的成功，不是错误）。
@@ -67,7 +67,7 @@ export function ChatPage() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
-  // 限流倒计时：1s 刷新，归零自动重试一次（阶段 2 §2.3）
+  // 限流倒计时：1s 刷新，归零自动重试一次
   useEffect(() => {
     if (!rateLimit) return;
     if (rateLimit.secondsLeft <= 0) {
@@ -136,7 +136,7 @@ export function ChatPage() {
           setMessages((prev) =>
             prev.map((m) => (m.id === assistantId ? { ...m, evidence: [...m.evidence, ev] } : m)),
           ),
-        // ---- 检索过程与自反思（阶段 2/5）----
+        // ---- 检索过程与自反思----
 // 这四个 handler 此前一律写成空函数，导致 RetrievalTracePanel / 缓存徽章 /
 // CRAG 分支高亮 / ConfidenceBar 在真实问答中全部拿不到数据（死代码）。
         onRetrievalStats: (stats) =>
@@ -388,7 +388,7 @@ export function ChatPage() {
               [#{preview.rank}] {preview.source}
             </h3>
             <p className="trace-id mono">chunk_id: {preview.chunk_id}</p>
-            {/* 图像证据大图查看器：保留溯源信息（阶段 7 §4.2） */}
+            {/* 图像证据大图查看器：保留溯源信息 */}
             {preview.modality === "image" && preview.uri && (
               <div style={{ textAlign: "center", marginBottom: 12 }}>
                 <img

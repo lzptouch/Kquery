@@ -58,6 +58,10 @@ def web_page(page):
         pytest.skip(f"服务未启动（端口 {missing} 不通），跳过 UI 测试")
     page.goto(WEB, wait_until="domcontentloaded")
     page.wait_for_timeout(1500)
+    # 环境护栏：5173 可能是本机其它项目的 dev server（KAiSupport 等长期占用）。
+    # 端口通不代表是 Kquery——验证页面标题，不是就跳过而不是整片误红。
+    if "Kquery" not in page.title():
+        pytest.skip(f"5173 上的应用不是 Kquery（title={page.title()!r}），跳过 UI 测试")
     if page.query_selector('input[name="password"]') is not None:
         page.fill('input[name="username"]', os.environ.get("KQUERY_TEST_ADMIN_USER", "admin"))
         page.fill('input[name="password"]', os.environ.get("KQUERY_TEST_ADMIN_PASSWORD", "Kq@dmin2026"))

@@ -143,7 +143,7 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
               未精排
             </span>
           )}
-          {/* 循环计数与熔断标识（阶段 6 §1.3） */}
+          {/* 循环计数与熔断标识 */}
           {message.agent && message.agent.iterations > 0 && (
             <span className="trace-id mono" title={`迭代 ${message.agent.iterations}/${message.agent.max_iterations}`}>
               🔁 循环 {message.agent.iterations} 轮

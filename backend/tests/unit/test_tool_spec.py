@@ -1,4 +1,4 @@
-"""TASK-104：工具 Schema 化与结构化入参。
+"""工具 Schema 化与结构化入参。
 
 改造前：`Tool` 协议只有 `run(query, tenant_id)`，目录里只有 name + description，
 模型无法表达"要 8 条""只看这篇文档"，只能把参数写进 query 句子靠下游猜；
@@ -184,7 +184,7 @@ class TestRegistryIntegration:
         class Strict:
             name = "strict"
             description = "严格"
-            # 必须声明 danger：未声明的工具按 write 处理（TASK-125 的失败安全取向），
+            # 必须声明 danger：未声明的工具按 write 处理（ 的失败安全取向），
             # 会在参数校验之前就被审批闸门拦下
             danger = "read_only"
 

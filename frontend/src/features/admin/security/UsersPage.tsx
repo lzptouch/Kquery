@@ -1,4 +1,4 @@
-/** 用户与权限（阶段 9 前端规范 §二）：列表 + 行内编辑角色/组/状态 + 重置口令。 */
+/** 用户与权限：列表 + 行内编辑角色/组/状态 + 重置口令。 */
 import { useCallback, useEffect, useState } from "react";
 import { editUser, fetchUsers, setUserPassword } from "../../../lib/api-client";
 import type { UserRecord } from "../../../types";

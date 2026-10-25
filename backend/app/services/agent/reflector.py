@@ -1,4 +1,4 @@
-"""Reflect 节点（阶段 6 §4.4）。
+"""Reflect 节点。
 
 三道防线（在图路由层强制执行，反射结果只是输入）：
 1. 熔断：iteration ≥ max_iterations → 强制 answer（不调 LLM）；
@@ -42,7 +42,7 @@ REFLECT_PROMPT = """你是证据审查员。评估当前累计证据是否足够
 """
 
 # 检索相关度参考线：语料标定中 top_score ≥ 0.2 即为相关证据（见 config CRAG 标定口径）。
-# 仅作为**参考信息**呈现给模型，不再用于抬升分数——TASK-110 修复前它会把任何弱证据
+# 仅作为**参考信息**呈现给模型，不再用于抬升分数—— 修复前它会把任何弱证据
 # 强行抬到 0.65（> ANSWER_THRESHOLD），使 replan 分支在生产中永不执行。
 RETRIEVAL_FLOOR_SCORE = 0.2
 
@@ -92,7 +92,7 @@ class LLMReflector:
                 "next_action": "answer" if evidence else "replan",
                 "reason": "反思服务异常，按证据有无兜底",
             }
-        # TASK-110：此处原本有「检索信号兜底」把 top_score≥0.2 的判定**强制抬到 0.65**
+        # 此处原本有「检索信号兜底」把 top_score≥0.2 的判定**强制抬到 0.65**
         # （> ANSWER_THRESHOLD=0.6）。由于 graph.py 随后还有对称纠正（高分+有证据 →
         # 一律改 answer），结果是：只要检索到任意一条相关度 ≥0.2 的证据，replan 分支
         # 在生产中**永不执行**，熔断率指标恒为 0，问题被彻底掩盖。

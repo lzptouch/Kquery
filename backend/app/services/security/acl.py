@@ -1,4 +1,4 @@
-"""文档级 ACL（阶段 9 §3）。
+"""文档级 ACL。
 
 判定顺序（短路，不可调换）：
 1. 租户不匹配 → 拒绝（跨租户一律不可见）；
@@ -65,7 +65,7 @@ class ACLService:
         # doc_id → {allow, deny, is_public, updated_at, updated_by}
         self._acl: dict[str, dict] = {}
         self._directory = users if hasattr(users, "all") else _StaticDirectory(users or [])
-        # ACL 全局版本（DEF-R-1）：任何 ACL 写操作递增，供缓存键携带——
+        # ACL 全局版本：任何 ACL 写操作递增，供缓存键携带——
         # 否则权限被撤销后旧缓存仍命中（缓存命中路径跳过检索与 ACL 过滤）
         self._version = 0
         if acl_path.exists():
@@ -79,7 +79,7 @@ class ACLService:
     # ---- 判定 ----
 
     def check(self, principal: Principal, doc: DocumentRecord) -> bool:
-        """判定树（§10.2）：顺序不可调换。"""
+        """判定树：顺序不可调换。"""
         acl = self._acl.get(doc.doc_id, {})
         # 1. 租户闸门
         if doc.tenant_id != principal.tenant_id:
@@ -105,10 +105,10 @@ class ACLService:
         return visible, len(docs) - len(visible)
 
     def visible_doc_ids(self, principal: Principal, docs: list[DocumentRecord]) -> set[str] | None:
-        """当前主体在给定文档集内的可见文档 ID 集合（TASK-142 ACL 下推的输入）。
+        """当前主体在给定文档集内的可见文档 ID 集合（ ACL 下推的输入）。
 
         用于把 ACL 下推到向量库/关键词检索，让不可见文档**不参与 top-k 竞争**
-        （此前是后过滤，不可见文档会占满名额，DEF-R-6）。
+        （此前是后过滤，不可见文档会占满名额，）。
 
         **代价说明**：这是 O(文档数) 的枚举，因此调用方应对大库保持克制——
         返回 None 表示"不建议下推"（此时退回 tenant 粗过滤 + 应用层后过滤）。
@@ -122,6 +122,19 @@ class ACLService:
 
     def get_acl(self, doc_id: str) -> dict:
         return self._acl.get(doc_id, {"allow": [], "deny": [], "is_public": None})
+
+    def remove(self, doc_id: str) -> bool:
+        """删除文档的 ACL 条目（文档删除时联动，对照 KQ-08）。
+
+        同名 doc_id 重新上传时不应继承旧权限——旧 allow 可能越权、旧 deny 可能误伤。
+        """
+        with self._lock:
+            if doc_id not in self._acl:
+                return False
+            self._acl.pop(doc_id)
+            self._version += 1
+            self._save()
+        return True
 
     @property
     def version(self) -> int:
@@ -199,5 +212,9 @@ class ACLService:
         ]
 
     def _save(self) -> None:
+        # 原子写：临时文件 + replace。直接 write_text 时崩溃/并发写会留下半截 JSON，
+        # 而启动校验是"损坏即拒绝启动"——半截文件等于把整个服务打挂。
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(json.dumps(self._acl, ensure_ascii=False), encoding="utf-8")
+        tmp = self._path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._acl, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(self._path)

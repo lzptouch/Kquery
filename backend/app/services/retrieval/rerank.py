@@ -1,4 +1,4 @@
-"""重排（阶段 2 README §3.4）。
+"""重排。
 
 - 生产实现：千问平台 gte-rerank-v2（交叉编码器的托管版本，只走接口不部署）；
 - 测试实现：MockReranker，按 query 与候选的词重叠度打分（0~1 确定性）；
@@ -10,6 +10,7 @@ import time
 from typing import Protocol
 
 from app.services.retrieval.base import FusedCandidate
+from app.services.upstream import CircuitOpenError, bulkhead
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +66,16 @@ class DashScopeReranker:
         for attempt in range(self._max_retries):
             try:
                 get_monitor().record_call(effective_model)
-                resp = dashscope.TextReRank.call(
-                    model=effective_model,
-                    query=query,
-                    documents=documents,
-                    top_n=min(top_n, len(documents)),
-                    return_documents=False,
-                    api_key=self._api_key,
-                )
+                # 批次 2：上游隔离仓。熔断打开抛 RerankError——hybrid 已把它降级为融合序
+                with bulkhead("rerank").acquire(timeout_s=30.0):
+                    resp = dashscope.TextReRank.call(
+                        model=effective_model,
+                        query=query,
+                        documents=documents,
+                        top_n=min(top_n, len(documents)),
+                        return_documents=False,
+                        api_key=self._api_key,
+                    )
                 if resp.status_code != 200:
                     raise RerankError(f"rerank API {resp.status_code}: {resp.message}")
                 ranked: list[FusedCandidate] = []
@@ -83,6 +86,8 @@ class DashScopeReranker:
                 return ranked
             except RerankError:
                 raise
+            except CircuitOpenError as exc:
+                raise RerankError(f"重排上游熔断（{exc.upstream}），本次未精排") from exc
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 if attempt == self._max_retries - 1:

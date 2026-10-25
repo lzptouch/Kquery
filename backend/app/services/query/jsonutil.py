@@ -1,4 +1,4 @@
-"""LLM 输出 JSON 的容错解析（阶段 4 README §4）。
+"""LLM 输出 JSON 的容错解析。
 
 LLM 输出经常"不干净"：markdown 围栏、前后杂文本、注释错位。
 容错链：剥围栏 → 截取首个 { / [ 到末个 } / ] → json.loads → pydantic 校验。

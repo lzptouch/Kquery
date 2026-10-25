@@ -1,4 +1,4 @@
-"""平台侧配额监控（阶段 9 §6.2）。
+"""平台侧配额监控。
 
 **平台侧配额是应用侧配额的上游约束**：应用侧滑动窗口算得再精细，也无法阻止
 整个账号维度被千问平台限流。因此这里记录"全账号对平台的调用量与失败构成"，
@@ -29,7 +29,7 @@ class PlatformQuotaMonitor:
         self._calls = 0
         self._models: dict[str, int] = {}
         self._errors: dict[str, int] = {}
-        # TASK-120：按模型的 token 累计，以及其中"来自字符估算"的部分
+        # 按模型的 token 累计，以及其中"来自字符估算"的部分
         # （成本看板必须能区分真值与估算，否则会用估算数字做归集与告警）
         self._tokens: dict[str, int] = {}
         self._estimated: dict[str, int] = {}
@@ -54,7 +54,7 @@ class PlatformQuotaMonitor:
     def record_call(
         self, model: str = "", tokens: int = 0, estimated: bool = False
     ) -> None:
-        """记录一次上游调用（TASK-120：tokens 此前是声明但从不使用的形参）。
+        """记录一次上游调用（tokens 此前是声明但从不使用的形参）。
 
         `tokens=0` 表示本次未取到 usage（如流式异常路径），按"只记次数"处理；
         `estimated=True` 表示数字来自字符估算，成本看板须能区分口径。
@@ -123,7 +123,7 @@ class PlatformQuotaMonitor:
             "status": status,
             "day": day,
             "models": models,
-            # TASK-120：token 用量与其中的估算部分（成本看板按此区分口径）
+            # token 用量与其中的估算部分（成本看板按此区分口径）
             "tokens": tokens,
             "tokens_estimated": estimated,
             "tokens_total": sum(tokens.values()),

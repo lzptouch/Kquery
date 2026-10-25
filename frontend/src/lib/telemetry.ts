@@ -1,4 +1,4 @@
-/** 前端埋点（stage-0 §10.2）。
+/** 前端埋点（）。
  *
  * 五类事件：page_view / interaction / error / streaming / client_metric。
  * 此前这五类**全部零实现**，导致 §10.1 的 LCP/TTI/首 token/路由切换四个性能预算

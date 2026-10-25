@@ -1,4 +1,4 @@
-/** Query 分析详情面板（阶段 4 前端规范 §2.2）。
+/** Query 分析详情面板。
  *
  * 四段展示：意图（IntentBadge）/ 改写（QueryRewriteDiff）/ 子问题（SubQuestionList）/ 数据源路由。
  * 降级如实标注（哪一步未生效），提示强度克制（面板内标注，不弹窗）。

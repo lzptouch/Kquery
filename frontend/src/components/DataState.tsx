@@ -1,4 +1,4 @@
-/** 四态容器（stage-0 §三：loading / empty / error / data）。
+/** 四态容器（ §三：loading / empty / error / data）。
  *
  * 此前 17 个页面里 11 个缺 loading、6 个缺 error、4 个缺 empty，还有两处
  * （GraphPage、ReportsPage）把"加载中"渲染成"暂无数据"——管理员会据此以为

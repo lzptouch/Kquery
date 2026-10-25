@@ -1,4 +1,4 @@
-"""Query 预处理的数据模型（阶段 4 README §5）。
+"""Query 预处理的数据模型。
 
 把"用户原话到检索输入"之间的全部加工过程固化为**可回放的查询分析记录**：
 改写与子问题内嵌于分析记录（只能依附某次分析存在，不独立成表）。
@@ -6,7 +6,7 @@
 """
 from pydantic import BaseModel, Field
 
-# 意图类型（阶段 4 §3.1）
+# 意图类型
 INTENT_CHITCHAT = "chitchat"
 INTENT_FACT_QA = "fact_qa"
 INTENT_COMPARE = "compare"
@@ -21,7 +21,7 @@ DECOMPOSE_INTENTS = {INTENT_COMPARE, INTENT_SUMMARIZE}
 # 改写类型
 REWRITE_ORIGINAL = "original"
 
-#: 费用估算口径（stage-4 §7「成本是最容易被忽略的优化项」）：
+#: 费用估算口径（「成本是最容易被忽略的优化项」）：
 #: 一次预处理调用（意图 / HyDE / Step-Back / Fusion / 拆解）平均约 600 输入 token，
 #: 按 qwen-turbo 输入 0.0007 元 / 千 token 折算。改价格或换模型档位时同步这两个常量。
 ESTIMATED_TOKENS_PER_CALL = 600
@@ -73,7 +73,7 @@ class QueryAnalysis(BaseModel):
     degraded: list[str] = Field(default_factory=list)  # 哪一步降级了：intent / expansion / decompose
     elapsed_ms: int = 0
     llm_calls: int = 0  # 预处理的大模型调用次数（成本项）
-    #: 预估费用（元）。stage-4 §7 强调"成本是最容易被忽略的优化项"——
+    #: 预估费用（元）。 强调"成本是最容易被忽略的优化项"——
     #: 没有这个数字，"关掉 HyDE 省了多少钱"根本没法回答，调参就只能凭感觉。
     #: 按 qwen-turbo 单价估算，不同模型档位会不同，改价格请同步这里。
     cost: float = 0.0

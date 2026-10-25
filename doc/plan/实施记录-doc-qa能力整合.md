@@ -340,6 +340,42 @@ doc-qa（DeepDOC ONNX）与旧版计划文档的措辞里。本次做的是**把
 
 ---
 
+## 五之七、与远端「高并发」分支的合并（2026-10-26）
+
+本地 `main`（doc-qa 能力整合）与远端 `origin/main`（高并发：PipelineExecutor /
+背压 / single-flight / 缓存维度签名）各自前进，**两边都必须保留**，
+因此做的是**合并**（merge commit，两段历史都在）而不是 rebase。
+
+### 17 个冲突文件的处理原则
+
+| 冲突点 | 本地 | 远端 | 合并结果 |
+|---|---|---|---|
+| 语义缓存隔离维度 | `scope`（F4 快问 doc_id 维度） | `signature`（KQ-04 主体/权限/版本/配置签名） | **两个维度都留**，近似命中要同时满足租户 + 签名 + 范围；Redis 版缓存也补上 `signature`（否则生产 Redis 部署会丢掉远端的隔离闸） |
+| 缓存键 | `make_cache_key(..., scope=doc_id)` | `_cache_dims()` 返回 (digest, signature) | `_cache_key` 两者都用：键带 scope，签名单独传给近似命中比对 |
+| 问答端点 | 同步直调 `scoped.ask` | `executor.run_async(...)`（阻塞调用挪线程池） | 用 executor 版并补回 `doc_id=req.doc_id`（快问范围限定） |
+| SSE 流式 | 内联生成器 | 抽成 `_stream_response(executor, factory, ...)`（背压/心跳/断线取消） | 用远端抽出的公共包装，factory 里补回 `doc_id` 与 F5 的 `_auto_title` |
+| 缓存命中重放 | 内联 `followups` 事件 | 抽成 `_cached_stream_events()` | 用远端抽出的函数，**在函数内补回 `followups` 事件**（否则缓存命中看不到追问） |
+| ACL 过滤 | 快问 `quick_` 前缀放行 | 请求级记忆化 `memo` | 两者并存（放行 + 记忆化） |
+| 依赖导入 | 简单 import | 多功能 import（audit_admin / enforce_rate_limit / get_principal） | 取远端（其代码确实用到这些） |
+| `.env.example` 的 `AUTH_ENABLED` | `false`（本地开发档） | `true`（KQ-03 安全默认） | 取远端：示例配置必须是安全默认 |
+| README | 阶段进度 + doc-qa 整合段 | 并发与容量 + 功能总览 | 两边都保留（以本地为底，插入远端两节） |
+| vite.config / sse-client / ChatInput / StreamText | 功能更全（F1/F2/F4 增量） | 旧版 | 取本地 |
+
+### 合并后的验证
+
+| 项 | 结果 |
+|---|---|
+| 后端 pytest | **896 passed / 6 skipped**（合并前 870 + 远端 26） |
+| 前端 vitest | **39 passed** |
+| `ruff` / `tsc` / `vite build` | 全绿 |
+| Docker 栈 | 5 个容器 healthy |
+| 冒烟 | **81/81** |
+| 端点全扫描 | 80 个端点 · 0 个 5xx |
+| 浏览器端到端 | **53/53** |
+| 功能抽查 | 快问（会话维度，跨会话 3004 拒绝）/ Agent SSE（含 followups）/ 云端语音转写 均正常 |
+
+---
+
 ## 六、遗留与后续
 
 | 项 | 说明 |

@@ -1,4 +1,4 @@
-"""Agent 三预算治理（TASK-121）。
+"""Agent 三预算治理。
 
 此前 Kquery 只有「轮数」一个维度有上限（iteration / no_progress / step 数），
 **没有任何与资源消耗相关的闸门**：
@@ -6,7 +6,7 @@
 - 无 token 预算 → 一个"反复重规划"的 Agent 可以烧掉任意额度；
 - 无成本预算 → 换更贵的模型后无人察觉；
 - 无整体 deadline → 上游卡死时请求永久挂起（`runner.py` 的 `events.get()`
-  无 timeout，DEF-A-5）。
+  无 timeout，）。
 
 本模块提供三预算的统一记账与判定。设计原则：
 
@@ -41,7 +41,7 @@ class AgentBudget:
     exhausted_reason: str = ""
 
     def reset_clock(self) -> None:
-        """重置计时（用于从 checkpoint 恢复后续跑，见 TASK-124 的 resume 路径）。"""
+        """重置计时（用于从 checkpoint 恢复后续跑，见  的 resume 路径）。"""
         self.started_at = time.monotonic()
 
     # ---- 查询 ----

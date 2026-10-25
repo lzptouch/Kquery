@@ -1,6 +1,6 @@
-"""检索过滤条件与 ACL 下推（TASK-142）。
+"""检索过滤条件与 ACL 下推。
 
-## 要解决的问题（DEF-R-6：后过滤吃掉 top-k 名额）
+## 要解决的问题（后过滤吃掉 top-k 名额）
 
 三个检索后端都是**先按分数取 N 条，再在应用层过滤 tenant/doc**。加入 ACL 后
 这个顺序会出问题：
@@ -51,7 +51,7 @@ class RetrievalFilters:
     tenant_id: str = ""
     doc_id: str | None = None          # 单文档检索（文档内 probe）
     visible_doc_ids: set[str] | None = None  # ACL 允许清单（None = 不限制）
-    current_version_only: bool = True   # 只召回当前索引版本（P0-7）
+    current_version_only: bool = True   # 只召回当前索引版本
 
     def allows(self, doc_id: str, tenant_id: str) -> bool:
         """应用层判定（第一道防线的过滤谓词）。"""

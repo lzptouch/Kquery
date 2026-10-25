@@ -52,7 +52,7 @@ jobs:
           path: backend/coverage.xml
           if-no-files-found: error
 
-  # 弱断言护栏：文档 DEF-E-9 记录的测试质量问题，靠静态检查长期拦住
+  # 弱断言护栏：文档  记录的测试质量问题，靠静态检查长期拦住
   test-quality:
     name: test-quality
     runs-on: ubuntu-latest

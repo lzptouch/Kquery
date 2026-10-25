@@ -34,7 +34,7 @@ cd backend && uv run pytest --cov=app                # 带覆盖率（门槛 80%
 cd backend && uv run ruff check app tests            # 静态检查
 ```
 
-当前 **870 个用例**（后端）+ **39 个前端用例**（vitest）+ **53 项浏览器端到端断言**，覆盖率 85%。CI 见 `.github/workflows/ci.yml`（Linux 上跑真实 Milvus Lite，Windows 自动回退 FAISS）。
+当前 **896 个用例**（后端）+ **39 个前端用例**（vitest）+ **53 项浏览器端到端断言**，覆盖率 85%。CI 见 `.github/workflows/ci.yml`（Linux 上跑真实 Milvus Lite，Windows 自动回退 FAISS）。
 
 ## 阶段进度
 
@@ -54,3 +54,31 @@ cd backend && uv run ruff check app tests            # 静态检查
   OCR / 语音转写**一律云服务 API**（不提供本地或自部署模型路径，已用守卫测试钉死）/
   推荐追问与会话自动命名 / 共享存储 Redis 化（缓存 + 限流 + 配额 + 快问临时态，Fail-Open 降级）
 - [ ] 阶段 10：见 `doc/series/stage-10-deployment/README.md`
+
+## 并发与容量（单进程单体）
+
+| 维度 | 数值 | 依据 |
+|---|---:|---|
+| 轻接口吞吐（healthz/列表） | ~500 QPS | `scripts/load_test.py` 实测 |
+| 在飞问答（生成中） | 32（`PIPELINE_WORKERS`） | `PipelineExecutor` 有界执行器 |
+| 排队请求 | 200，超出 503 + Retry-After | 背压（快速失败） |
+| 空闲/心跳 SSE 连接 | ≥500 | async 生成器 + 15s 心跳，不占线程 |
+| Agent 并发 | 16（`AGENT_RUN_PERMITS`） | 独立闸门，超出 429 |
+| 上游隔离仓 | llm=12 / embedding=4 / rerank=2 / milvus=8 | 之和 ≤ 问答线程数 |
+| 入库 | 解析 2 并行 / 索引 1 串行，队列 200 | 队列满 503 |
+| 单租户问答稳态 | 60/min（令牌桶 + 滑动窗口） | 成本护栏，设计值 |
+
+压测：`cd backend && uv run python ../scripts/load_test.py --api http://localhost:8100`。
+**注意**：上游模型配额才是问答容量的真实上限——扩容前先按分析文档的容量模型核算。
+
+## 功能总览
+
+- RAG 基线：切块 / 向量检索 / 引用溯源 / SSE 流式 / 统一信封 / 错误码
+- 混合检索：BM25 + 向量 + RRF + gte-rerank-v2；语义缓存 / 令牌桶限流 / Prometheus 指标 / 监控大盘 / 检索配置
+- 智能分块与多模态：Recursive/Semantic/ParentChild/RAPTOR 四策略 + PDF 表格 / qwen-vl-ocr / paraformer-v2 + 入库任务队列 + 解析预览 + Milvus 向量库
+- Query 预处理：意图识别 / Fusion 改写 / HyDE / Step-Back / 多跳拆解 / 数据源路由 + 闲聊短路 + 分析记录可回放
+- 自反思与自校正：CRAG 三分支 + 证据评分 + 幻觉自检 + 受限重生成 + 显式拒答 + 置信度 + 拒答反馈工单 + 质量指标
+- Agentic RAG：LangGraph 状态机 Plan/Tool/Reflect/Replan/Answer + 工具注册表与幻觉兜底 + 三层熔断 + 多轮会话存档 + 执行轨迹可视化
+- GraphRAG 与多模态：实体关系抽取 + 消歧归一 + 内存图 BFS + 社区摘要 + qwen-vl-max 结构化描述 + graph_search/image_search 工具 + 图谱浏览器
+- 企业级护栏：认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 审计只存哈希 + 敏感词扫描与掩码 + 租户配额 + 管理页面
+- doc-qa 能力整合：Markdown 富文本渲染 / 浏览器语音输入（云服务 API） / 扩展格式（.xlsx .pptx 纯文本 代码）/ 单文档「快问」通道 / 引文增强（参考卡片 / 引文搜索 / 导出 TXT）/ 共享存储 Redis 化

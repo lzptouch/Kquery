@@ -1,4 +1,4 @@
-"""语义级缓存（阶段 2 README §2.2 / §3.5）。
+"""语义级缓存。
 
 - 缓存键 = 摘要（租户 + 问题原文 + 模型版本标识 + 检索与生成配置摘要），
   三者任一变化即换键——换模型后旧条目自然失效，无需手动清缓存；
@@ -58,11 +58,14 @@ class CacheEntry:
     # 语义近似检索用：问题向量 + 规范化后的问题文本
     vector: list = field(default_factory=list)
     question: str = ""
-    # 租户归属（DEF-R-22）：近似命中必须按它过滤，否则跨租户串答案
+    # 租户归属：近似命中必须按它过滤，否则跨租户串答案
     tenant_id: str = ""
     # 检索范围（F4 快问）：doc_id 维度。近似命中必须按它过滤，
     # 否则"针对 A 文档的答案"会被"针对 B 文档的相似问题"命中——同样是串答案。
     scope: str = ""
+    # 维度签名（KQ-04）：模型版本 + 配置摘要（含 user/acl_version/index_version）。
+    # 近似命中必须签名完全一致——只按租户过滤会把 A 用户的答案命中给同租户 B 用户。
+    signature: str = ""
 
 
 class SemanticCache(Protocol):
@@ -118,6 +121,7 @@ class InMemorySemanticCache:
         vector: list | None = None,
         tenant_id: str = "",
         scope: str = "",
+        signature: str = "",
     ) -> None:
         with self._lock:
             if len(self._entries) >= self._max_entries:
@@ -135,6 +139,7 @@ class InMemorySemanticCache:
                 question=question or str(payload.get("question", "")),
                 tenant_id=tenant_id,
                 scope=scope,
+                signature=signature,
             )
 
     def lookup(
@@ -144,6 +149,7 @@ class InMemorySemanticCache:
         vector: list | None = None,
         tenant_id: str = "",
         scope: str = "",
+        signature: str = "",
     ) -> tuple[CacheEntry | None, str]:
         """语义级查找：先按键精确命中，再退回向量近似命中。
 
@@ -152,14 +158,19 @@ class InMemorySemanticCache:
         此前实现遍历全部 entries 并未按租户过滤（与下方注释自相矛盾），
         导致 A 租户的答案可被 B 租户近似命中（DEF-R-22 跨租户串答案）。
 
-        `scope` 是第二道隔离闸（F4 快问）：检索范围不同的条目一律不互相命中。
+        近似命中的三个硬条件（KQ-04 + F4）：
+        - 同一租户（否则跨租户串答案）；
+        - 维度签名完全一致（模型版本 + user + acl_version + index_version + 配置摘要），
+          否则同租户内 A 用户的答案会命中给 B 用户，权限/配置变更后还会命中旧条目；
+        - `scope` 一致（F4 快问）：检索范围不同的条目一律不互相命中。
+
         """
         exact = self.get(exact_key)
         if exact is not None:
             return exact, "exact"
         # 只要求调用方给得出问题向量：是否持有编码器是调用侧的职责，
         # 缓存自己不该把"没装编码器"等同于"不能近似命中"
-        if not vector:
+        if not vector or not signature:
             return None, "miss"
         now = time.time()
         best: CacheEntry | None = None
@@ -170,7 +181,10 @@ class InMemorySemanticCache:
                 # 租户隔离第一闸：近似命中只认同租户条目（兑现上方注释承诺）
                 if entry.tenant_id != tenant_id:
                     continue
-                # 范围隔离第二闸：快问（doc_id）与全库检索的答案不得互相命中
+                # 维度签名闸：主体/权限/数据版本/模型/配置任一不同即不可命中
+                if entry.signature != signature:
+                    continue
+                # 范围闸（F4 快问）：快问（doc_id）与全库检索的答案不得互相命中
                 if entry.scope != scope:
                     continue
                 if now - entry.created_at > entry.ttl_seconds:
@@ -268,6 +282,7 @@ class RedisSemanticCache:
                 "question": entry.question,
                 "tenant_id": entry.tenant_id,
                 "scope": entry.scope,
+                "signature": entry.signature,
             },
             ensure_ascii=False,
             default=str,
@@ -286,6 +301,7 @@ class RedisSemanticCache:
             question=data.get("question", ""),
             tenant_id=data.get("tenant_id", ""),
             scope=data.get("scope", ""),
+            signature=data.get("signature", ""),
         )
 
     # ---- SemanticCache 接口 ----
@@ -317,6 +333,7 @@ class RedisSemanticCache:
         vector: list | None = None,
         tenant_id: str = "",
         scope: str = "",
+        signature: str = "",
     ) -> None:
         entry = CacheEntry(
             payload=payload,
@@ -325,6 +342,7 @@ class RedisSemanticCache:
             question=question or str(payload.get("question", "")),
             tenant_id=tenant_id,
             scope=scope,
+            signature=signature,
         )
         try:
             self._state.set(self._k(key), self._encode(entry), int(ttl_seconds) or 0)
@@ -334,9 +352,11 @@ class RedisSemanticCache:
             with self._lock:
                 if len(self._index) >= self._max_entries:
                     # 简单逐出：丢最早写入的
-                    oldest = min(self._index.items(), key=lambda kv: kv[1][3])[0]
+                    oldest = min(self._index.items(), key=lambda kv: kv[1][4])[0]
                     self._index.pop(oldest, None)
-                self._index[key] = (list(vector), tenant_id, scope, entry.created_at, ttl_seconds)
+                self._index[key] = (
+                    list(vector), tenant_id, scope, signature, entry.created_at, ttl_seconds
+                )
 
     def lookup(
         self,
@@ -345,6 +365,7 @@ class RedisSemanticCache:
         vector: list | None = None,
         tenant_id: str = "",
         scope: str = "",
+        signature: str = "",
     ) -> tuple[CacheEntry | None, str]:
         exact = self.get(exact_key)
         if exact is not None:
@@ -358,10 +379,20 @@ class RedisSemanticCache:
         best_sim = self._threshold
         with self._lock:
             scanned = 0
-            for key, (vec, entry_tenant, entry_scope, created_at, ttl) in self._index.items():
+            for key, (
+                vec,
+                entry_tenant,
+                entry_scope,
+                entry_signature,
+                created_at,
+                ttl,
+            ) in self._index.items():
                 if entry_tenant != tenant_id:
                     continue
                 if entry_scope != scope:
+                    continue
+                # 维度签名闸（KQ-04）：主体/权限/数据版本/模型/配置任一不同即不可命中
+                if entry_signature != signature:
                     continue
                 if now - created_at > ttl:
                     continue

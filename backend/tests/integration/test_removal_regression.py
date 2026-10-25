@@ -43,7 +43,7 @@ class TestPreservedEndpointsStillWork:
     """删除不得波及任何其他功能。"""
 
     def test_admin_costs_survived(self, client):
-        """TASK-134 成本看板原寄居 reports.py，必须迁出后继续可用。"""
+        """ 成本看板原寄居 reports.py，必须迁出后继续可用。"""
         resp = client.get("/admin/costs")
         assert resp.status_code == 200, f"成本看板失效：{resp.status_code} {resp.text[:200]}"
         data = resp.json()["data"]

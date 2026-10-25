@@ -1,4 +1,4 @@
-/** 证据卡片（阶段 1 §2.3）：左侧 4px 颜色边框与 CitationChip 对位，
+/** 证据卡片：左侧 4px 颜色边框与 CitationChip 对位，
  * 顶部来源 + 分数，中部内容，底部"查看原文"。点击标题栏展开/折叠。
  */
 import type { Evidence } from "../../../types";

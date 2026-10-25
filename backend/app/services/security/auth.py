@@ -1,4 +1,4 @@
-"""认证（阶段 9 §2）：凭证 → 调用主体（Principal）。
+"""认证：凭证 → 调用主体（Principal）。
 
 - 提供者可替换且分三档：标准令牌 JWT（企业生产）/ 静态凭证表（开发演示）/
   头部透传（默认兼容）；
@@ -196,7 +196,7 @@ class JwtAuthProvider:
 
 
 class UserDirectory:
-    """用户目录（阶段 9 §8.1 Tenant/User 实体）。
+    """用户目录。
 
     此前用户目录是 lifespan 里的硬编码字面量，`PUT /admin/users/{id}` 只改内存，
     重启即丢——ACL 反查影响人数时拿到的也是这份临时数据。改为落盘 JSON。

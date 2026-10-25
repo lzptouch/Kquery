@@ -1,4 +1,4 @@
-"""Plan 节点（阶段 6 §4.2）。
+"""Plan 节点。
 
 - 生产：LLMPlanner（qwen-plus，JSON 输出约束）——档位过低会规划出无效步骤；
 - 测试/无 Key：HeuristicPlanner（按问题形态产出确定性计划）；

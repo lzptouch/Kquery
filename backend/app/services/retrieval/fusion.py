@@ -1,4 +1,4 @@
-"""RRF 融合（阶段 2 README §3.3）。
+"""RRF 融合。
 
 score(d) = Σ weight_i / (k + rank_i + 1)，rank 从 0 开始，k=60 为论文默认值。
 
@@ -22,7 +22,7 @@ def rrf_fuse(
     """把多路检索结果按 RRF 融合。weights 缺省各路权重 1.0。
 
     routes 每项为 (route_name, candidates) 或 (route_name, candidates, origin)，
-    origin 记录该路结果由哪条改写/子问题带回（阶段 4 双向定位）。
+    origin 记录该路结果由哪条改写/子问题带回。
     权重按基础路名（@ 前缀之前）查找，同一基础路的多条查询共享权重。
     """
     weights = weights or {}

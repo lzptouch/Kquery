@@ -1,4 +1,4 @@
-"""Kquery 智能 RAG 后端（阶段 2：混合检索 + 工程化）。
+"""Kquery 智能 RAG 后端。
 
 组装顺序：配置 → Embedding/LLM/Reranker → 向量索引 + BM25 索引 → 混合检索
 → 缓存 / 限流 / 指标 / 运行时配置 → 知识库服务 → 流水线。
@@ -7,6 +7,7 @@
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -51,6 +52,8 @@ from app.services.parsers.plaintext import PlainTextParser
 from app.services.parsers.router import ParserRouter
 from app.services.parsers.spreadsheet import SpreadsheetParser
 from app.services.pipeline import RagPipeline
+from app.services.pipeline_executor import PipelineExecutor
+from app.services.upstream import bulkheads_stats, configure_bulkheads
 from app.services.agent.checkpointer import build_checkpointer, close_checkpointer
 from app.services.agent.graph import build_agent_graph
 from app.services.agent.planner import HeuristicPlanner, LLMPlanner
@@ -104,7 +107,7 @@ logger = logging.getLogger(__name__)
 
 
 def _app_version() -> str:
-    """应用版本号：以 pyproject.toml 为唯一来源（TASK-184），未安装为包时兜底。"""
+    """应用版本号：以 pyproject.toml 为唯一来源，未安装为包时兜底。"""
     try:
         from importlib.metadata import version
         return version("kquery-backend")
@@ -156,7 +159,7 @@ def create_app() -> FastAPI:
     # 错误码编号必须全局唯一（IntEnum 重复值会产生别名，按码分流失效）
     validate_code_uniqueness()
     settings = get_settings()
-    # TASK-133：结构化日志。文本形态保留给本地开发（看 JSON 太痛苦），
+    # 结构化日志。文本形态保留给本地开发（看 JSON 太痛苦），
     # 生产设 LOG_FORMAT=json 后逐行 JSON + DEBUG 采样 + PII 脱敏。
     setup_logging(
         level=getattr(settings, "log_level", "INFO"),
@@ -164,7 +167,7 @@ def create_app() -> FastAPI:
         debug_sample_rate=float(getattr(settings, "log_debug_sample_rate", 0.1)),
     )
 
-    # TASK-132：OTel（未启用/未配置 endpoint 时静默降级为 NoOp）
+    # OTel（未启用/未配置 endpoint 时静默降级为 NoOp）
     setup_otel(settings)
 
     # 启动期配置校验：缺项直接拒绝启动，而不是让故障延后到运行期
@@ -178,6 +181,14 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         provider = settings.resolved_provider
+        # 批次 1：AnyIO 默认线程池（40）留给管理面/探针，问答路径由 PipelineExecutor
+        # 独立承载——共享池调到 100，避免管理端点在问答高峰期排队。
+        # 必须在 lifespan 内设置：导入期没有事件循环，调 limiter 会抛 NoEventLoopError。
+        import anyio.to_thread
+
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 100
+        # 批次 2：上游隔离仓与熔断（许可之和 ≤ pipeline_workers）
+        configure_bulkheads(settings)
         # 模型层（全部千问平台接口，无本地模型；无凭据时注入 Mock）
         embeddings = build_embeddings(
             provider=provider,
@@ -241,7 +252,7 @@ def create_app() -> FastAPI:
         prom = PromMetrics()
         metrics_store = MetricsStore()
 
-        # 阶段 3：DocStore（父块/表格/媒体资源）+ 解析路由 + 任务队列
+        # DocStore（父块/表格/媒体资源）+ 解析路由 + 任务队列
         docstore = DocStore(settings.data_dir / "docstore.json")
         # OCR 一律云服务 API（见 parsers/ocr.py 的架构约束）；provider 单独解析，
         # 不用全局 provider：全局可能是 mock（测试），而 OCR 可以单独强制云端。
@@ -273,18 +284,30 @@ def create_app() -> FastAPI:
             plaintext_parser=PlainTextParser(),
         )
         knowledge = KnowledgeService(settings, embeddings, llm, store, bm25, docstore, parser_router)
-        # DEF-R-2 / P0-7：hybrid 装配早于 knowledge，回填版本查询（召回侧按当前版本
+        # hybrid 装配早于 knowledge，回填版本查询（召回侧按当前版本
         # 过滤历史版本块）；knowledge 存在前 _version_of 为 None，不过滤
         hybrid._version_of = knowledge.version_of
-        # 后置钩子先占位：图存储/构建器在下方（阶段 7 段）才装配，
+        # 后置钩子先占位：图存储/构建器在下方才装配，
         # 这里用一个可变容器晚绑定，避免调整装配顺序牵连入库服务
         post_index_box: dict = {}
         task_manager = TaskManager(
             knowledge, settings.data_dir / "tasks.json", settings.data_dir / "ingest",
             post_index=lambda record, parsed: post_index_box["hook"](record, parsed),
         )
+        # 并发提容（批次 1）：问答路径的进程级有界执行器；Agent 运行与工具各一个
+        # 独立池（图线程等待工具 future，共用一池会嵌套死锁）
+        pipeline_executor = PipelineExecutor(
+            workers=settings.pipeline_workers, queue_size=settings.pipeline_queue_size,
+            on_reject=lambda: prom.shed_total.labels(reason="overloaded").inc(),
+        )
+        agent_run_pool = ThreadPoolExecutor(
+            max_workers=settings.agent_run_permits, thread_name_prefix="agent-run"
+        )
+        agent_tool_pool = ThreadPoolExecutor(
+            max_workers=max(8, settings.agent_run_permits * 2), thread_name_prefix="agent-tool"
+        )
 
-        # 阶段 4：Query 预处理（意图识别压到 qwen-turbo 最低档，HyDE 与 Fusion 互斥）
+        # Query 预处理（意图识别压到 qwen-turbo 最低档，HyDE 与 Fusion 互斥）
         fast_llm = build_llm(
             provider=provider,
             api_key=settings.dashscope_api_key,
@@ -356,7 +379,7 @@ def create_app() -> FastAPI:
         app.state.analysis_store = analysis_store
         app.state.feedback_store = FeedbackStore(settings.data_dir / "feedback.json")
 
-        # 阶段 9：企业护栏（认证 → 配额 → ACL → 敏感词 → 审计 → 评测）
+        # 企业护栏（认证 → 配额 → ACL → 敏感词 → 审计 → 评测）
         import json as _json9
 
         user_directory = UserDirectory(
@@ -368,15 +391,22 @@ def create_app() -> FastAPI:
             _json9.loads(settings.auth_tokens_json) if settings.auth_tokens_json else {},
             jwt_settings=settings,
         )
+        if not settings.auth_enabled:
+            # KQ-03：头部透传档是"任何人都能自报身份"的开发档，必须在启动日志里
+            # 显式标红——只写在配置注释里，运维永远看不到。
+            logger.warning(
+                "⚠️ 开发认证档（auth_enabled=false）：请求头 X-User-Id/X-Roles 会被直接采信，"
+                "严禁用于生产环境"
+            )
         # 首个管理员口令引导：仅当目录里没有任何口令时才写入，避免每次启动重置密码
         if settings.auth_password_enabled:
             _bootstrap_admin_password(settings, user_directory)
         audit_store = AuditStore(settings.data_dir / "audit" / "audit.jsonl")
         acl_service = ACLService(settings.data_dir / "acl.json", user_directory)
-        # DEF-R-1：pipeline 装配早于 acl_service，回填版本提供者（bind_principal 的
+        # pipeline 装配早于 acl_service，回填版本提供者（bind_principal 的
         # clone 会复制 __dict__，故请求级副本也能拿到最新版本）
         pipeline._acl_version = lambda: acl_service.version
-        # TASK-142：ACL 下推所需的依赖（bind_principal 会据此按主体构造可见清单）
+        # ACL 下推所需的依赖（bind_principal 会据此按主体构造可见清单）
         pipeline._acl_service = acl_service
         pipeline._knowledge = knowledge
         quota_service = SlidingWindowQuota(state=shared_state)
@@ -386,7 +416,7 @@ def create_app() -> FastAPI:
             settings.quota_per_day,
             token_per_day=settings.quota_token_per_day,
         )
-        # TASK-120：token 用量结算。quota_service 晚于 pipeline 构造，此处回填
+        # token 用量结算。quota_service 晚于 pipeline 构造，此处回填
         # （与 _acl_version 同一模式；bind_principal 的 clone 会复制 __dict__）
         pipeline._quota = quota_service
         # 平台侧配额（账号级上游约束）：模型客户端上报，网关读取
@@ -396,7 +426,7 @@ def create_app() -> FastAPI:
         )
         install_monitor(platform_monitor)
         sensitive_scanner = SensitiveScanner(settings.data_dir / "sensitive-words.json")
-        # 阶段 5 校验历史（CRAG 轮次 / 自检明细）落库
+        #  校验历史（CRAG 轮次 / 自检明细）落库
         validation_history = ValidationHistoryStore(settings.data_dir / "validation-history")
         # 护栏回填到**线性路径**：此前审计与敏感词只挂 Agent 路径，默认问答不产生任何痕迹
         pipeline.attach_security(
@@ -405,7 +435,7 @@ def create_app() -> FastAPI:
             history_store=validation_history,
         )
 
-        # 阶段 6：Agentic RAG（LangGraph 状态机 + 工具注册 + 会话存档）
+        # Agentic RAG（LangGraph 状态机 + 工具注册 + 会话存档）
         agent_llm = build_llm(
             provider=provider,
             api_key=settings.dashscope_api_key,
@@ -414,10 +444,10 @@ def create_app() -> FastAPI:
             max_retries=settings.llm_max_retries,
             timeout_s=settings.llm_timeout_s,
         )
-        tool_registry = ToolRegistry(timeout_s=settings.agent_tool_timeout_s)
+        tool_registry = ToolRegistry(timeout_s=settings.agent_tool_timeout_s, executor=agent_tool_pool)
         tool_registry.register(VectorSearchTool(hybrid, config_store.get_active()))
         tool_registry.register(CalculatorTool())
-        # TASK-108：补"库里有什么"与日期推理两个能力盲区
+        # 补"库里有什么"与日期推理两个能力盲区
         tool_registry.register(ListDocumentsTool(knowledge))
         tool_registry.register(DateTimeCalcTool())
         # 业务库 / 联网工具：未配置外部依赖时不注册——
@@ -447,8 +477,8 @@ def create_app() -> FastAPI:
                 )
             )
 
-        # 阶段 7：GraphRAG（图存储 + 消歧 + 构建 + 查询）与多模态（图像描述向量统一空间）
-        # TASK-180：默认 SQLite 增量持久化（旧 JSON 会自动迁移并备份）
+        # GraphRAG（图存储 + 消歧 + 构建 + 查询）与多模态（图像描述向量统一空间）
+        # 默认 SQLite 增量持久化（旧 JSON 会自动迁移并备份）
         graph_store = build_graph_store(settings, settings.data_dir)
         resolver_path = settings.data_dir / "graph" / "resolver.json"
         if resolver_path.exists():
@@ -487,7 +517,7 @@ def create_app() -> FastAPI:
             tool_registry.register(GraphSearchTool(graph_query))
             tool_registry.register(ImageSearchTool(image_index))
 
-        # 图谱构建与图像索引改为**入库联动**（stage-7 §5.1）：此前两者只能靠
+        # 图谱构建与图像索引改为**入库联动**（）：此前两者只能靠
         # 手动打 /graph/build 与 /media/index，文档入库后图谱长期是空的，
         # "图谱检索"这个能力等于形同虚设。
         def _post_index(record, parsed) -> dict:
@@ -520,6 +550,13 @@ def create_app() -> FastAPI:
         post_index_box["hook"] = _post_index
         # 同步上传路径同样要触发（否则只有异步任务能建出图谱）
         knowledge.set_post_index(_post_index)
+        # 删除编排的协作者回填（KQ-08：删除文档必须收敛图谱/图像/资产/ACL/任务原件）
+        knowledge.set_deletion_deps(
+            acl=acl_service,
+            graph_store=graph_store,
+            image_index=image_index,
+            task_manager=task_manager,
+        )
 
         app.state.graph_store = graph_store
         app.state.entity_resolver = entity_resolver
@@ -532,7 +569,7 @@ def create_app() -> FastAPI:
         else:
             planner = HeuristicPlanner(tool_registry)
             reflector = HeuristicReflector(correct_th=settings.crag_correct_th)
-        # TASK-115：checkpointer 是断点续跑 / 多轮状态继承 / 完整回放 / HITL 的前提。
+        # checkpointer 是断点续跑 / 多轮状态继承 / 完整回放 / HITL 的前提。
         # 不可用时返回 None（降级为不启用续跑），Agent 仍能正常跑。
         agent_checkpointer = build_checkpointer(settings, settings.data_dir)
         app.state.agent_checkpointer = agent_checkpointer
@@ -552,22 +589,42 @@ def create_app() -> FastAPI:
         )
         app.state.agent_runner = AgentRunner(
             agent_graph, session_store, metrics_store, top_k=settings.top_k,
-            registry=tool_registry,  # TASK-101：ReAct 模式的工具目录来源
-            # 审计是合规底线，不应由 acl_enabled 决定（DEF-S-18）：无条件挂载
+            registry=tool_registry,  # ReAct 模式的工具目录来源
+            # 审计是合规底线，不应由 acl_enabled 决定：无条件挂载
             audit=audit_store,
             scanner=sensitive_scanner if settings.sensitive_scan_enabled else None,
             crag_router=pipeline._crag,
             history_store=validation_history,
             score_top_n=settings.crag_score_top_n,
-            settings=settings,  # TASK-121：读取三预算配置
-            checkpointer=agent_checkpointer,  # TASK-124：HITL 挂起的前提
-            prom=prom,  # TASK-131：Agent 路径埋点
+            settings=settings,  # 读取三预算配置
+            checkpointer=agent_checkpointer,  # HITL 挂起的前提
+            prom=prom,  # Agent 路径埋点
             llm=llm,  # 仅用于 token 用量埋点
-            # TASK-112：Agent 路径接上与线性路径同一套幻觉自检
+            # Agent 路径接上与线性路径同一套幻觉自检
             self_checker=pipeline._self_checker,
+            executor=agent_run_pool,  # 批次 1：固定池替代每请求新建线程
+            run_permits=settings.agent_run_permits,
         )
         app.state.session_store = session_store
         app.state.tool_registry = tool_registry
+        app.state.pipeline_executor = pipeline_executor
+        # 批次 2：并发水位指标（render 时采集，不另起定时线程）
+        def _update_watermarks(p) -> None:
+            s = pipeline_executor.stats()
+            p.inflight_requests.set(s["inflight"])
+            p.queue_depth.set(s["waiting"])
+            for name, st in bulkheads_stats().items():
+                p.upstream_in_use.labels(upstream=name).set(st.get("in_use", 0))
+                p.upstream_circuit_open.labels(upstream=name).set(
+                    1 if st.get("state") == "open" else 0
+                )
+
+        prom.set_stats_provider(_update_watermarks)
+
+        # 共享状态门面（Redis 不可用时自动降级为进程内）
+        # 快问临时态、语义缓存、限流、配额都依赖它——必须早于它们建好。
+        shared_state = SharedState(settings.redis_url, settings.redis_key_prefix)
+        app.state.shared_state = shared_state
 
         # F4 快问：临时态优先放 Redis（多副本共享），Redis 不可用自动降级为进程内
         quickask = QuickAskService(
@@ -595,7 +652,7 @@ def create_app() -> FastAPI:
             if settings.memory_enabled else None
         )
         app.state.long_term_memory = long_term_memory
-        # TASK-117：AgentRunner 装配早于记忆创建，此处回填（与 _acl_version 同模式）
+        # AgentRunner 装配早于记忆创建，此处回填（与 _acl_version 同模式）
         app.state.agent_runner._memory = long_term_memory
         logger.info("共享状态后端=%s；长期记忆=%s",
                     shared_state.backend, "on" if long_term_memory else "off")
@@ -615,12 +672,17 @@ def create_app() -> FastAPI:
         try:
             yield
         finally:
-            # TASK-115：释放 checkpointer 持有的 sqlite 连接。
+            # 批次 1：先停止接受新任务并等在飞问答/Agent 结束，再关存储连接
+            pipeline_executor.shutdown(timeout_s=30.0)
+            agent_run_pool.shutdown(wait=False, cancel_futures=True)
+            agent_tool_pool.shutdown(wait=False, cancel_futures=True)
+            task_manager.shutdown(timeout_s=30.0)
+            # 释放 checkpointer 持有的 sqlite 连接。
             # 不关闭的话，Windows 上临时目录无法清理（WinError 32 文件占用），
             # 且连接会一直挂在进程里阻止 WAL 落盘。
             close_checkpointer(agent_checkpointer)
-            # TASK-180：图存储的 sqlite 连接同理——不关会导致临时目录无法清理
-            # TASK-132：flush 未上报的 span（BatchSpanProcessor 有缓冲）
+            # 图存储的 sqlite 连接同理——不关会导致临时目录无法清理
+            # flush 未上报的 span（BatchSpanProcessor 有缓冲）
             shutdown_otel()
             for closer in (
                 lambda: store.close(),
@@ -770,7 +832,7 @@ def create_app() -> FastAPI:
         probe("vector_store", lambda: {"chunks": int(getattr(state.store, "total", 0) or 0)})
         probe("bm25_index", lambda: {"chunks": int(getattr(state.bm25, "total", 0) or 0)})
         probe("graph_store", lambda: state.graph_store.stats())
-        # TASK-165/117：探针暴露当前后端，避免"以为在用 Redis 其实已降级"
+        # /117：探针暴露当前后端，避免"以为在用 Redis 其实已降级"
         probe("shared_state", lambda: state.shared_state.snapshot())
         probe("long_term_memory", lambda: state.long_term_memory.stats()
               if state.long_term_memory else {"enabled": False})
@@ -779,6 +841,10 @@ def create_app() -> FastAPI:
             lambda: {"supported": sorted(state.parser_router.supported_extensions())},
         )
         probe("provider", lambda: {"provider": settings.resolved_provider, "llm": settings.llm_model})
+        # 认证档位进健康报告：HeaderAuthProvider 是开发档，运维一眼就能看到（KQ-03）
+        probe("auth", lambda: {"mode": type(state.auth_provider).__name__})
+        # 批次 2：上游水位（许可占用/熔断状态）进健康报告
+        probe("upstream", bulkheads_stats)
         probe(
             "platform_quota",
             lambda: {"exhausted": state.platform_monitor.exhausted()},

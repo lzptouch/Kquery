@@ -1,10 +1,10 @@
 """工具注册表治理能力测试（批次 D）。
 
 覆盖：
-- TASK-125 危险级与写操作审批（只读工具出错最多答错，写工具会改外部系统）
-- TASK-126 取消（取消后不再产生新的工具调用）
-- TASK-109 健康熔断（连续失败摘除 + 半开恢复 + 目录标注不可用）
-- DEF-A-17 空注册表兜底（此前抛裸 StopIteration）
+-  危险级与写操作审批（只读工具出错最多答错，写工具会改外部系统）
+-  取消（取消后不再产生新的工具调用）
+-  健康熔断（连续失败摘除 + 半开恢复 + 目录标注不可用）
+-  空注册表兜底（此前抛裸 StopIteration）
 """
 from app.services.agent.tools import ToolRegistry, ToolResult
 
@@ -48,7 +48,7 @@ class _WriteTool:
 
 
 class TestToolDangerLevels:
-    """TASK-125：危险级判定。"""
+    """危险级判定。"""
 
     def test_known_tools_mapped(self):
         from app.services.agent.tools import DANGER_READ_ONLY, DANGER_SAFE
@@ -75,7 +75,7 @@ class TestToolDangerLevels:
         assert ToolRegistry.danger_of(Mystery()) == DANGER_WRITE
 
     def test_mcp_tools_are_write(self):
-        """MCP 外部工具来源不可控，不能默认可信（TASK-127）。"""
+        """MCP 外部工具来源不可控，不能默认可信。"""
         from app.services.agent.tools import DANGER_WRITE
 
         class Mcp:
@@ -96,7 +96,7 @@ class TestToolDangerLevels:
 
 
 class TestWriteApprovalGate:
-    """TASK-125：写类工具必须先审批。"""
+    """写类工具必须先审批。"""
 
     def test_write_tool_blocked_without_approval(self):
         log: list = []
@@ -130,7 +130,7 @@ class TestWriteApprovalGate:
 
 
 class TestToolCancellation:
-    """TASK-126：取消后不再产生新的工具调用。"""
+    """取消后不再产生新的工具调用。"""
 
     def test_cancelled_run_skips_tool(self):
         log: list = []
@@ -173,7 +173,7 @@ class TestToolCancellation:
 
 
 class TestToolHealthBreaker:
-    """TASK-109：连续失败摘除 + 半开恢复。"""
+    """连续失败摘除 + 半开恢复。"""
 
     def _registry(self, fail_ref):
         def factory():
@@ -277,7 +277,7 @@ class TestToolHealthBreaker:
 
 
 class TestEmptyRegistryGuard:
-    """DEF-A-17：空注册表不得抛裸 StopIteration。"""
+    """空注册表不得抛裸 StopIteration。"""
 
     def test_resolve_empty_registry_raises_clear_error(self):
         import pytest

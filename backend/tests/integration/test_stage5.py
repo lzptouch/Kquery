@@ -1,4 +1,4 @@
-"""阶段 5 功能测试：CRAG 三分支 / 幻觉自检 / 受限重生成 / 显式拒答 / 质量指标。
+""" 功能测试：CRAG 三分支 / 幻觉自检 / 受限重生成 / 显式拒答 / 质量指标。
 
 - correct：正常问题 answered + confidence + 轮次记录 + 未采纳证据随返；
 - incorrect：零相关查询 → refused(no_content)，HTTP 200 一等公民；

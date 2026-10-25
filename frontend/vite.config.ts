@@ -4,14 +4,14 @@ import react from "@vitejs/plugin-react";
 // API 与 SPA 页面共用路径前缀（/knowledge、/admin）时的分流规则：
 // 浏览器导航（Accept: text/html）→ SPA 页面；API 调用（fetch/curl）→ 后端代理
 const spaBypass = (req: { headers: { accept?: string } }) =>
-  req.headers.accept?.includes("text/html") ? "/index.html" : undefined;
+ req.headers.accept?.includes("text/html") ? "/index.html" : undefined;
 
 // 端口可被环境变量覆盖：同机常同时跑多个项目，8000/5173 被占时不必改代码
 // 用法：KQUERY_API_TARGET=http://localhost:8010 KQUERY_DEV_PORT=5174 npm run dev
 const apiProxy = {
-  target: process.env.KQUERY_API_TARGET || "http://localhost:8000",
-  changeOrigin: false,
-  bypass: spaBypass,
+ target: process.env.KQUERY_API_TARGET || "http://localhost:8000",
+ changeOrigin: false,
+ bypass: spaBypass,
 };
 
 export default defineConfig({

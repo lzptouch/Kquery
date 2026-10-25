@@ -1,4 +1,4 @@
-/** Query 分析历史（/knowledge/query-analysis，阶段 4 前端规范 §4）。
+/** Query 分析历史（/knowledge/query-analysis， §4）。
  *
  * 表格：时间 / 意图 / 改写数 / 子问题数 / 耗时；行点击展开详情（完整分析记录）。
  * 过滤：意图类型 / 是否检索。

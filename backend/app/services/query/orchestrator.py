@@ -1,4 +1,4 @@
-"""Query 预处理编排器（阶段 4 §2.1 / §7.1）。
+"""Query 预处理编排器。
 
 五步流水线：意图识别 → 查询改写 → 多跳拆解 → 数据源路由 → 检索执行（由流水线接管）。
 每步失败都降级到最朴素路径并如实标注 degraded——整条链路上没有
@@ -143,7 +143,7 @@ class QueryPreprocessor:
         analysis.llm_calls = llm_calls
         # 费用估算：按"每次预处理调用约 600 输入 token + 200 输出 token"折算。
         # 拿不到真实 usage 时给估算值，比只给调用次数有用——"关掉 HyDE 省多少钱"
-        # 才是调参时真正要回答的问题（stage-4 §7）。
+        # 才是调参时真正要回答的问题（）。
         prompt_tokens = llm_calls * ESTIMATED_TOKENS_PER_CALL
         analysis.cost = round(prompt_tokens * INTENT_TOKEN_PRICE_YUAN, 6)
         logger.info(

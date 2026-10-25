@@ -1,4 +1,4 @@
-"""BM25 关键词检索路（阶段 2 README §3.1）。
+"""BM25 关键词检索路。
 
 - 中文分词用 jieba（不能按字分，否则"电池"与"电池电压"无法匹配）；
 - 参数 k1=1.5 / b=0.75（大多数场景够用）；
@@ -66,7 +66,7 @@ class BM25Retriever:
     def __init__(self, k1: float = 1.5, b: float = 0.75):
         self._k1 = k1
         self._b = b
-        # TASK-178：读共享 / 写独占（此前是普通 Lock，导致所有关键词检索串行）
+        # 读共享 / 写独占（此前是普通 Lock，导致所有关键词检索串行）
         self._lock = ReadWriteLock()
         self._chunks: dict[str, Chunk] = {}
         self._order: list[str] = []
@@ -116,7 +116,7 @@ class BM25Retriever:
     ) -> list[RetrievalCandidate]:
         """关键词检索。
 
-        TASK-142：**先过滤再排序**（此前是"全量排序 → 逐个跳过不合格"，等价于让
+        **先过滤再排序**（此前是"全量排序 → 逐个跳过不合格"，等价于让
         不合格文档参与排序并占位）。语义上两者结果相同，但显式过滤把 ACL 判定
         收敛到一处，也让"可见集合"成为排序输入而非事后剔除。
         """

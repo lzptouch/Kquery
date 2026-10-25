@@ -1,4 +1,4 @@
-"""阶段 9：企业护栏测试。
+"""企业护栏测试。
 
 覆盖：认证（静态凭证表/头部透传/停用账号）/ ACL 判定树（五步法顺序、deny 优先、
 跨租户、默认拒绝、影响人数反查、风险分级）/ 审计（三事件、hash 不存原文、
@@ -14,7 +14,7 @@ import pytest
 from app.domain.schemas import DocumentRecord
 from app.services.llm import LLMError, QwenLLM
 from app.services.security.acl import ACLService
-from app.services.security.audit import AuditStore, content_hash
+from app.services.security.audit import AuditStore
 from app.services.security.auth import (
     HeaderAuthProvider,
     Principal,
@@ -145,7 +145,7 @@ class TestAudit:
         # 硬约束：不存原文
         raw = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
         assert "电池电压" not in raw and "24V" not in raw
-        assert content_hash("电池电压是多少？") in raw  # 哈希可追溯到具体问题
+        assert store._hash("电池电压是多少？") in raw  # HMAC 哈希可追溯到具体问题
         # 检索事件：差值即被权限过滤数
         retrieve = next(r for r in records if r["event"] == "rag.retrieve")
         assert retrieve["payload"]["retrieved"] - retrieve["payload"]["visible"] == 2

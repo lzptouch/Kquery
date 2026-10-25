@@ -1,4 +1,4 @@
-"""工具集扩展（TASK-108）。
+"""工具集扩展。
 
 补三个"当前最大盲区"的工具。**刻意不实现 `http_request` 与 `python_sandbox`**：
 - 前者是 SSRF 与提示注入的高危面（需先有内网地址黑名单与出站白名单）；
@@ -120,7 +120,7 @@ class SqlSchemaTool:
     `sql_search` 之前完全依赖 LLM 猜表名与字段名——猜错就是一次失败的工具调用。
     有 schema 之后模型可以"先看表再写 SQL"。
 
-    安全：**只返回含租户隔离列的表**（与 TASK-143 的白名单口径一致），
+    安全：**只返回含租户隔离列的表**（与  的白名单口径一致），
     样例行也只取当前租户——否则这个工具本身就成了跨租户数据泄漏通道。
     """
 
@@ -153,7 +153,7 @@ class SqlSchemaTool:
             items: list[dict] = []
             for tname in tables:
                 cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tname})")]
-                # 与 TASK-143 同一白名单口径：无租户列的表对 Agent 不可见
+                # 与  同一白名单口径：无租户列的表对 Agent 不可见
                 if self._tenant_column and self._tenant_column not in cols:
                     continue
                 if keyword and keyword not in tname.lower() and not any(

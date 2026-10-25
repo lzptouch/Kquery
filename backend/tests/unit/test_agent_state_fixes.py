@@ -1,11 +1,11 @@
 """Agent 状态机与工具执行修复的验证测试（批次 C）。
 
 对应改造：
-- TASK-105 / DEF-A-2：`step is None` 的 replan 信号此前被 reflect_node 无条件覆盖，
+- `step is None` 的 replan 信号此前被 reflect_node 无条件覆盖，
   且不计 iteration → 熔断不可达。现改为 tool_exhausted 短路 + 计轮次。
-- TASK-103 / DEF-A-1：重规划只偏移 step_index 不偏移 depends_on → 依赖错位/悬空。
-- TASK-119 / DEF-A-4：工具超时用 `with ThreadPoolExecutor` 会 join，熔断形同虚设。
-- TASK-110 / DEF-A-9：反射器「检索信号兜底」抬分使 replan 分支永不执行。
+- 重规划只偏移 step_index 不偏移 depends_on → 依赖错位/悬空。
+- 工具超时用 `with ThreadPoolExecutor` 会 join，熔断形同虚设。
+- 反射器「检索信号兜底」抬分使 replan 分支永不执行。
 """
 import time
 
@@ -91,7 +91,7 @@ def _run(registry, planner, reflector, question="测试问题"):
 
 
 class TestReplanSignalNoLongerSwallowed:
-    """TASK-105：无可执行步骤的 replan 信号必须真的生效。"""
+    """无可执行步骤的 replan 信号必须真的生效。"""
 
     def test_failed_steps_trigger_replan_and_count_iteration(self):
         registry = _make_registry(FailingTool())
@@ -113,7 +113,7 @@ class TestReplanSignalNoLongerSwallowed:
 
         这是防御性分支：正常流程里 failed 步骤也算进 done_set，依赖不会被永久阻塞；
         但空计划、悬空依赖、快照跨版本等都可能落到这里——此前该路径不计入 iteration，
-        第一层熔断永远不可达（TASK-105）。
+        第一层熔断永远不可达。
         """
         registry = _make_registry(FailingTool())
         planner = ScriptedPlanner([
@@ -144,7 +144,7 @@ class TestReplanSignalNoLongerSwallowed:
 
 
 class TestReplanDependencyOffset:
-    """TASK-103：重规划后 depends_on 必须同步偏移并剔除悬空依赖。"""
+    """重规划后 depends_on 必须同步偏移并剔除悬空依赖。"""
 
     def test_dependencies_offset_to_global_indexes(self):
         registry = _make_registry(FailingTool())
@@ -183,7 +183,7 @@ class TestReplanDependencyOffset:
 
 
 class TestToolTimeoutActuallyInterrupts:
-    """TASK-119：超时必须让请求真正返回。"""
+    """超时必须让请求真正返回。"""
 
     def test_slow_tool_returns_within_timeout(self):
         registry = _make_registry(SlowTool())
@@ -214,7 +214,7 @@ class TestToolTimeoutActuallyInterrupts:
 
 
 class TestReflectionReachability:
-    """TASK-110：弱证据不应被「检索信号兜底」抬分到必然作答。"""
+    """弱证据不应被「检索信号兜底」抬分到必然作答。"""
 
     def test_weak_verdict_kept_as_is(self):
         from app.services.agent.reflector import ANSWER_THRESHOLD, _parse_reflect
@@ -259,9 +259,9 @@ def test_neighbors_respects_depth(depth):
 
 
 class TestCheckpointer:
-    """TASK-115：checkpointer 是断点续跑 / 多轮继承 / 回放 / HITL 的共同前提。
+    """checkpointer 是断点续跑 / 多轮继承 / 回放 / HITL 的共同前提。
 
-    stage-6 §1.2 曾把它写进交付承诺，代码里长期是 `graph.compile()` 裸编译。
+     曾把它写进交付承诺，代码里长期是 `graph.compile()` 裸编译。
     """
 
     def test_thread_id_convention(self):
@@ -352,7 +352,7 @@ class TestCheckpointer:
 
 
 class TestAgentBudget:
-    """TASK-121：三预算治理。此前只有"轮数"一个维度有上限，资源维度完全裸奔。"""
+    """三预算治理。此前只有"轮数"一个维度有上限，资源维度完全裸奔。"""
 
     def _budget(self, **kw):
         from app.services.agent.budget import AgentBudget
@@ -477,7 +477,7 @@ class TestAgentBudget:
 
 
 class TestChitchatShortCircuit:
-    """TASK-137：闲聊短路。此前 skip_retrieval 在 Agent 路径无生产调用点，
+    """闲聊短路。此前 skip_retrieval 在 Agent 路径无生产调用点，
     "你好"也白跑 plan→tool→reflect 全循环并计费。"""
 
     def test_obvious_greetings_detected(self):
@@ -535,7 +535,7 @@ class TestChitchatShortCircuit:
 
 
 class TestHitlWorkflow:
-    """TASK-124：人在环。此前完全没有 interrupt/审批/中断-恢复能力。"""
+    """人在环。此前完全没有 interrupt/审批/中断-恢复能力。"""
 
     def _hitl_graph(self, tool_items, verdict_score=0.1):
         from langgraph.checkpoint.memory import MemorySaver

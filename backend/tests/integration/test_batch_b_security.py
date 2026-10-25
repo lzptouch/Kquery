@@ -1,11 +1,11 @@
 """批次 B（P0 安全与正确性）改造验证测试。
 
 每个用例对应文档 §5 的缺陷编号，验证修复真实生效而非形同虚设：
-- 鉴权矩阵（DEF-S-1）：管理端点从路由表自动枚举，非 admin 一律 403
-- 缓存隔离（DEF-R-22 跨租户 / DEF-R-1 租户内身份+ACL 版本）
-- SQL 租户隔离（DEF-A-24）
-- 索引版本过滤（DEF-R-2 / P0-7）
-- Agent 审计解耦（DEF-S-18）
+- 鉴权矩阵：管理端点从路由表自动枚举，非 admin 一律 403
+- 缓存隔离（ 跨租户 /  租户内身份+ACL 版本）
+- SQL 租户隔离
+- 索引版本过滤（ / ）
+- Agent 审计解耦
 """
 import os
 import re
@@ -68,12 +68,12 @@ def _fill(path: str) -> str:
 
 
 class TestAuthMatrix:
-    """DEF-S-1：管理端点鉴权矩阵（从路由表自动枚举，禁止硬编码清单）。"""
+    """管理端点鉴权矩阵（从路由表自动枚举，禁止硬编码清单）。"""
 
     def test_admin_route_count_is_stable(self, client):
         routes = _admin_routes(client.app)
         # 数量守卫：端点增删必须显式更新本断言，避免悄悄新增裸奔端点。
-        # TASK-134 新增 GET /admin/costs；TASK-109 新增 GET /admin/tools → 30。
+        #  新增 GET /admin/costs； 新增 GET /admin/tools → 30。
         # 评测平台下线：移除 /admin/eval/{datasets,runs,runs/{id},run,compare} 5 个
         # + /admin/metrics/multiagent 1 个 → 24；/admin/costs 由 reports.py 迁入
         # admin.py，路径与门禁等价，总数不变 → 23。
@@ -102,17 +102,34 @@ class TestAuthMatrix:
 
 
 class TestCacheIsolation:
-    """DEF-R-22 / DEF-R-1：缓存不得跨租户、跨身份、跨 ACL 版本泄漏。"""
+    """缓存不得跨租户、跨身份、跨 ACL 版本泄漏。"""
 
     def test_semantic_lookup_filters_by_tenant(self):
         from app.services.cache import InMemorySemanticCache
         cache = InMemorySemanticCache()
-        cache.set("k1", {"answer": "t1 的答案"}, 60, question="q", vector=[1.0, 0.0], tenant_id="t1")
+        cache.set("k1", {"answer": "t1 的答案"}, 60, question="q", vector=[1.0, 0.0],
+                  tenant_id="t1", signature="sig-t1")
         # 完全相同的问题向量，不同租户 → 不得命中（此前会跨租户串答案）
-        entry, kind = cache.lookup("q", "other-key", [1.0, 0.0], tenant_id="t2")
+        entry, kind = cache.lookup("q", "other-key", [1.0, 0.0], tenant_id="t2", signature="sig-t2")
         assert entry is None and kind == "miss"
         # 同租户 → 命中
+        entry, kind = cache.lookup("q", "other-key", [1.0, 0.0], tenant_id="t1", signature="sig-t1")
+        assert entry is not None and kind == "semantic"
+
+    def test_semantic_lookup_filters_by_signature(self):
+        """KQ-04：同租户不同签名（不同用户/ACL 版本/配置）不得语义命中。"""
+        from app.services.cache import InMemorySemanticCache
+        cache = InMemorySemanticCache()
+        cache.set("k1", {"answer": "alice 的答案"}, 60, question="q", vector=[1.0, 0.0],
+                  tenant_id="t1", signature="sig-alice")
+        # 同租户、同向量、不同签名（另一用户/权限变更后）→ 不得命中
+        entry, kind = cache.lookup("q", "other-key", [1.0, 0.0], tenant_id="t1", signature="sig-bob")
+        assert entry is None and kind == "miss"
+        # 无签名调用（旧调用方）→ 不得命中（宁 miss 不越权）
         entry, kind = cache.lookup("q", "other-key", [1.0, 0.0], tenant_id="t1")
+        assert entry is None and kind == "miss"
+        # 同签名 → 命中
+        entry, kind = cache.lookup("q", "other-key", [1.0, 0.0], tenant_id="t1", signature="sig-alice")
         assert entry is not None and kind == "semantic"
 
     def test_cache_key_varies_by_user(self, client):
@@ -135,7 +152,7 @@ class TestCacheIsolation:
 
 
 class TestSqlTenantIsolation:
-    """DEF-A-24：sql_search 必须按租户隔离。"""
+    """sql_search 必须按租户隔离。"""
 
     @pytest.fixture()
     def biz_db(self, tmp_path):
@@ -184,7 +201,7 @@ class TestSqlTenantIsolation:
 
 
 class TestIndexVersionFilter:
-    """DEF-R-2 / P0-7：reparse 后历史版本块不得参与召回。"""
+    """reparse 后历史版本块不得参与召回。"""
 
     def _chunk(self, cid, doc_id, content):
         from app.domain.schemas import Chunk
@@ -242,7 +259,7 @@ class TestIndexVersionFilter:
 
 
 class TestGraphTenantIsolation:
-    """TASK-142 / P0-4：图谱必须按租户隔离（此前任一租户可见全量实体与关系）。"""
+    """图谱必须按租户隔离（此前任一租户可见全量实体与关系）。"""
 
     def test_store_partitions_entities_and_edges_by_tenant(self, tmp_path):
         from app.domain.schemas import EntityNode, RelationEdge
@@ -313,7 +330,7 @@ class TestGraphTenantIsolation:
 
 
 class TestPiiDetection:
-    """TASK-169：PII 检测必须独立于词表（此前「没配敏感词 = PII 全放行」是致命缺口）。"""
+    """PII 检测必须独立于词表（此前「没配敏感词 = PII 全放行」是致命缺口）。"""
 
     def _scanner(self, tmp_path, words=None):
         import json as _json
@@ -366,7 +383,7 @@ class TestPiiDetection:
 
 
 class TestInputSidePii:
-    """TASK-169 输入侧：文档含 PII 必须拒绝入库；提问含 PII 只探测不误伤。"""
+    """ 输入侧：文档含 PII 必须拒绝入库；提问含 PII 只探测不误伤。"""
 
     def test_upload_with_pii_is_rejected(self, client):
         r = client.post(
@@ -418,7 +435,7 @@ class TestInputSidePii:
 
 
 class TestTokenUsageAccounting:
-    """TASK-120：token 用量此前生产零采集，导致 token_daily 配额维度形同虚设。"""
+    """token 用量此前生产零采集，导致 token_daily 配额维度形同虚设。"""
 
     def test_mock_llm_exposes_last_usage(self):
         from app.services.llm import MockLLM
@@ -501,7 +518,7 @@ class TestTokenUsageAccounting:
 
 
 class TestAgentPrometheusMetrics:
-    """TASK-131：Agent 此前零埋点，大盘只有线性路径数据。"""
+    """Agent 此前零埋点，大盘只有线性路径数据。"""
 
     def _scrape(self, client) -> str:
         return client.get("/metrics").text
@@ -554,7 +571,7 @@ class TestAgentPrometheusMetrics:
 
 
 class TestAgentAuditDecoupling:
-    """DEF-S-18：Agent 路径审计不得被 acl_enabled 门控。"""
+    """Agent 路径审计不得被 acl_enabled 门控。"""
 
     def test_agent_audit_present_when_acl_disabled(self):
         with make_client(ACL_ENABLED="false") as c:
@@ -565,7 +582,7 @@ class TestAgentAuditDecoupling:
 
 
 class TestHitlEndpoints:
-    """TASK-124：HITL 端点必须注册且做归属校验（跨主体 run_id 一律 404）。"""
+    """HITL 端点必须注册且做归属校验（跨主体 run_id 一律 404）。"""
 
     def test_endpoints_registered(self, client):
         spec = client.app.openapi()["paths"]

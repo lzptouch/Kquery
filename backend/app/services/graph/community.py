@@ -1,4 +1,4 @@
-"""社区检测与摘要（阶段 7 §2.4）。
+"""社区检测与摘要。
 
 - 默认零依赖实现：连通分量（生产可换 Leiden，算法可替换落在接口上）；
 - **社区编号必须稳定**：节点排序归一化后按"最小成员名"排序赋号，
@@ -26,15 +26,16 @@ COMMUNITY_SUMMARY_PROMPT = """为下面的实体社区生成一段主题摘要�
 
 
 class CommunityDetector(Protocol):
-    def detect(self, store: BaseGraphStore) -> list[list[str]]: ...
+    def detect(self, store: BaseGraphStore, tenant_id: str | None = None) -> list[list[str]]: ...
 
 
 class ConnectedComponentsDetector:
     """连通分量（零依赖默认实现）：无向弱连通分组。"""
 
-    def detect(self, store: BaseGraphStore) -> list[list[str]]:
+    def detect(self, store: BaseGraphStore, tenant_id: str | None = None) -> list[list[str]]:
         adjacency: dict[str, set[str]] = {}
-        for rel in store.all_relations():
+        # KQ-06：社区检测只纳入本租户关系，跨租户实体不得并入同一社区
+        for rel in store.all_relations(tenant_id):
             adjacency.setdefault(rel.source, set()).add(rel.target)
             adjacency.setdefault(rel.target, set()).add(rel.source)
         # 节点排序归一化（编号稳定的前提）
@@ -78,7 +79,7 @@ class HierarchicalCommunityDetector:
         self._merge_threshold = merge_threshold
         self._max_level = max_level
 
-    def detect_levels(self, store: BaseGraphStore) -> list[list[list[str]]]:
+    def detect_levels(self, store: BaseGraphStore, tenant_id: str | None = None) -> list[list[list[str]]]:
         """逐层聚合，返回 [[L1 社区], [L2 社区], ...]。
 
         **每层的 members 都是实体名**（不是下层 community_id）。理由：
@@ -90,7 +91,7 @@ class HierarchicalCommunityDetector:
         这与 `schemas.Community.members` 的注释（level>0 时为下层 community_id）
         冲突，取前者：数据可用性优先，注释在下一次改动里一并更正。
         """
-        base = ConnectedComponentsDetector().detect(store)
+        base = ConnectedComponentsDetector().detect(store, tenant_id)
         levels: list[list[list[str]]] = [base] if base else []
         current = base
         for _ in range(1, self._max_level):
@@ -166,7 +167,7 @@ def build_communities(
             store, llm, detector, min_size, max_communities, model_version, tenant_id
         )
     detector = detector or ConnectedComponentsDetector()
-    groups = detector.detect(store)
+    groups = detector.detect(store, tenant_id)
     communities: list[Community] = []
     for idx, members in enumerate(groups[:max_communities], start=1):
         cid = f"c-{idx:03d}"  # 稳定编号：同图同编号
@@ -175,7 +176,7 @@ def build_communities(
             generated_at=time.time(), model_version=model_version, tenant_id=tenant_id,
         )
         if len(members) >= min_size and llm is not None:
-            content = _community_brief(store, members)
+            content = _community_brief(store, members, tenant_id)
             try:
                 community.summary = llm.generate(COMMUNITY_SUMMARY_PROMPT.format(content=content)).strip()
             except Exception as exc:  # noqa: BLE001
@@ -203,7 +204,7 @@ def _build_hierarchical(
     budget = max_communities
     # prev_groups 记录上一层各社区的成员集合，用来给当前层算 parent_id
     prev_groups: list[tuple[str, list[str]]] = []
-    for level_idx, groups in enumerate(detector.detect_levels(store)):
+    for level_idx, groups in enumerate(detector.detect_levels(store, tenant_id)):
         if budget <= 0:
             break
         current: list[tuple[str, list[str]]] = []
@@ -231,7 +232,7 @@ def _build_hierarchical(
                 tenant_id=tenant_id,
             )
             if len(members) >= min_size and llm is not None:
-                content = _community_brief(store, members)
+                content = _community_brief(store, members, tenant_id)
                 try:
                     community.summary = llm.generate(
                         COMMUNITY_SUMMARY_PROMPT.format(content=content)
@@ -246,10 +247,10 @@ def _build_hierarchical(
     return communities
 
 
-def _community_brief(store: BaseGraphStore, members: list[str]) -> str:
+def _community_brief(store: BaseGraphStore, members: list[str], tenant_id: str | None = None) -> str:
     member_set = set(members)
     lines = []
-    for rel in store.all_relations():
+    for rel in store.all_relations(tenant_id):
         if rel.source in member_set and rel.target in member_set:
             lines.append(f"{rel.source} —{rel.relation}→ {rel.target}")
     return f"成员：{'、'.join(members[:20])}\n关系：\n" + "\n".join(lines[:30])

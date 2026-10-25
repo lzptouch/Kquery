@@ -1,4 +1,4 @@
-"""可观测设施（阶段 2 README §2.4）：Prometheus 指标 + 进程内聚合。
+"""可观测设施：Prometheus 指标 + 进程内聚合。
 
 - Prometheus 指标经 /metrics 端点暴露（运营侧拉取）；
 - 进程内聚合（MetricsStore）支撑 /admin/metrics/* JSON 端点（监控大盘首屏）；
@@ -10,7 +10,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 
-from prometheus_client import CollectorRegistry, Counter, Histogram, generate_latest
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
 
 
 class PromMetrics:
@@ -24,7 +24,7 @@ class PromMetrics:
         self.latency_seconds = Histogram(
             "rag_latency_seconds",
             "端到端延迟",
-            # TASK-131：原 label 为 ["tenant"]，是多租户下的高基数反模式——
+            # 原 label 为 ["tenant"]，是多租户下的高基数反模式——
             # 租户数随客户线性增长会让时间序列数量同步膨胀，最终打爆监控存储。
             # 租户维度改由**日志**承载（结构化日志的 tenant_id 字段），
             # 指标侧只保留低基数标签；按租户的 P95 应由日志后端聚合而非 Prometheus。
@@ -52,7 +52,7 @@ class PromMetrics:
             registry=self.registry,
         )
 
-        # ---- Agent 路径（TASK-131）----
+        # ---- Agent 路径----
         # 此前 6 个指标全部只在 pipeline.py 上报，Agent 与多智能体路径等于裸奔：
         # 成功率、工具失败率、熔断率、迭代轮数在监控大盘上完全看不到。
         # 标签一律低基数：status / mode / tool / result / action / reason 都是有限枚举，
@@ -78,7 +78,7 @@ class PromMetrics:
             buckets=(0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10, 30),
             registry=self.registry,
         )
-        # 这个指标是 TASK-110 的验收口：此前 replan 分支不可达，熔断率恒为 0，
+        # 这个指标是  的验收口：此前 replan 分支不可达，熔断率恒为 0，
         # 监控上看"一切正常"实际是分支从未执行。
         self.agent_fuse_total = Counter(
             "rag_agent_fuse_total", "Agent 熔断次数（按原因）",
@@ -96,7 +96,35 @@ class PromMetrics:
             registry=self.registry,
         )
 
+        # ---- 并发水位（批次 2）：背压与降级是否生效，只能靠这些指标判断 ----
+        self.inflight_requests = Gauge(
+            "kquery_inflight_requests", "在飞问答请求数", registry=self.registry
+        )
+        self.queue_depth = Gauge(
+            "kquery_queue_depth", "问答排队深度", registry=self.registry
+        )
+        self.upstream_in_use = Gauge(
+            "kquery_upstream_in_use", "上游许可占用", ["upstream"], registry=self.registry
+        )
+        self.upstream_circuit_open = Gauge(
+            "kquery_upstream_circuit_open", "上游熔断状态（1=open）", ["upstream"],
+            registry=self.registry,
+        )
+        self.shed_total = Counter(
+            "kquery_shed_total", "背压/降级拒绝数（按原因）", ["reason"], registry=self.registry
+        )
+        self._stats_provider = None
+
+    def set_stats_provider(self, fn) -> None:
+        """装配期注入水位采集函数（render 时调用，避免定时线程）。"""
+        self._stats_provider = fn
+
     def render(self) -> bytes:
+        if self._stats_provider is not None:
+            try:
+                self._stats_provider(self)
+            except Exception:  # noqa: BLE001 - 指标采集失败不得影响抓取
+                pass
         return generate_latest(self.registry)
 
 
@@ -120,7 +148,7 @@ class MetricsStore:
         self._lock = threading.Lock()
         self._buckets: dict[int, _MinuteBucket] = defaultdict(_MinuteBucket)
         self._retention = retention_minutes
-        # TASK-182：键改为**问题哈希**而非原文。
+        # 键改为**问题哈希**而非原文。
         # 进程内指标是长期驻留的聚合结构，把用户原话（可能含姓名、工号、病情等）
         # 明文留在内存里既违反最小化原则，也会在 /metrics 或排障导出时外泄。
         # 分析"哪些问题高频"用哈希足够（同一问题哈希一致，可计数、可聚合）。
@@ -139,6 +167,10 @@ class MetricsStore:
             "confidence_sum": 0.0, "confidence_n": 0,
             "regenerated": 0, "branches": {},
         }
+        # 批次 1：latency 采样。此前每请求 append 一条到分钟桶，500 QPS × 24h
+        # 会在进程内驻留数百万个 float（数百 MB 且只增不删直到桶过期）。
+        # 改为计数 + 每 10 个留 1 个 + 每桶上限 500 条，分位数精度损失可控。
+        self._latency_seen = 0
 
     @staticmethod
     def _minute(ts: float) -> int:
@@ -160,7 +192,9 @@ class MetricsStore:
                 bucket.ok += 1
             else:
                 bucket.error += 1
-            bucket.latencies.append(latency_ms)
+            self._latency_seen += 1
+            if self._latency_seen % 10 == 1 and len(bucket.latencies) < 500:
+                bucket.latencies.append(latency_ms)
             if from_cache:
                 bucket.cache_hit += 1
             else:
@@ -171,7 +205,7 @@ class MetricsStore:
             cutoff = minute - self._retention
             for key in [k for k in self._buckets if k < cutoff]:
                 del self._buckets[key]
-            # top queries（TASK-182：只存哈希，不存用户原话——见 _top_queries 初始化处）
+            # top queries（只存哈希，不存用户原话——见 _top_queries 初始化处）
             tq = self._top_queries[self._query_fingerprint(query)]
             tq["count"] += 1
             tq["latency_sum"] += latency_ms
@@ -235,7 +269,7 @@ class MetricsStore:
 
     @staticmethod
     def _query_fingerprint(query: str) -> str:
-        """问题指纹（TASK-182）。
+        """问题指纹。
 
         同一问题在任何时刻得到同一个哈希，因此"高频问题"仍然可统计、可排序；
         但聚合结构里不再持有用户原话。原话的追溯需求由审计（同样只存哈希）
@@ -249,7 +283,7 @@ class MetricsStore:
         with self._lock:
             rows = [
                 {
-                    # TASK-182：键已是哈希；字段名同步改为 query_hash，避免调用方
+                    # 键已是哈希；字段名同步改为 query_hash，避免调用方
                     # 误以为还能拿到原文
                     "query_hash": q,
                     "count": v["count"],
@@ -261,7 +295,7 @@ class MetricsStore:
             ]
         return sorted(rows, key=lambda r: r["count"], reverse=True)[:limit]
 
-    # ---- 阶段 5：质量指标（Faithfulness / 拒答率 / 重生成 / CRAG 分支占比）----
+    # ---- 质量指标（Faithfulness / 拒答率 / 重生成 / CRAG 分支占比）----
 
     def record_quality(self, verdict: str, confidence: float | None, branch: str | None,
                        regenerated: bool, answer_source: str = "") -> None:
@@ -294,7 +328,7 @@ class MetricsStore:
             round(q["confidence_sum"] / q["confidence_n"], 4) if q["confidence_n"] else None
         )
         return {
-            # TASK-176：这个值本来是**置信度均值**，却叫 faithfulness（忠实度），
+            # 这个值本来是**置信度均值**，却叫 faithfulness（忠实度），
             # 语义不符会让看板读者以为它是 RAGAS 那种"答案是否有据"的指标。
             # 现在用准确的名字，并保留 `faithfulness` 作为**兼容别名**（旧前端/看板
             # 直接读这个键，改名会静默显示为空），标记为 deprecated。
@@ -309,7 +343,7 @@ class MetricsStore:
             "parametric_rate": round(q["parametric"] / total, 4),
         }
 
-    # ---- 阶段 6：Agent 执行指标 ----
+    # ---- Agent 执行指标 ----
 
     def record_agent_run(
         self,

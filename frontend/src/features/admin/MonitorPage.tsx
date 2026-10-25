@@ -1,4 +1,4 @@
-/** 监控大盘（/admin/monitor，阶段 2 前端规范 §3）。
+/** 监控大盘（/admin/monitor， §3）。
  *
  * 5 个 MetricCard（QPS / 错误率 / P95 延迟 / 缓存命中率 / LLM 调用）+
  * 趋势图（SVG 迷你折线）+ Top Queries 表。数值必配阈值变色与文字趋势。
@@ -155,7 +155,7 @@ export function MonitorPage() {
           </MetricCard>
         </div>
 
-        {/* 质量指标区（阶段 5 前端规范 §4.1） */}
+        {/* 质量指标区 */}
         {quality && (
           <div className="card">
             <h3 style={{ marginTop: 0 }}>答案质量</h3>
@@ -205,10 +205,10 @@ export function MonitorPage() {
           </div>
         )}
 
-        {/* 图谱与多模态指标区（阶段 7 前端规范 §5） */}
+        {/* 图谱与多模态指标区 */}
         {graphStats && (graphStats.entities > 0 || graphStats.images > 0) && (
           <div className="card">
-            <h3 style={{ marginTop: 0 }}>图谱与多模态（阶段 7）</h3>
+            <h3 style={{ marginTop: 0 }}>图谱与多模态</h3>
             <div className="metric-grid">
               <MetricCard title="实体总数" value={String(graphStats.entities)} ariaLabel={`实体 ${graphStats.entities} 个`}>
                 <span className="trace-id">知识图谱节点数</span>
@@ -234,10 +234,10 @@ export function MonitorPage() {
           </div>
         )}
 
-        {/* Agent 执行指标区（阶段 6 前端规范 §4.1） */}
+        {/* Agent 执行指标区 */}
         {agent && agent.runs > 0 && (
           <div className="card">
-            <h3 style={{ marginTop: 0 }}>Agent 执行（阶段 6）</h3>
+            <h3 style={{ marginTop: 0 }}>Agent 执行</h3>
             <div className="metric-grid">
               <MetricCard title="平均迭代次数" value={String(agent.avg_iterations)} ariaLabel={`平均迭代 ${agent.avg_iterations} 次`}>
                 <span className="trace-id">反映任务复杂度</span>

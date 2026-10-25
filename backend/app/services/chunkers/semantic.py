@@ -1,4 +1,4 @@
-"""语义切块（阶段 3 README §2.2）。
+"""语义切块。
 
 相邻句子的语义距离 1 - cosine(v_i, v_{i+1}) 超过阈值即切；
 min_sentences 避免单句成块（上下文断裂），max_sentences 防止永不切（buffer 膨胀）。

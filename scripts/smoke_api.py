@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""端到端接口冒烟测试：对着真实运行的服务打，覆盖 stage-0~9 的关键路径。
+"""端到端接口冒烟测试：对着真实运行的服务打，覆盖 ~9 的关键路径。
 
 为什么不用 pytest：这里要验的是**部署形态**（容器 + Milvus + nginx 代理），
 不是应用内逻辑。应用逻辑由 backend/tests 覆盖，这里管的是"装起来还能不能用"。
@@ -20,7 +20,7 @@ PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 
 
-# TASK-160 之后所有 /admin/* 都要求 admin 角色。本脚本是**鉴权改造前**写的，
+#  之后所有 /admin/* 都要求 admin 角色。本脚本是**鉴权改造前**写的，
 # 不带凭证会让管理端点全部 403——那不是产品缺陷而是脚本过期。这里统一注入身份头。
 # 说明：AUTH_ENABLED=false 时后端信任 X-Roles（本地开发模式）；真实凭证模式下
 # 需改用 Authorization: Bearer <token>，见 README。
@@ -231,8 +231,8 @@ def run(base: str) -> int:
         check("身份头模式下匿名 /auth/me 返回 200（anon 主体）", status == 200,
               f"实际 {status}: {str(body)[:100]}")
 
-    # ---------------------------------------------------------- stage-0 契约
-    section("stage-0 · 全局契约与探针")
+    # ----------------------------------------------------------  契约
+    section("全局契约与探针")
     status, body = call(base, "GET", "/healthz")
     check("/healthz 返回 200", status == 200, f"实际 {status}")
     # 经代理时最常见的坑：健康端点被当成 SPA 页面返回 HTML。
@@ -257,8 +257,8 @@ def run(base: str) -> int:
     status, body = call(base, "GET", "/metrics")
     check("/metrics 返回 Prometheus 文本", status == 200 and "# HELP" in str(body))
 
-    # ---------------------------------------------------------- stage-1 入库
-    section("stage-1 · 文档上传与索引")
+    # ----------------------------------------------------------  入库
+    section("文档上传与索引")
     boundary = "----kquery-smoke-boundary"
     payload = (
         f"--{boundary}\r\n"
@@ -306,8 +306,8 @@ def run(base: str) -> int:
             check("切块详情可查", status == 200 and data_of(detail).get("chunk_id") == cid,
                   f"实际 {status}")
 
-    # ---------------------------------------------------------- stage-2 检索
-    section("stage-2 · 混合检索与检索配置")
+    # ----------------------------------------------------------  检索
+    section("混合检索与检索配置")
     status, body = call(base, "POST", "/knowledge/retrieval-probe",
                         body={"doc_id": doc_id, "query": "机会成本是什么", "top_k": 3})
     check("检索探针端点返回 200", status == 200, f"实际 {status}: {str(body)[:160]}")
@@ -337,8 +337,8 @@ def run(base: str) -> int:
     check("检索配置含生效参数", bool(active), f"keys={sorted(cfg)}")
     check("生效配置含 rrf_k", "rrf_k" in active, f"active keys={sorted(active)[:12]}")
 
-    # ---------------------------------------------------------- stage-1 问答
-    section("stage-1/4/5 · 问答与自检")
+    # ----------------------------------------------------------  问答
+    section("/4/5 · 问答与自检")
     status, body = call(base, "POST", "/ask", body={"question": "什么是机会成本？"})
     check("问答返回 200", status == 200, f"实际 {status}: {str(body)[:200]}")
     data = data_of(body)
@@ -346,18 +346,18 @@ def run(base: str) -> int:
     check("返回引用溯源证据", len(data.get("evidence") or []) > 0,
           f"answer={data.get('answer')!r} evidence={len(data.get('evidence') or [])}")
     check("含 trace_id", bool(data.get("trace_id")), "缺 trace_id")
-    # stage-4：意图识别与成本核算
+    # 意图识别与成本核算
     analysis = data.get("analysis") or {}
     check("问答响应含意图判定", bool(analysis.get("intent")), f"analysis={analysis}")
     check("问答响应含预处理分析", bool(analysis), "缺 analysis")
     if analysis:
-        check("分析含 cost 字段（stage-4 §7 成本）", "cost" in analysis,
+        check("分析含 cost 字段（ 成本）", "cost" in analysis,
               f"analysis keys={sorted(analysis)}")
         check("分析含意图置信度", analysis.get("intent_confidence") is not None)
         check("分析含改写列表", isinstance(analysis.get("rewrites"), list))
         check("分析含耗时", isinstance(analysis.get("elapsed_ms"), int))
     check("分析含数据源路由", isinstance(analysis.get("sources"), list))
-    # stage-2 的核心：BM25 与向量两路都真实召回，不是只跑一路
+    #  的核心：BM25 与向量两路都真实召回，不是只跑一路
     retrieval = data.get("retrieval") or {}
     check("问答链路走混合检索",
           retrieval.get("keyword_candidates", 0) > 0 and retrieval.get("vector_candidates", 0) > 0,
@@ -366,7 +366,7 @@ def run(base: str) -> int:
           f"reranked={data.get('reranked')} rerank_ms={retrieval.get('rerank_ms')}")
 
     # ---------------------------------------------------------- SSE 流式
-    section("stage-1 · SSE 流式问答")
+    section("SSE 流式问答")
     status, text = call(base, "POST", "/ask/stream",
                          body={"question": "边际思维是什么意思"},
                          raw=True, timeout=180)
@@ -374,8 +374,8 @@ def run(base: str) -> int:
     check("SSE 产出 token 事件", "event: token" in str(text), f"前 200 字: {str(text)[:200]}")
     check("SSE 有 done 事件", "event: done" in str(text))
 
-    # ---------------------------------------------------------- stage-4 分析
-    section("stage-4 · Query 分析")
+    # ----------------------------------------------------------  分析
+    section("Query 分析")
     # 说明：项目没有独立的"分析这个 query"端点，预处理是在 /ask 内部完成的。
     # 这里只能验证历史分析记录可查，成本字段则在下面的 ask 响应里查。
     status, body = call(base, "GET", "/knowledge/query-analysis?limit=5")
@@ -387,8 +387,8 @@ def run(base: str) -> int:
         check("分析记录含意图字段", bool(row.get("intent")), f"keys={sorted(row)}")
         check("分析记录含降级标注", "degraded" in row, f"keys={sorted(row)}")
 
-    # ---------------------------------------------------------- stage-7 图谱
-    section("stage-7 · 图谱与跨模态")
+    # ----------------------------------------------------------  图谱
+    section("图谱与跨模态")
     status, body = call(base, "GET", "/graph/entities")
     check("图谱实体端点返回 200", status == 200, f"实际 {status}")
     status, body = call(base, "GET", "/graph/stats")
@@ -399,9 +399,9 @@ def run(base: str) -> int:
     status, body = call(base, "GET", "/graph/subgraph?name=%E6%9C%BA%E4%BC%9A%E6%88%90%E6%9C%AC&depth=1")
     check("子图查询返回 200", status == 200, f"实际 {status}")
 
-    # ---------------------------------------------------------- stage-9 安全
-    section("stage-9 · 认证与审计")
-    # 先验鉴权真的在拦人（TASK-160 的验收口）：匿名与越权都必须被拒。
+    # ----------------------------------------------------------  安全
+    section("认证与审计")
+    # 先验鉴权真的在拦人（ 的验收口）：匿名与越权都必须被拒。
     # 这两条若失败，说明管理端点又裸奔了——比"功能好用"更该优先发现。
     #
     # 匿名期望值是 401/403 二者之一：401=没带凭证被认证层拦下，
@@ -452,13 +452,13 @@ def run(base: str) -> int:
     status, body = call(base, "GET", "/admin/quota/platform")
     check("平台配额端点返回 200", status == 200, f"实际 {status}")
 
-    # ---------------------------------------------------------- stage-10 会话
-    section("stage-6 · Agent 会话")
+    # ----------------------------------------------------------  会话
+    section("Agent 会话")
     status, body = call(base, "GET", "/sessions")
     check("会话列表返回 200", status == 200, f"实际 {status}")
 
     # ---------------------------------------------------------- 错误契约
-    section("stage-0 · 错误语义")
+    section("错误语义")
     status, body = call(base, "GET", "/knowledge/preview/does-not-exist")
     check("不存在的文档返回 404", status == 404, f"实际 {status}")
     check("404 响应仍是统一信封", isinstance(body, dict) and "error" in body, f"实际 {str(body)[:150]}")

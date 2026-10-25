@@ -1,4 +1,4 @@
-# Kquery 全栈编排（stage-10 §6）
+# Kquery 全栈编排（）
 #
 # 起法：
 #   docker compose up -d --build      # 构建并启动全栈

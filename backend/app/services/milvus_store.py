@@ -3,8 +3,8 @@
 - 生产：Milvus Standalone（deploy/milvus，http://localhost:19530）；
 - 测试：Milvus Lite（pymilvus 内嵌，本地文件 URI），同一套 MilvusClient API；
 - 块元数据（content/source/tenant_id 等）作为标量字段与向量同库存储，
-  租户与文档过滤由 Milvus 标量过滤表达式一次完成（阶段 1 §4.4 约定的落地）；
-- COSINE 度量 + 入库前归一化（沿用阶段 1 约定）。
+  租户与文档过滤由 Milvus 标量过滤表达式一次完成；
+- COSINE 度量 + 入库前归一化（沿用 约定）。
 """
 import logging
 import threading
@@ -12,6 +12,7 @@ import threading
 from pymilvus import DataType, MilvusClient
 
 from app.domain.schemas import Chunk
+from app.services.upstream import bulkhead
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class MilvusVectorStore:
         schema.add_field("tenant_id", DataType.VARCHAR, max_length=64)
         schema.add_field("source", DataType.VARCHAR, max_length=256)
         schema.add_field("is_short", DataType.BOOL)
-        # 阶段 3 扩展字段
+        #  扩展字段
         schema.add_field("chunker", DataType.VARCHAR, max_length=32)
         schema.add_field("level", DataType.INT64)
         schema.add_field("parent_id", DataType.VARCHAR, max_length=256)
@@ -139,8 +140,8 @@ class MilvusVectorStore:
     ) -> list[tuple[Chunk, float]]:
         """向量检索。
 
-        TASK-142：Milvus 支持表达式过滤，因此把 ACL 允许清单**下推到召回阶段**——
-        不可见文档根本不参与 top-k 竞争，从根上消除「后过滤吃掉名额」（DEF-R-6）。
+        Milvus 支持表达式过滤，因此把 ACL 允许清单**下推到召回阶段**——
+        不可见文档根本不参与 top-k 竞争，从根上消除「后过滤吃掉名额」。
         清单过大时 `to_milvus_expr` 会自行降级为 tenant 粗过滤（表达式长度上限）。
         """
         if filters is not None:
@@ -149,13 +150,15 @@ class MilvusVectorStore:
             expr = f'tenant_id == "{tenant_id}"'
             if doc_id is not None:
                 expr += f' and doc_id == "{doc_id}"'
-        results = self._client.search(
-            collection_name=self._collection,
-            data=[query_vector],
-            filter=expr,
-            limit=top_k,
-            output_fields=_OUTPUT_FIELDS,
-        )
+        # 批次 2：上游隔离仓（向量库并发与熔断独立于 LLM 通道）
+        with bulkhead("milvus").acquire(timeout_s=30.0):
+            results = self._client.search(
+                collection_name=self._collection,
+                data=[query_vector],
+                filter=expr,
+                limit=top_k,
+                output_fields=_OUTPUT_FIELDS,
+            )
         hits: list[tuple[Chunk, float]] = []
         for hit in results[0]:
             hits.append((_row_to_chunk(hit["entity"]), round(float(hit["distance"]), 6)))
@@ -169,7 +172,7 @@ class MilvusVectorStore:
             )
             return before - self.total
 
-    _QUERY_PAGE_SIZE = 1000  # Milvus 单次 query 硬上限 16384，分页拉取避免静默截断（DEF-R-3）
+    _QUERY_PAGE_SIZE = 1000  # Milvus 单次 query 硬上限 16384，分页拉取避免静默截断
 
     def _query_all(self, filter: str, output_fields: list[str]) -> list[dict]:
         """分页拉取全部匹配行。

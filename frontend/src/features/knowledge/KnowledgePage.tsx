@@ -1,4 +1,4 @@
-/** 知识库管理页（/knowledge）：上传 + 文件列表 + 状态标签 + 操作菜单（阶段 1 §5）。
+/** 知识库管理页（/knowledge）：上传 + 文件列表 + 状态标签 + 操作菜单。
  *
  * 四态：loading（骨架屏）/ empty（引导上传）/ error（inline + 重试）/ data（表格）。
  * "块数可见"是用户判断入库成功的直接证据，必须展示。
@@ -123,7 +123,7 @@ export function KnowledgePage() {
   return (
     <div className="page">
       <div className="page-inner">
-        {/* 检索 KPI 看板（阶段 2 前端规范 §5.1） */}
+        {/* 检索 KPI 看板 */}
         {stats && (
           <div className="kpi-row">
             <span className="kpi-item">
@@ -151,7 +151,7 @@ export function KnowledgePage() {
           <DocumentUploader onUploaded={load} />
         </div>
 
-        {/* Query 模式分析（阶段 4 前端规范 §5.1） */}
+        {/* Query 模式分析 */}
         {patterns.length > 0 && (
           <div className="card">
             <div style={{ display: "flex", alignItems: "center" }}>

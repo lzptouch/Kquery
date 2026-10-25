@@ -1,4 +1,4 @@
-/** 数据源标签（stage-4 §2.2 / stage-7 §4）。
+/** 数据源标签（ / ）。
  *
  * 抽成独立文件是因为它同时被 QueryAnalysisPanel（子问题的期望来源）与
  * EvidenceCard（证据的实际来源）使用——"子问题要去 sql 源"和"这条证据来自 sql 源"

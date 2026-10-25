@@ -1,10 +1,15 @@
-"""问答端点（阶段 1 §4 + 阶段 6 Agentic + 阶段 9 安全网关）。
+"""问答端点。
 
-网关顺序（§10.1）：认证 → Principal → 配额（滑动窗口）→ Agent 执行
+网关顺序：认证 → Principal → 配额（滑动窗口）→ Agent 执行
 （检索前租户过滤 + 检索后 ACL）→ 输出敏感词扫描 → 审计三事件 → 响应。
+
+并发模型（批次 1）：端点全部为 async，同步管线经 `PipelineExecutor`
+（在飞 32 + 排队 200 + 503 背压）执行；SSE 连接不再占用线程池线程。
 """
 import json
 import logging
+import threading
+from collections.abc import Iterator
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
@@ -32,6 +37,7 @@ from app.domain.schemas import AskRequest
 from app.services.agent.runner import AgentRunner
 from app.services.llm import LLMError
 from app.services.pipeline import RagPipeline
+from app.services.pipeline_executor import OverloadedError, PipelineExecutor, raise_overloaded
 from app.services.query.intent import is_obvious_chitchat
 from app.services.security.auth import Principal
 
@@ -117,7 +123,7 @@ def _degraded_warning(result: dict) -> tuple[int, str] | None:
     """降级语义 → warn 信封。
 
     重排不可用是用户该知道的事（44xx 轻提示）；缓存不可用不是——它无感降级，
-    只上报指标（stage-2 §错误码）。
+    只上报指标（ §错误码）。
     """
     # 通用知识兜底是用户该知道的事：答案不来自知识库（warn 信封，仍返回结果）
     if result.get("answer_source") == "parametric":
@@ -136,7 +142,7 @@ def _envelope_for(result: dict, trace_id: str, elapsed_ms: int) -> Envelope:
 
 
 @router.post("/ask", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
-def ask(
+async def ask(
     req: AskRequest,
     request: Request,
     principal: Principal = Depends(get_principal),
@@ -147,23 +153,29 @@ def ask(
     set_trace_id(trace_id)
     started = now_ms()
     _validate_question(req)
+    executor: PipelineExecutor = request.app.state.pipeline_executor
     try:
         _assert_quick_doc(request, req, principal)
         if _use_agent(req, settings):
             runner: AgentRunner = request.app.state.agent_runner
             tenant, user, session_id = _agent_identity(req, principal)
-            final: dict | None = None
-            for event, payload in runner.run(
-                req.question, tenant, user, session_id or None,
-                doc_name_resolver=request.app.state.knowledge.filename_of,
-                acl_filter=acl_filter_of(request, principal),
-                trace_id=trace_id,
-                # TASK-137：闲聊零成本短路。此前该参数在 Agent 路径**从无生产调用点**，
-                # 导致"你好"也白跑 plan→tool→reflect 全循环并计费。
-                skip_retrieval=is_obvious_chitchat(req.question),
-            ):
-                if event == "_final":
-                    final = payload
+
+            def _collect() -> dict | None:
+                final: dict | None = None
+                for event, payload in runner.run(
+                    req.question, tenant, user, session_id or None,
+                    doc_name_resolver=request.app.state.knowledge.filename_of,
+                    acl_filter=acl_filter_of(request, principal),
+                    trace_id=trace_id,
+                    # 闲聊零成本短路。此前该参数在 Agent 路径**从无生产调用点**，
+                    # 导致"你好"也白跑 plan→tool→reflect 全循环并计费。
+                    skip_retrieval=is_obvious_chitchat(req.question),
+                ):
+                    if event == "_final":
+                        final = payload
+                return final
+
+            final = await executor.run_async(_collect)
             result = {
                 **(final or {"answer": "", "evidence": [], "verdict": "refused"}),
                 "trace_id": trace_id,
@@ -176,9 +188,13 @@ def ask(
         tenant, user, _ = _agent_identity(req, principal)
         scoped = pipeline.bind_principal(tenant, user, principal)
         scoped._acl_filter = acl_filter_of(request, principal)
-        result = scoped.ask(req.question, tenant, trace_id, req.top_k, doc_id=req.doc_id)
+        result = await executor.run_async(
+            scoped.ask, req.question, tenant, trace_id, req.top_k, doc_id=req.doc_id
+        )
         payload = result.model_dump()
         return _envelope_for(payload, trace_id, result.elapsed_ms)
+    except OverloadedError:
+        raise_overloaded()
     except LLMError as exc:
         return error_envelope(exc.code, exc.message, trace_id, elapsed_ms_since(started))
     except ApiError:
@@ -188,55 +204,43 @@ def ask(
         return error_envelope(ErrCode.INTERNAL_ERROR, "服务暂时不可用，请稍后再试", trace_id, elapsed_ms_since(started))
 
 
-@router.post("/ask/stream", dependencies=[Depends(enforce_rate_limit)])
-def ask_stream(
-    req: AskRequest,
-    request: Request,
-    principal: Principal = Depends(get_principal),
-    pipeline: RagPipeline = Depends(get_pipeline),
-    settings: Settings = Depends(get_app_settings),
+def _stream_response(
+    executor: PipelineExecutor,
+    factory,
+    trace_id: str,
+    on_value_error: bool = False,
 ) -> StreamingResponse:
-    trace_id = get_trace_id()
-    set_trace_id(trace_id)
-    _validate_question(req)
-    _assert_quick_doc(request, req, principal)
-    use_agent = _use_agent(req, settings)
-    runner: AgentRunner | None = request.app.state.agent_runner if use_agent else None
-    tenant, user, session_id = _agent_identity(req, principal)
-    acl_filter = acl_filter_of(request, principal)
-    # 线性路径的主体绑定与 ACL 与 Agent 路径对齐
-    scoped = None if runner is not None else pipeline.bind_principal(tenant, user, principal)
-    if scoped is not None:
-        scoped._acl_filter = acl_filter
+    """把同步事件工厂包装成带背压/心跳/断线取消的 SSE 响应（批次 1）。
 
-    def event_source():
+    事件名与顺序保持不变（契约零破坏）；新增的只有 `: ping` 心跳注释行，
+    SSE 规范下客户端会忽略未知注释行，不影响既有前端解析。
+    """
+    cancel = threading.Event()
+
+    async def event_source():
         try:
-            if runner is not None:
-                last_answer = ""
-                for event, payload in runner.run(
-                    req.question, tenant, user, session_id or None,
-                    doc_name_resolver=request.app.state.knowledge.filename_of,
-                    acl_filter=acl_filter,
-                    trace_id=trace_id,
-                ):
-                    if event == "_final":
-                        payload = {**payload, "trace_id": trace_id, "session_id": session_id or None}
-                        last_answer = payload.get("answer", "")
-                        yield _sse("done", payload)
-                    else:
-                        yield _sse(event, payload)
-                # F5：首轮自动命名（流式结束后补写标题）
-                _auto_title(request, principal, session_id, req.question, last_answer)
+            async for event, payload in executor.stream_events(factory, cancel):
+                if event == "__heartbeat__":
+                    yield ": ping\n\n"
+                else:
+                    yield _sse(event, payload)
+        except OverloadedError:
+            yield _sse("error", {
+                "code": int(ErrCode.RATE_LIMITED), "message": "服务繁忙，请稍后重试",
+                "trace_id": trace_id,
+            })
+        except ValueError as exc:
+            if on_value_error:
+                yield _sse("error", {
+                    "code": int(ErrCode.INVALID_INPUT), "message": str(exc), "trace_id": trace_id,
+                })
             else:
-                for event, data in scoped.ask_stream(
-                    req.question, tenant, trace_id, req.top_k, doc_id=req.doc_id
-                ):
-                    yield _sse(event, data)
+                raise
         except ApiError as exc:
             yield _sse("error", {"code": int(exc.code), "message": exc.message, "trace_id": trace_id})
         except Exception:
-            logger.exception("ask/stream 异常 trace_id=%s", trace_id)
-            yield _sse("error", {"code": ErrCode.INTERNAL_ERROR, "message": "服务暂时不可用", "trace_id": trace_id})
+            logger.exception("SSE 异常 trace_id=%s", trace_id)
+            yield _sse("error", {"code": int(ErrCode.INTERNAL_ERROR), "message": "服务暂时不可用", "trace_id": trace_id})
 
     return StreamingResponse(
         event_source(),
@@ -250,7 +254,55 @@ def ask_stream(
     )
 
 
-# ---------- TASK-124 · 人在环（HITL）----------
+@router.post("/ask/stream", dependencies=[Depends(enforce_rate_limit)])
+async def ask_stream(
+    req: AskRequest,
+    request: Request,
+    principal: Principal = Depends(get_principal),
+    pipeline: RagPipeline = Depends(get_pipeline),
+    settings: Settings = Depends(get_app_settings),
+) -> StreamingResponse:
+    trace_id = get_trace_id()
+    set_trace_id(trace_id)
+    _validate_question(req)
+    # F4 快问：doc_id 必须属于当前主体/会话（否则等于越权访问他人临时文档）
+    _assert_quick_doc(request, req, principal)
+    executor: PipelineExecutor = request.app.state.pipeline_executor
+    use_agent = _use_agent(req, settings)
+    runner: AgentRunner | None = request.app.state.agent_runner if use_agent else None
+    tenant, user, session_id = _agent_identity(req, principal)
+    acl_filter = acl_filter_of(request, principal)
+    # 线性路径的主体绑定与 ACL 与 Agent 路径对齐
+    scoped = None if runner is not None else pipeline.bind_principal(tenant, user, principal)
+    if scoped is not None:
+        scoped._acl_filter = acl_filter
+
+    def factory() -> Iterator[tuple[str, dict]]:
+        if runner is not None:
+            last_answer = ""
+            for event, payload in runner.run(
+                req.question, tenant, user, session_id or None,
+                doc_name_resolver=request.app.state.knowledge.filename_of,
+                acl_filter=acl_filter,
+                trace_id=trace_id,
+            ):
+                if event == "_final":
+                    last_answer = payload.get("answer", "")
+                    yield "done", {**payload, "trace_id": trace_id, "session_id": session_id or None}
+                else:
+                    yield event, payload
+            # F5：首轮自动命名（流式结束后补写标题）
+            _auto_title(request, principal, session_id, req.question, last_answer)
+        else:
+            # F4 快问：doc_id 限定检索范围（只查这一个临时文档）
+            yield from scoped.ask_stream(
+                req.question, tenant, trace_id, req.top_k, doc_id=req.doc_id
+            )
+
+    return _stream_response(executor, factory, trace_id)
+
+
+# ----------  · 人在环（HITL）----------
 
 
 class ResumeRequest(BaseModel):
@@ -283,7 +335,7 @@ def get_interrupt(
 
 
 @router.post("/ask/runs/{run_id}/resume", dependencies=[Depends(enforce_rate_limit)])
-def resume_run(
+async def resume_run(
     run_id: str,
     req: ResumeRequest,
     request: Request,
@@ -293,53 +345,31 @@ def resume_run(
     """唤醒挂起的 run，继续把事件流跑完（SSE，与 `/ask/stream` 同构）。"""
     trace_id = get_trace_id()
     set_trace_id(trace_id)
+    executor: PipelineExecutor = request.app.state.pipeline_executor
     runner: AgentRunner = request.app.state.agent_runner
     tenant, user, _ = _agent_identity(AskRequest(question="-"), principal)
     _assert_run_owner(run_id, principal, settings)
     acl_filter = acl_filter_of(request, principal)
     decision = {"action": req.action, "value": req.value}
 
-    def event_source():
-        try:
-            for event, payload in runner.resume(
-                run_id,
-                decision,
-                doc_name_resolver=request.app.state.knowledge.filename_of,
-                acl_filter=acl_filter,
-                trace_id=trace_id,
-            ):
-                if event == "_final":
-                    yield _sse("done", {**payload, "trace_id": trace_id})
-                else:
-                    yield _sse(event, payload)
-        except ValueError as exc:
-            yield _sse("error", {
-                "code": int(ErrCode.INVALID_INPUT), "message": str(exc), "trace_id": trace_id,
-            })
-        except ApiError as exc:
-            yield _sse("error", {
-                "code": int(exc.code), "message": exc.message, "trace_id": trace_id,
-            })
-        except Exception:
-            logger.exception("ask/resume 异常 run_id=%s", run_id)
-            yield _sse("error", {
-                "code": ErrCode.INTERNAL_ERROR, "message": "服务暂时不可用", "trace_id": trace_id,
-            })
+    def factory() -> Iterator[tuple[str, dict]]:
+        for event, payload in runner.resume(
+            run_id,
+            decision,
+            doc_name_resolver=request.app.state.knowledge.filename_of,
+            acl_filter=acl_filter,
+            trace_id=trace_id,
+        ):
+            if event == "_final":
+                yield "done", {**payload, "trace_id": trace_id}
+            else:
+                yield event, payload
 
-    return StreamingResponse(
-        event_source(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "X-Trace-Id": trace_id,
-        },
-    )
+    return _stream_response(executor, factory, trace_id, on_value_error=True)
 
 
 def _assert_run_owner(run_id: str, principal: Principal, settings: Settings) -> None:
-    """run_id 归属校验（TASK-142 纪律：跨主体的 run_id 一律 404，不用 403 避免存在性探测）。
+    """run_id 归属校验（ 纪律：跨主体的 run_id 一律 404，不用 403 避免存在性探测）。
 
     thread_id 约定为 `{tenant}:{user}:{seq}:{turn}`（见 `_agent_identity` 与
     `thread_id_for`），因此前缀即归属凭证。
@@ -358,10 +388,10 @@ def cancel_run(
     principal: Principal = Depends(get_principal),
     settings: Settings = Depends(get_app_settings),
 ) -> Envelope:
-    """中止一个进行中的 Agent run（TASK-126）。
+    """中止一个进行中的 Agent run。
 
     语义是**停止产生新的工具/模型调用**，而不是掐断正在执行的那一个——
-    Python 线程无法被强制中断（见 TASK-119 的技术边界）。因此取消后
+    Python 线程无法被强制中断（见  的技术边界）。因此取消后
     最迟在"当前这一步跑完"时停止，`incomplete=True`。
     """
     trace_id = get_trace_id()
@@ -381,7 +411,7 @@ def ask_cost(
     request: Request,
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
-    """单次问答的成本账单（TASK-134）。
+    """单次问答的成本账单。
 
     按阶段与模型归集 token 与金额。`priced=False` 表示价格表未覆盖某个模型，
     此时金额**不可信**（显示为未知而非免费），前端应据此提示。
@@ -391,4 +421,8 @@ def ask_cost(
     started = now_ms()
     from app.services.agent.cost import get_ledger
 
-    return ok_envelope(get_ledger().for_trace(trace_id), _tid, elapsed_ms_since(started))
+    # KQ-02：成本账单含模型与金额信息，必须按租户收敛（跨租户读取即越权）
+    return ok_envelope(
+        get_ledger().for_trace(trace_id, tenant_id=principal.tenant_id),
+        _tid, elapsed_ms_since(started),
+    )

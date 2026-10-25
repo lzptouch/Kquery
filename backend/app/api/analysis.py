@@ -1,4 +1,4 @@
-"""Query 分析端点（阶段 4 前端规范 §4 / §6）。
+"""Query 分析端点。
 
 - GET /knowledge/query-analysis：分析历史（意图/是否检索/时间范围过滤）；
 - GET /knowledge/query-analysis/{id}：单条详情（改写/子问题/路由全字段）；

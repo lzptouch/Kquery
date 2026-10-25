@@ -1,4 +1,4 @@
-"""结构化日志（TASK-133）。
+"""结构化日志。
 
 此前是 `logging.basicConfig(format="%(asctime)s %(levelname)s %(name)s %(message)s")`：
 纯文本行，字段得靠正则从消息里抠。上了日志平台之后，"按 trace_id 串起一次请求"

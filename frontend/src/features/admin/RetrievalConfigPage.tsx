@@ -1,4 +1,4 @@
-/** 检索参数配置（/admin/retrieval-config，阶段 2 前端规范 §4）。
+/** 检索参数配置（/admin/retrieval-config， §4）。
  *
  * 保存不立即生效：后端返回生效时刻，页面显著提示"修改将于 HH:MM:SS 生效"。
  */

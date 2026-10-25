@@ -1,4 +1,4 @@
-"""入库任务队列（阶段 3 §4.1 / §6.4 / 前端规范 §3）。
+"""入库任务队列。
 
 - 入库从"一次请求一次结果"升级为**可查询、可重试、可取消**的长流程：
   用户上传后立即返回 task_id，前端轮询任务进度页；
@@ -62,6 +62,7 @@ class TaskManager:
         tasks_file: Path,
         ingest_dir: Path,
         post_index: PostIndexHook | None = None,
+        workers: int = 2,
     ):
         self._knowledge = knowledge
         self._tasks_file = tasks_file
@@ -70,12 +71,20 @@ class TaskManager:
         self._tasks: dict[str, IngestTask] = {}
         self._cancel_flags: dict[str, threading.Event] = {}
         self._parse_cache: dict[str, ParseResult] = {}  # file_id → 解析产物（重试复用）
-        # 入库后置钩子：图谱构建 + 图像索引（stage-7 §5.1）。不传则退化为纯手动触发。
+        # 入库后置钩子：图谱构建 + 图像索引（）。不传则退化为纯手动触发。
         self._post_index = post_index
-        self._queue: queue.Queue[str] = queue.Queue()
+        # 并发提容（批次 3）：有界队列 + 背压。此前是无界队列——批量提交时任务
+        # 无限堆积且无法拒绝；满时 submit 返回 False，API 层映射 503。
+        self._queue: queue.Queue[str | None] = queue.Queue(maxsize=200)
+        self._workers_n = max(1, int(workers))
+        self._stopping = threading.Event()
         self._load()
-        self._worker = threading.Thread(target=self._loop, name="ingest-worker", daemon=True)
-        self._worker.start()
+        self._workers = [
+            threading.Thread(target=self._loop, name=f"ingest-worker-{i}", daemon=True)
+            for i in range(self._workers_n)
+        ]
+        for w in self._workers:
+            w.start()
 
     def task_dir(self, task_id: str) -> Path:
         return self._ingest_dir / task_id
@@ -123,6 +132,7 @@ class TaskManager:
         parse_policy: dict,
         chunk_policy: dict,
         created_by: str = "system",
+        tenant_id: str | None = None,
     ) -> IngestTask:
         """创建任务（两阶段提交）：先建档，API 保存完文件后调 submit() 入队。"""
         task = IngestTask(
@@ -131,6 +141,7 @@ class TaskManager:
             chunk_policy=chunk_policy,
             total_files=len(files),
             created_by=created_by,
+            tenant_id=tenant_id or self._knowledge.default_tenant_id,
             created_at=datetime.now(timezone.utc).isoformat(),
             files=[
                 FileRecord(
@@ -151,10 +162,44 @@ class TaskManager:
         logger.info("入库任务已创建: %s（%d 个文件）", task.task_id, task.total_files)
         return task
 
-    def submit(self, task_id: str) -> None:
-        """文件落盘后提交任务进入执行队列。"""
+    def submit(self, task_id: str) -> bool:
+        """文件落盘后提交任务进入执行队列。队列满返回 False（调用方应拒绝并清理）。"""
         self.get(task_id)
-        self._queue.put(task_id)
+        try:
+            self._queue.put_nowait(task_id)
+            return True
+        except queue.Full:
+            logger.warning("入库队列已满（200），任务 %s 被拒", task_id)
+            return False
+
+    def discard(self, task_id: str) -> None:
+        """废弃尚未入队的任务（上传校验失败时回收任务目录与记录）。"""
+        import shutil
+
+        with self._lock:
+            self._tasks.pop(task_id, None)
+            self._cancel_flags.pop(task_id, None)
+            self._save()
+        shutil.rmtree(self.task_dir(task_id), ignore_errors=True)
+
+    def remove_files_for_doc(self, doc_id: str) -> int:
+        """删除文档时联动清理入库任务的落盘原件（对照 KQ-08：删除必须收敛派生副本）。
+
+        只删物理文件，不改任务历史（任务是运维事实记录，保留可追溯）。
+        """
+        removed = 0
+        for task in list(self._tasks.values()):
+            for f in task.files:
+                if f.doc_id != doc_id:
+                    continue
+                try:
+                    path = self.file_path(task.task_id, f.filename)
+                    if path.exists():
+                        path.unlink()
+                        removed += 1
+                except OSError as exc:
+                    logger.warning("任务原件清理失败 %s/%s: %s", task.task_id, f.filename, exc)
+        return removed
 
     # ---- 查询 ----
 
@@ -185,10 +230,29 @@ class TaskManager:
     def _loop(self) -> None:
         while True:
             task_id = self._queue.get()
+            if task_id is None:  # 停机哨兵
+                return
             try:
                 self._run_task(task_id)
             except Exception:
                 logger.exception("任务执行异常: %s", task_id)
+
+    def shutdown(self, timeout_s: float = 30.0) -> None:
+        """优雅停机（批次 3）：等在飞任务完成当前文件后退出，不再接受新任务。
+
+        此前 daemon 线程被进程退出硬杀，可能留下半截索引与半截 tasks.json。
+        """
+        if self._stopping.is_set():
+            return
+        self._stopping.set()
+        for _ in self._workers:
+            try:
+                self._queue.put_nowait(None)
+            except queue.Full:
+                pass
+        deadline = time.time() + timeout_s
+        for w in self._workers:
+            w.join(max(0.1, deadline - time.time()))
 
     def _run_task(self, task_id: str) -> None:
         with self._lock:
@@ -253,7 +317,7 @@ class TaskManager:
 
     @staticmethod
     def _quality_flags(record, parsed, short_chunks: int, pages: int) -> list[str]:
-        """入库质量红线（stage-3 §6.2）：不阻断入库，只如实标注供调参。
+        """入库质量红线（）：不阻断入库，只如实标注供调参。
 
         质量红线只标记不阻断——阻断会让"参数不合适"直接变成"文件进不来"，
         运营反而看不到问题规模。
@@ -286,9 +350,11 @@ class TaskManager:
                 self._save()
 
         try:
-            # 建档（幂等：重试时复用已有 doc 记录）
+            # 建档（幂等：重试时复用已有 doc 记录）；租户取任务提交主体（KQ-02）
             content = path.read_bytes()
-            record = self._knowledge.create_record(filename, content, source_path=path)
+            record = self._knowledge.create_record(
+                filename, content, source_path=path, tenant_id=task.tenant_id
+            )
             file.doc_id = record.doc_id
             # 上传落盘 → 解析之前也要占一个可见态（否则"上传中"两态在前端永远不出现）
             set_stage(FILE_UPLOADING, 1.0)
@@ -317,7 +383,7 @@ class TaskManager:
             )
             set_stage(FILE_INDEXING, 1.0)
 
-            # ④ 图谱 / 图像索引联动（stage-7 §5.1：入库后触发，而非纯手动）。
+            # ④ 图谱 / 图像索引联动（：入库后触发，而非纯手动）。
             # 刻意放在"索引成功之后、DONE 之前"：图谱与图像都是增强层，
             # 它们的失败不能把一份已经可检索的文档打成入库失败。
             if self._post_index is not None:

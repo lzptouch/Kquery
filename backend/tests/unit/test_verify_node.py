@@ -1,4 +1,4 @@
-"""TASK-113：独立 Critic 校验节点。
+"""独立 Critic 校验节点。
 
 与 reflect 的分工：
 - reflect 评**证据够不够**（要不要继续找）

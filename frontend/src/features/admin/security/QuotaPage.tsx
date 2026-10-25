@@ -1,4 +1,4 @@
-/** 配额管理（阶段 9 前端规范 §七）：总览（状态色板）+ 平台侧余量 + 单租户配置。 */
+/** 配额管理：总览（状态色板）+ 平台侧余量 + 单租户配置。 */
 import { useCallback, useEffect, useState } from "react";
 import { fetchPlatformQuota, fetchQuota, setQuota } from "../../../lib/api-client";
 import type { PlatformQuota, QuotaRow } from "../../../types";

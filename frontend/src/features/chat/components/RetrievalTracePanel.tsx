@@ -1,4 +1,4 @@
-/** 检索过程可视化面板（阶段 2 前端规范 §2.1）。
+/** 检索过程可视化面板。
  *
  * 默认折叠的"查看检索过程"链接 → 展开后展示双路候选、融合、精排与分阶段耗时。
  * 四段耗时分开展示是排查"召回慢/融合慢/重排慢"的关键（后端 §4.4）。
@@ -14,7 +14,7 @@ interface Props {
   /** CRAG 精炼前后查询（用于对比展示） */
   refineFrom?: string;
   refineTo?: string;
-  /** 阶段 9：因权限被过滤的条数（只报数量） */
+  /** 因权限被过滤的条数（只报数量） */
   aclFiltered?: number;
 }
 
@@ -71,7 +71,7 @@ export function RetrievalTracePanel({
   }
   if (!stats) return null;
 
-  // 嵌套口径优先：后端同时下发平铺字段（内部）与嵌套对象（前端规范），
+  // 嵌套口径优先：后端同时下发平铺字段（内部）与嵌套对象，
   // 缺任一侧都能渲染——这是"新旧消费者不必同步上线"的代价。
   const latency = stats.latency_ms ?? {
     keyword: stats.keyword_ms,
@@ -125,14 +125,14 @@ export function RetrievalTracePanel({
           本次未进行精排（重排服务降级），结果可能不够精确
         </div>
       )}
-      {/* 阶段 9：只报数量，绝不展示被过滤文档的任何元信息 */}
+      {/* 只报数量，绝不展示被过滤文档的任何元信息 */}
       {(aclFiltered ?? stats.acl_filtered ?? 0) > 0 && (
         <div className="degrade-note" role="note">
           另有 {aclFiltered ?? stats.acl_filtered} 条结果因权限未展示
         </div>
       )}
 
-      {/* CRAG 分支轮次（阶段 5 §3）：触发分支整段用对应颜色高亮 */}
+      {/* CRAG 分支轮次：触发分支整段用对应颜色高亮 */}
       {crag && crag.rounds.length > 0 && (
         <div className="crag-rounds">
           {crag.rounds.map((round) => {
@@ -148,7 +148,7 @@ export function RetrievalTracePanel({
               </div>
             );
           })}
-          {/* 精炼前后对比（stage-5 §三）：只显示 after 会让用户无法判断"改了什么" */}
+          {/* 精炼前后对比（ §三）：只显示 after 会让用户无法判断"改了什么" */}
           {refineFrom && refineTo && refineFrom !== refineTo && (
             <div className="crag-round" style={{ borderLeftColor: "var(--info)" }}>
               <div className="mono" style={{ color: "var(--info)", fontSize: 12 }}>

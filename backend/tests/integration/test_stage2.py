@@ -1,4 +1,4 @@
-"""阶段 2 功能测试：混合检索（BM25/RRF/Rerank）+ 缓存 / 限流 / 指标。
+""" 功能测试：混合检索（BM25/RRF/Rerank）+ 缓存 / 限流 / 指标。
 
 - RRF 数值自检（README §3.3 的三条排序语义）；
 - BM25 中文分词与零分过滤（编号型 query 召回）；
@@ -104,7 +104,7 @@ XB-2024 电池享受两年免费保修，保修范围涵盖电芯容量衰减超
 
 class TestBM25:
     def test_serial_number_query_recalls_exact_chunk(self, client):
-        """编号 / 型号召回：阶段 1 的痛点，BM25 精确匹配解决。"""
+        """编号 / 型号召回： 的痛点，BM25 精确匹配解决。"""
         client.post("/knowledge/upload", files={"file": ("规格书.md", SERIAL_MD.encode(), "text/markdown")})
         resp = client.post("/ask", json={"question": "XB-2024 的电压是多少？"})
         data = resp.json()["data"]
@@ -239,7 +239,7 @@ class TestMetricsAndAdmin:
         assert summary["total_requests"] >= 2
         assert 0.0 <= summary["cache_hit_rate"] <= 1.0
         top = client.get("/admin/metrics/top-queries").json()["data"]
-        # TASK-182：指标层不再持有用户原话，只存哈希——同一问题哈希一致，
+        # 指标层不再持有用户原话，只存哈希——同一问题哈希一致，
         # 因此"高频问题"依然可统计，但内存里不留明文副本。
         assert "query" not in top[0], "指标不应回传用户原话"
         assert top[0]["query_hash"], "应返回问题指纹"

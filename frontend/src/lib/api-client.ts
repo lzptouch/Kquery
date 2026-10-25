@@ -1,4 +1,4 @@
-/** 非流式 API 客户端：统一信封解析（阶段 0 前端规范 §7.1）。 */
+/** 非流式 API 客户端：统一信封解析。 */
 import { authErrorMessage, authHeaders, isAuthFailure, notifyUnauthorized, withAuth } from "./auth";
 import type {
   AgentMetrics,
@@ -48,7 +48,7 @@ import type {
 const AUTH_ENTRY_PATHS = new Set(["/auth/login", "/auth/register"]);
 
 export async function request<T>(path: string, init?: RequestInit): Promise<Envelope<T>> {
-  // TASK-160 前端配套：所有请求统一注入身份（否则管理页全部 403）。
+  //  前端配套：所有请求统一注入身份（否则管理页全部 403）。
   // 加载入 authHeaders 而不是内联，是为了保证新增的 API 函数不会漏带凭证。
   const resp = await fetch(path, { ...init, headers: withAuth(init?.headers) });
   if (resp.status === 401 && !AUTH_ENTRY_PATHS.has(path.split("?")[0])) {
@@ -108,7 +108,7 @@ export function deleteFile(docId: string): Promise<Envelope<KnowledgeFile>> {
   });
 }
 
-// ---------- 阶段 2：管理与观测端点 ----------
+// ---------- 管理与观测端点 ----------
 
 export function fetchMetricsSummary(rangeS = 3600): Promise<Envelope<MetricsSummary>> {
   return request<MetricsSummary>(`/admin/metrics/summary?range_s=${rangeS}`);
@@ -155,7 +155,7 @@ export function probeDocument(docId: string, query: string, topK = 4): Promise<E
   });
 }
 
-// ---------- 阶段 3：入库任务与预览 ----------
+// ---------- 入库任务与预览 ----------
 
 export function ingestTask(
   files: File[],
@@ -214,7 +214,7 @@ export function offlineDocument(docId: string): Promise<Envelope<KnowledgeFile>>
   return request<KnowledgeFile>(`/knowledge/${encodeURIComponent(docId)}/offline`, { method: "POST" });
 }
 
-// ---------- 阶段 5：拒答反馈与质量指标 ----------
+// ---------- 拒答反馈与质量指标 ----------
 
 export function fetchQualityMetrics(): Promise<Envelope<QualityMetrics>> {
   return request<QualityMetrics>("/admin/metrics/quality");
@@ -237,7 +237,7 @@ export function fetchFeedback(ticketId: string): Promise<Envelope<FeedbackTicket
   return request<FeedbackTicket>(`/feedback/${encodeURIComponent(ticketId)}`);
 }
 
-// ---------- 阶段 6：会话与 Agent 指标 ----------
+// ---------- 会话与 Agent 指标 ----------
 
 export function listSessions(): Promise<Envelope<SessionSummary[]>> {
   return request<SessionSummary[]>("/sessions");
@@ -271,7 +271,7 @@ export function fetchAgentMetrics(): Promise<Envelope<AgentMetrics>> {
   return request<AgentMetrics>("/admin/metrics/agent");
 }
 
-// ---------- 阶段 7：图谱与多模态 ----------
+// ---------- 图谱与多模态 ----------
 
 export function fetchGraphEntities(q = "", types = ""): Promise<Envelope<GraphEntity[]>> {
   const params = new URLSearchParams();
@@ -315,7 +315,7 @@ export function searchMedia(query: string, topK = 4): Promise<Envelope<{ items: 
   });
 }
 
-// ---------- 阶段 9：企业护栏 ----------
+// ---------- 企业护栏 ----------
 
 export function fetchUsers(): Promise<Envelope<UserRecord[]>> {
   return request<UserRecord[]>("/admin/users");

@@ -6,7 +6,8 @@
 
 - FastAPI + uvicorn，uv 管理依赖
 - FAISS `IndexFlatIP`（向量归一化后内积即余弦相似度），索引落盘复用
-- 模型统一走千问平台（阿里云百炼）：`text-embedding-v3` / `qwen-plus`，全部接口调用，无本地模型
+- 模型统一走千问平台（阿里云百炼）：`text-embedding-v3` / `qwen-plus`，全部接口调用，**无本地模型**
+  （OCR 与语音转写同样只走云服务 API：`qwen-vl-ocr` / `paraformer-v2`；不支持本地或自部署模型）
 - 依赖注入：Embedding / LLM 为协议接口，内置 Mock 实现供无凭据环境测试
 
 ## 快速开始

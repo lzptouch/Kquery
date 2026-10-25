@@ -5,6 +5,7 @@
 索引文件损坏时拒绝启动，不允许以坏索引对外服务。
 """
 import logging
+import threading
 import time
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -23,13 +24,16 @@ from app.api import feedback as feedback_api
 from app.api import ingest as ingest_api
 from app.api import graph as graph_api
 from app.api import knowledge as knowledge_api
+from app.api import quickask as quickask_api
 from app.api import security as security_api
 from app.api import sessions as sessions_api
+from app.api import speech as speech_api
 from app.core.config import get_settings
 from app.core.envelope import ApiError, ErrCode, error_envelope, validate_code_uniqueness
 from app.core.metrics import MetricsStore, PromMetrics
 from app.core.otel import setup_otel, shutdown_otel
 from app.core.shared_state import SharedState
+from app.services.quickask import QuickAskService, RedisQuickAskStore
 from app.services.agent.memory import LongTermMemory
 from app.core.tracing import get_trace_id, new_trace_id, reset_trace_id, set_trace_id
 from app.services.cache import build_cache
@@ -43,7 +47,9 @@ from app.services.parsers.audio import AudioParser, build_transcriber
 from app.services.parsers.docx import DocxParser
 from app.services.parsers.ocr import OcrParser, build_ocr_engine
 from app.services.parsers.pdf import PdfParser
+from app.services.parsers.plaintext import PlainTextParser
 from app.services.parsers.router import ParserRouter
+from app.services.parsers.spreadsheet import SpreadsheetParser
 from app.services.pipeline import RagPipeline
 from app.services.agent.checkpointer import build_checkpointer, close_checkpointer
 from app.services.agent.graph import build_agent_graph
@@ -220,18 +226,28 @@ def create_app() -> FastAPI:
             apply_delay_s=settings.retrieval_config_apply_delay_s,
             settings=settings,
         )
+        # F6：共享状态门面（Redis 不可用时自动降级为进程内）
+        # 必须在缓存/限流/配额之前建好——它们都要用它做多副本共享
+        shared_state = SharedState(settings.redis_url, settings.redis_key_prefix)
+        app.state.shared_state = shared_state
         cache = build_cache(
+            provider=settings.cache_backend,
             settings=settings,
             embeddings=embeddings,
             tenant_id=settings.default_tenant_id,
+            state=shared_state,
         )
-        limiter = build_limiter()
+        limiter = build_limiter(state=shared_state)
         prom = PromMetrics()
         metrics_store = MetricsStore()
 
         # 阶段 3：DocStore（父块/表格/媒体资源）+ 解析路由 + 任务队列
         docstore = DocStore(settings.data_dir / "docstore.json")
-        ocr_engine = build_ocr_engine(provider, settings.dashscope_api_key, settings.llm_max_retries)
+        # OCR 一律云服务 API（见 parsers/ocr.py 的架构约束）；provider 单独解析，
+        # 不用全局 provider：全局可能是 mock（测试），而 OCR 可以单独强制云端。
+        ocr_engine = build_ocr_engine(
+            settings.resolved_ocr_provider, settings.dashscope_api_key, settings.llm_max_retries
+        )
         transcriber = build_transcriber(
             provider, settings.dashscope_api_key,
             model=settings.transcribe_model, max_retries=settings.llm_max_retries,
@@ -252,6 +268,9 @@ def create_app() -> FastAPI:
                 ocr_max_pages=settings.pdf_ocr_max_pages,
                 scan_min_chars=settings.pdf_scan_min_chars,
             ),
+            # F3：新增表格与纯文本/代码解析器
+            spreadsheet_parser=SpreadsheetParser(),
+            plaintext_parser=PlainTextParser(),
         )
         knowledge = KnowledgeService(settings, embeddings, llm, store, bm25, docstore, parser_router)
         # DEF-R-2 / P0-7：hybrid 装配早于 knowledge，回填版本查询（召回侧按当前版本
@@ -360,7 +379,7 @@ def create_app() -> FastAPI:
         # TASK-142：ACL 下推所需的依赖（bind_principal 会据此按主体构造可见清单）
         pipeline._acl_service = acl_service
         pipeline._knowledge = knowledge
-        quota_service = SlidingWindowQuota()
+        quota_service = SlidingWindowQuota(state=shared_state)
         quota_service.set_policy(
             settings.default_tenant_id,
             settings.quota_per_minute,
@@ -550,9 +569,25 @@ def create_app() -> FastAPI:
         app.state.session_store = session_store
         app.state.tool_registry = tool_registry
 
-        # TASK-165：共享状态门面（Redis 不可用时自动降级为进程内）
-        shared_state = SharedState(settings.redis_url, settings.redis_key_prefix)
-        app.state.shared_state = shared_state
+        # F4 快问：临时态优先放 Redis（多副本共享），Redis 不可用自动降级为进程内
+        quickask = QuickAskService(
+            settings,
+            knowledge,
+            store=RedisQuickAskStore(shared_state) if settings.redis_url else None,
+        )
+        app.state.quickask = quickask
+        # 启动清扫：进程崩溃会让临时向量残留（TTL 只管元数据，管不到索引）。
+        # **放后台线程**：清扫要打 Milvus（每个文档约 10s），放在 lifespan 里
+        # 会把启动拖成分钟级——容器在启动期就被判 unhealthy，
+        # `restart: unless-stopped` 还会把它打进 crash loop。
+        # 清扫是维护任务，不该挡在服务前面。
+        def _sweep_quickask() -> None:
+            try:
+                quickask.sweep_expired(limit=20, budget_s=10.0)
+            except Exception as exc:  # noqa: BLE001 - 清扫失败不影响服务
+                logger.warning("快问启动清扫失败（不影响服务）: %s", exc)
+
+        threading.Thread(target=_sweep_quickask, name="quickask-sweep", daemon=True).start()
         # TASK-117：租户级长期记忆（把踩过的坑沉淀下来，注入后续规划）
         long_term_memory = (
             LongTermMemory(settings.data_dir / "memory" / "memory.jsonl",
@@ -779,6 +814,8 @@ def create_app() -> FastAPI:
     app.include_router(sessions_api.router)
     app.include_router(graph_api.router)
     app.include_router(security_api.router)
+    app.include_router(quickask_api.router)
+    app.include_router(speech_api.router)
     return app
 
 

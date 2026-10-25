@@ -1,11 +1,27 @@
 """OCR 解析器（阶段 3 §3.3）：图片 / 扫描件 → 结构化文本。
 
-- 生产：千问 qwen-vl-ocr（阿里云百炼），本地文件经 SDK 临时凭证上传，
-  不部署本地 OCR 模型；视觉语言模型对倾斜/多栏/表格线版面更稳；
-- 测试：MockOcr，返回确定性文本；
-- 二次清洗保真：丢弃过短 token 与孤立单字符行；
-- 页码与版面信息随文本保存（source 字段）——引用跳转与人工核对的依据；
-- 图像本体进资源目录（MediaAsset），与文本分开存放。
+## 架构约束：OCR **一律走云服务 API**，不提供任何本地/自部署模型路径
+
+| 项 | 规定 |
+|---|---|
+| 生产 | 千问 `qwen-vl-ocr`（阿里云百炼）——**云服务 API** |
+| 测试 | `MockOcrEngine`，返回确定性文本（不联网） |
+| 本地模型 | **不支持**。`build_ocr_engine` 收到非云 provider 直接报错，不静默降级 |
+
+为什么不留本地 OCR 的口子：
+
+1. **模型权重分发**：本地 OCR（DeepDOC / PaddleOCR / ONNX）需要在**镜像构建期**
+   烤入权重，或在运行时从 HuggingFace 下载——内网/离线环境两者都不可行，
+   于是"支持本地模型"最终变成"部署后 OCR 静默不可用"。
+2. **镜像与 CI 膨胀**：ONNX Runtime + 多个模型权重会让镜像大出一个量级，
+   而 CI 每个用例都会背上这份体积。
+3. **可复现性**：测试要能用 Mock 跑通全链路；本地模型路径与 Mock 是两套实现，
+   测试覆盖到的和线上跑的不是同一段代码。
+4. **识别质量**：中文复杂版面（倾斜、多栏、表格线）下，云端视觉语言模型
+   通常比开源 OCR 引擎更稳。
+
+因此本模块**只保留云 API 一条路**：想加本地模型，请先推翻这条架构约束，
+而不是在这里塞一个开关。
 """
 import hashlib
 import logging
@@ -140,8 +156,25 @@ class OcrParser:
         )
 
 
+#: 允许的 OCR provider：云服务 API + 测试用 Mock。
+#: **没有本地/自部署模型选项**（见模块 docstring 的架构约束）。
+ALLOWED_OCR_PROVIDERS = ("dashscope", "mock")
+
+
 def build_ocr_engine(provider: str, api_key: str, max_retries: int = 3) -> OcrEngine:
+    """按 provider 构造 OCR 引擎。
+
+    非云 provider（local / onnx / self-hosted / paddleocr …）**直接报错**，
+    不静默退回 Mock——静默降级会让"配错了"看起来像"跑通了"，
+    生产上表现为"图片入库了但没有文字"，极难排查。
+    """
     if provider == "dashscope":
         return QwenVlOcr(api_key=api_key, max_retries=max_retries)
-    logger.info("使用 MockOcrEngine（未配置千问 Key 或显式指定 mock）")
-    return MockOcrEngine()
+    if provider == "mock":
+        logger.info("使用 MockOcrEngine（显式指定 mock）")
+        return MockOcrEngine()
+    raise ApiError(
+        ErrCode.INVALID_INPUT,
+        f"不支持的 OCR provider={provider!r}：OCR 一律走云服务 API"
+        f"（{ '、'.join(ALLOWED_OCR_PROVIDERS) }），不支持本地/自部署模型",
+    )

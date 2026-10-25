@@ -247,10 +247,20 @@ class TestQuota:
         allowed, retry_after, dimension = quota.check_and_consume("t1")
         # 原本写死 `retry_after > 3600`（假定"距零点至少还有一小时"），
         # 于是每天 23 点之后跑测试必红——与被测逻辑无关，纯粹是断言依赖了
-        # 运行时刻。改为与"距当天结束的真实秒数"对照，任何时刻都成立。
+        # 运行时刻。
+        #
+        # 第二版改成 `86400 - (time.time() % 86400)`，那是 **UTC** 零点，
+        # 而实现按 **本地时区** 的零点算（`_seconds_until_midnight` 用
+        # `time.localtime`）→ 东八区在本地 00:00~08:00 这段窗口里两者差 8 小时，
+        # 测试必红。改成与实现同口径（本地零点），任何时刻、任何时区都成立。
         import time
 
-        seconds_to_midnight = 86400 - (time.time() % 86400)
+        local_now = time.localtime()
+        seconds_to_midnight = (
+            (24 - local_now.tm_hour - 1) * 3600
+            + (59 - local_now.tm_min) * 60
+            + (60 - local_now.tm_sec)
+        )
         assert allowed is False and dimension == "daily"
         assert 0 < retry_after <= seconds_to_midnight + 5
 

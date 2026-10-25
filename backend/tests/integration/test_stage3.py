@@ -194,7 +194,9 @@ class TestParsers:
         assert preview["assets"][0]["kind"] == "audio"
 
     def test_upload_unsupported_still_rejected(self, client):
-        resp = client.post("/knowledge/upload", files={"file": ("表.xlsx", b"x", "application/vnd.ms-excel")})
+        # F3：.xlsx 已改为**支持**（表格解析器），原先用"表.xlsx"断言 400 的老用例
+        # 必然失败。改用真正不支持的扩展名，错误码语义保持不变（2003）。
+        resp = client.post("/knowledge/upload", files={"file": ("表.bin", b"x", "application/octet-stream")})
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == 2003
 

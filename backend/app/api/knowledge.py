@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from app.core.envelope import Envelope, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.core.envelope import ApiError, ErrCode
-from app.dependencies import get_knowledge_service, get_principal, require_role
+from app.dependencies import get_knowledge_service, require_role
 from app.domain.schemas import DOC_STATUS_INDEXED
 from app.services.knowledge import KnowledgeService
 

@@ -428,3 +428,98 @@ export function uploadFile(
     xhr.send(form);
   });
 }
+
+// ---------- F4 快问（单文档「上传即问」）----------
+
+export interface QuickAskFile {
+  doc_id: string;
+  filename: string;
+  chunks: number;
+  ttl_s: number;
+  expires_in_s?: number;
+  session_id?: string;
+}
+
+/**
+ * 上传文件到快问通道（不入知识库，临时索引 + TTL 到期自动清理）。
+ *
+ * `sessionId` 给了就把临时文档绑定到该会话（会话内快速解析）：
+ * 之后在别的会话里拿这个 doc_id 提问会被拒（404）。
+ */
+export function uploadQuickAsk(file: File, sessionId?: string | null): Promise<Envelope<QuickAskFile>> {
+  const form = new FormData();
+  form.append("file", file);
+  if (sessionId) form.append("session_id", sessionId);
+  return request<QuickAskFile>("/quickask/upload", { method: "POST", body: form });
+}
+
+/** 列出某会话下的临时文档（会话内快速解析的恢复入口）。 */
+export function listQuickAskDocs(sessionId: string): Promise<
+  Envelope<{ doc_id: string; filename: string; chunks: number; created_at: number }[]>
+> {
+  return request<{ doc_id: string; filename: string; chunks: number; created_at: number }[]>(
+    `/quickask/documents?session_id=${encodeURIComponent(sessionId)}`,
+  );
+}
+
+export function quickAskStatus(docId: string): Promise<Envelope<{ doc_id: string; filename: string; chunks: number; ttl_s: number }>> {
+  return request(`/quickask/${encodeURIComponent(docId)}`);
+}
+
+export function deleteQuickAsk(docId: string): Promise<Envelope<{ doc_id: string; deleted: boolean }>> {
+  return request(`/quickask/${encodeURIComponent(docId)}`, { method: "DELETE" });
+}
+
+// ---------- F2 语音（STS token 由后端代持密钥换取）----------
+
+export interface StsToken {
+  appid: string;
+  token: string;
+  cluster?: string;
+  duration: number;
+}
+
+/** 换取语音识别 STS token（后端持有火山密钥，前端不接触密钥）。 */
+export function fetchStsToken(): Promise<Envelope<StsToken>> {
+  return request<StsToken>("/speech/sts-token", { method: "POST" });
+}
+
+/** 语音能力探测（不消耗 token：用来决定麦克风按钮是否可点）。 */
+export function fetchSpeechStatus(): Promise<
+  Envelope<{
+    available: boolean;
+    /** sts = 前端直连火山流式；transcribe = 录音上传后端转写；none = 不可用 */
+    mode: "sts" | "transcribe" | "none";
+    cluster?: string;
+    provider?: string | null;
+    model?: string | null;
+  }>
+> {
+  return request<{
+    available: boolean;
+    mode: "sts" | "transcribe" | "none";
+    cluster?: string;
+    provider?: string | null;
+    model?: string | null;
+  }>("/speech/status");
+}
+
+/**
+ * 上传录音给后端转写。
+ *
+ * 录音默认是 16kHz/单声道/16bit **裸 PCM**（`audio/pcm`）：Chrome 的
+ * MediaRecorder 只能产出 webm/opus，而云端 ASR 普遍不收 webm；PCM 是各端
+ * 都稳定支持的中间格式，后端包一层 WAV 头再转发给云厂商。
+ */
+export function transcribeAudio(
+  blob: Blob,
+  sampleRate = 16000,
+): Promise<Envelope<{ text: string; language?: string | null; provider?: string; model?: string }>> {
+  const form = new FormData();
+  form.append("file", blob, "audio.pcm");
+  form.append("sample_rate", String(sampleRate));
+  return request<{ text: string; language?: string | null; provider?: string; model?: string }>(
+    "/speech/transcribe",
+    { method: "POST", body: form },
+  );
+}

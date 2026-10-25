@@ -11,7 +11,9 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import expect
 
-WEB = "http://127.0.0.1:5173"
+import os
+
+WEB = os.environ.get("KQUERY_UI_WEB", "http://127.0.0.1:5173")
 
 pytestmark = pytest.mark.browser
 

@@ -45,7 +45,25 @@ def _sse(event: str, data: dict) -> str:
 
 
 def _use_agent(req: AskRequest, settings: Settings) -> bool:
+    # 快问（doc_id）强制走线性路径：Agent 路径的检索没有接 doc_id 过滤，
+    # 放行会变成"限定单文档的提问却检索了全库"。
+    if req.doc_id:
+        return False
     return settings.agent_enabled and (req.mode == "agent" or req.session_id is not None)
+
+
+def _assert_quick_doc(request: Request, req: AskRequest, principal: Principal) -> None:
+    """快问的 doc_id 必须属于当前主体（否则等于越权访问他人临时文档）。
+
+    同时校验**会话维度**：绑定到某个会话的临时文档，只能在该会话里提问
+    （对齐 doc-qa 的"会话内快速解析"语义）。未绑定会话的文档不受此限。
+    """
+    if not req.doc_id:
+        return
+    service = getattr(request.app.state, "quickask", None)
+    if service is None:
+        raise ApiError(ErrCode.QUICK_DOC_EXPIRED, "快问功能不可用", http_status=404)
+    service.get_meta(req.doc_id, principal, session_id=req.session_id)
 
 
 def _agent_identity(req: AskRequest, principal: Principal) -> tuple[str, str, str]:
@@ -58,6 +76,41 @@ def _validate_question(req: AskRequest) -> None:
     """空问题兜底（AskRequest 有 min_length=1，这里防的是纯空白）。"""
     if not (req.question or "").strip():
         raise ApiError(ErrCode.QUESTION_EMPTY, "问题不能为空", http_status=400)
+
+
+def _auto_title(request: Request, principal: Principal, session_id: str, question: str, answer: str) -> None:
+    """首轮自动生成会话标题（F5）。
+
+    只在**首轮**且标题仍是默认的「新对话」时改名——用户手动改过的标题不能被覆盖。
+    任何失败都静默：会话标题是锦上添花，不能让问答失败。
+    """
+    if not session_id or not answer:
+        return
+    store = getattr(request.app.state, "session_store", None)
+    llm = getattr(request.app.state, "llm", None)
+    if store is None or llm is None:
+        return
+    try:
+        session = store.get(session_id, principal.tenant_id, principal.user_id)
+    except Exception:  # noqa: BLE001 - 读不到会话就不改名
+        return
+    if len(session.get("turns", [])) > 1:
+        return  # 不是首轮
+    if (session.get("title") or "新对话") != "新对话":
+        return  # 用户已手动命名
+    from app.services.llm import generate_title
+
+    try:
+        title = generate_title(llm, question, answer)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会话自动命名失败（忽略）: %s", exc)
+        return
+    if not title:
+        return
+    try:
+        store.rename(session_id, principal.tenant_id, principal.user_id, title)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("会话标题写入失败（忽略）: %s", exc)
 
 
 def _degraded_warning(result: dict) -> tuple[int, str] | None:
@@ -95,6 +148,7 @@ def ask(
     started = now_ms()
     _validate_question(req)
     try:
+        _assert_quick_doc(request, req, principal)
         if _use_agent(req, settings):
             runner: AgentRunner = request.app.state.agent_runner
             tenant, user, session_id = _agent_identity(req, principal)
@@ -116,12 +170,13 @@ def ask(
                 "elapsed_ms": elapsed_ms_since(started),
                 "session_id": session_id or None,
             }
+            _auto_title(request, principal, session_id, req.question, result.get("answer", ""))
             return _envelope_for(result, trace_id, result["elapsed_ms"])
         # 线性路径同样挂 ACL 与认证主体（此前固定 default_tenant_id 且无 ACL，是越权缺口）
         tenant, user, _ = _agent_identity(req, principal)
         scoped = pipeline.bind_principal(tenant, user, principal)
         scoped._acl_filter = acl_filter_of(request, principal)
-        result = scoped.ask(req.question, tenant, trace_id, req.top_k)
+        result = scoped.ask(req.question, tenant, trace_id, req.top_k, doc_id=req.doc_id)
         payload = result.model_dump()
         return _envelope_for(payload, trace_id, result.elapsed_ms)
     except LLMError as exc:
@@ -144,6 +199,7 @@ def ask_stream(
     trace_id = get_trace_id()
     set_trace_id(trace_id)
     _validate_question(req)
+    _assert_quick_doc(request, req, principal)
     use_agent = _use_agent(req, settings)
     runner: AgentRunner | None = request.app.state.agent_runner if use_agent else None
     tenant, user, session_id = _agent_identity(req, principal)
@@ -156,6 +212,7 @@ def ask_stream(
     def event_source():
         try:
             if runner is not None:
+                last_answer = ""
                 for event, payload in runner.run(
                     req.question, tenant, user, session_id or None,
                     doc_name_resolver=request.app.state.knowledge.filename_of,
@@ -164,12 +221,15 @@ def ask_stream(
                 ):
                     if event == "_final":
                         payload = {**payload, "trace_id": trace_id, "session_id": session_id or None}
+                        last_answer = payload.get("answer", "")
                         yield _sse("done", payload)
                     else:
                         yield _sse(event, payload)
+                # F5：首轮自动命名（流式结束后补写标题）
+                _auto_title(request, principal, session_id, req.question, last_answer)
             else:
                 for event, data in scoped.ask_stream(
-                    req.question, tenant, trace_id, req.top_k
+                    req.question, tenant, trace_id, req.top_k, doc_id=req.doc_id
                 ):
                     yield _sse(event, data)
         except ApiError as exc:

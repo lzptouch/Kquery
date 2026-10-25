@@ -14,9 +14,12 @@ import {
   renameSession,
 } from "../../lib/api-client";
 import { askStream } from "../../lib/sse-client";
-import { ChatInput } from "./components/ChatInput";
+import { ChatInput, type ChatInputHandle } from "./components/ChatInput";
+import { Markdown } from "./components/Markdown";
 import { MessageBubble } from "./components/MessageBubble";
+import { QuickAttachPanel, type QuickDoc } from "./components/QuickAttachPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
+import { VoiceRecorder } from "./components/VoiceRecorder";
 import type {
   ChatMessage,
   CragRound,
@@ -48,6 +51,11 @@ export function ChatPage() {
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // ---- F4 快问：当前临时文档（提问时随请求带上 doc_id）----
+  const [quickDoc, setQuickDoc] = useState<QuickDoc | null>(null);
+  const [attachOpen, setAttachOpen] = useState(false);
+  // ---- F2 语音：转写文本回填输入框 ----
+  const inputRef = useRef<ChatInputHandle>(null);
 
   const patchMessage = useCallback((id: string, patch: Partial<ChatMessage>) => {
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, ...patch } : m)));
@@ -224,6 +232,9 @@ export function ChatPage() {
           patchMessage(assistantId, {
             verdict: "refused", refusalReason: reason, confidence: 0,
           }),
+        // F5：推荐追问（后端在 done 之前发出）
+        onFollowups: ({ items }) =>
+          patchMessage(assistantId, { followups: items ?? [] }),
         onDone: ({ trace_id, agent, incomplete, fuse_reason, session_id, evidence, verdict, confidence, acl_filtered, retrieval, crag, from_cache, refusal_reason, regenerated, unsupported_claims_count, answer_source }) => {
           patchMessage(assistantId, {
             streaming: false, traceId: trace_id,
@@ -259,9 +270,9 @@ export function ChatPage() {
             patchMessage(assistantId, { streaming: false, error, traceId: undefined });
           }
         },
-      }, { sessionId, mode: "agent" }).finally(() => setStreaming(false));
+      }, { sessionId, mode: "agent", docId: quickDoc?.docId ?? null }).finally(() => setStreaming(false));
     },
-    [streaming, patchMessage, ensureSession, activeSession, refreshSessions],
+    [streaming, patchMessage, ensureSession, activeSession, refreshSessions, quickDoc],
   );
 
   const stop = useCallback(() => {
@@ -370,6 +381,7 @@ export function ChatPage() {
                   onViewOriginal={setPreview}
                   onRetry={m.error ? () => retry(m.id) : undefined}
                   onReask={(q) => void send(q)}
+                  onFollowup={(q) => void send(q)}
                 />
               ))
             )}
@@ -377,7 +389,35 @@ export function ChatPage() {
         </div>
 
         <div className="chat-input-area">
-          <ChatInput disabled={false} streaming={streaming} onSend={(q) => void send(q)} onStop={stop} />
+          {attachOpen && (
+            <QuickAttachPanel
+              current={quickDoc}
+              onAttach={(doc) => {
+                setQuickDoc(doc);
+                setAttachOpen(false);
+              }}
+              onDetach={() => setQuickDoc(null)}
+              onClose={() => setAttachOpen(false)}
+              sessionId={activeSession}
+            />
+          )}
+          <ChatInput
+            ref={inputRef}
+            disabled={false}
+            streaming={streaming}
+            onSend={(q) => void send(q)}
+            onStop={stop}
+            onAttach={() => setAttachOpen((v) => !v)}
+            voice={<VoiceRecorder onTranscript={(text) => inputRef.current?.append(text)} />}
+          />
+          {quickDoc && !attachOpen && (
+            <div className="quick-attach-bar trace-id">
+              附件提问中：{quickDoc.filename}（{quickDoc.chunks} 片段）
+              <button type="button" className="btn-text" onClick={() => setQuickDoc(null)}>
+                取消
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -398,7 +438,9 @@ export function ChatPage() {
                 />
               </div>
             )}
-            <div className="answer-text">{preview.content}</div>
+            <div className="answer-text">
+              <Markdown value={preview.content} enableCitations={false} />
+            </div>
             <div style={{ marginTop: 16, textAlign: "right" }}>
               <button type="button" className="btn" onClick={() => setPreview(null)}>
                 关闭

@@ -362,6 +362,65 @@ class KnowledgeService:
             self._bm25.delete_doc(doc_id)
         self._docstore.delete_doc(doc_id)
 
+    # ---- 快问：临时索引（不入知识库）----
+
+    def index_transient(
+        self,
+        record: DocumentRecord,
+        parsed: ParseResult,
+        chunk_policy: dict | None = None,
+    ) -> int:
+        """快问专用索引：只写向量库 + BM25，**不写 DocStore/metadata、不 bump 版本**。
+
+        与 `index_parsed` 的三处刻意差异（缺一即出事）：
+
+        1. **不 bump 索引版本**：版本号进语义缓存键（`pipeline._cache_key`），
+           每次快问都 bump 会把**全站**的语义缓存清空，命中率归零。
+        2. **不写 DocStore / metadata.json**：快问文档不属于知识库，
+           出现在文件列表里就是"上传即入库"——那是另一个功能。
+        3. **必须同时写 BM25**：只写向量库会让 RRF 退化成单路，
+           关键词精确命中的场景直接零召回。
+
+        返回写入的块数。
+        """
+        chunks = getattr(record, "_pending_chunks", None)
+        if not chunks:
+            chunks = self.apply_chunking(record, parsed, chunk_policy)
+        if not chunks:
+            raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, "切块结果为 0 块，请检查文件内容")
+
+        with self._lock:  # 与 index_parsed 共用同一把锁，避免 FAISS 并发写
+            try:
+                vectors = self._embeddings.embed_texts([c.content for c in chunks])
+            except Exception as exc:
+                raise ApiError(
+                    ErrCode.INDEX_BUILD_FAILED, f"快问索引构建中断（Embedding 失败）: {exc}"
+                ) from exc
+            if len(vectors) != len(chunks):
+                raise ApiError(
+                    ErrCode.INDEX_BUILD_FAILED,
+                    f"快问索引发布中止：向量条数 {len(vectors)} 与块条数 {len(chunks)} 不一致",
+                )
+            self._store.add(chunks, vectors)
+            self._store.save()
+            if self._bm25 is not None:
+                self._bm25.add(chunks)
+        logger.info("快问临时索引完成: %s（%d 块）", record.doc_id, len(chunks))
+        return len(chunks)
+
+    def purge_transient(self, doc_id: str) -> None:
+        """快问清理：清向量 + BM25，**不 bump 版本**（避免清空全局语义缓存）。
+
+        同样**不删 DocStore**：快问从未写入过 DocStore。
+        """
+        with self._lock:
+            if self._store.doc_chunk_ids(doc_id):
+                self._store.delete_doc(doc_id)
+                self._store.save()
+            if self._bm25 is not None:
+                self._bm25.delete_doc(doc_id)
+        logger.info("快问临时索引已清理: %s", doc_id)
+
     # ---- 简单路径：上传即入库（同步，默认策略）----
 
     def ingest_file(

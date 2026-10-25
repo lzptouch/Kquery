@@ -83,6 +83,19 @@ def call(base: str, method: str, path: str, body=None, raw=False, timeout=120,
         return 0, str(exc)
 
 
+def upload_multipart(base: str, path: str, filename: str, content: bytes,
+                     content_type: str = "text/markdown"):
+    """multipart/form-data 上传（快问通道用）。返回 (status, json_or_text)。"""
+    boundary = "----KquerySmokeBoundary"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
+    return call(base, "POST", path, body=body,
+                content_type=f"multipart/form-data; boundary={boundary}")
+
+
 def check(name: str, condition: bool, detail: str = "") -> None:
     if condition:
         PASSED.append(name)
@@ -461,6 +474,46 @@ def run(base: str) -> int:
           f"实际 {str(body)[:150]}")
     check("400 响应不含 FastAPI 的 detail 结构", isinstance(body, dict) and "detail" not in body,
           f"实际 {str(body)[:150]}")
+
+    # ---------------------------------------------------------- F2 语音 / F4 快问
+    section("F2 语音 · F4 快问（doc-qa 能力整合）")
+
+    status, body = call(base, "GET", "/speech/status")
+    check("语音能力探针返回 200", status == 200, f"实际 {status}")
+    check("语音探针含 available 字段", "available" in data_of(body), f"keys={sorted(data_of(body))}")
+
+    # 未配置密钥时必须是 503（能力不可用），绝不能是 500
+    status, body = call(base, "POST", "/speech/sts-token")
+    check("未配置语音密钥时返回 503（非 500）", status == 503, f"实际 {status}")
+    check("503 响应含结构化错误码",
+          isinstance(body, dict) and (body.get("error") or {}).get("code") is not None,
+          f"实际 {str(body)[:150]}")
+
+    # 快问：上传 → 提问 → 删除
+    status, body = upload_multipart(base, "/quickask/upload", "冒烟临时.md",
+                                     SAMPLE_MD.encode("utf-8"))
+    check("快问上传返回 200", status == 200, f"实际 {status} {str(body)[:150]}")
+    quick = data_of(body)
+    doc_id = quick.get("doc_id") or ""
+    check("快问返回 doc_id", bool(doc_id), f"keys={sorted(quick)}")
+    check("快问 doc_id 带 quick_ 前缀", doc_id.startswith("quick_"), doc_id)
+
+    # 快问文档不得进知识库列表
+    status, body = call(base, "GET", "/knowledge/files")
+    names = [f.get("filename") for f in rows_of(body)]
+    check("快问文档未进知识库列表", "冒烟临时.md" not in names, f"files={names}")
+
+    if doc_id:
+        status, body = call(base, "POST", "/quickask/ask",
+                            body={"question": "机会成本是什么？", "doc_id": doc_id},
+                            raw=True)
+        text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+        check("快问提问返回 200", status == 200, f"实际 {status}")
+        check("快问 SSE 含 done 事件", "event: done" in text, text[:200])
+        check("快问 SSE 含证据事件", "event: evidence" in text, text[:200])
+
+        status, _ = call(base, "DELETE", f"/quickask/{doc_id}")
+        check("快问删除返回 200", status == 200, f"实际 {status}")
 
     # ---------------------------------------------------------- 汇总
     total = len(PASSED) + len(FAILED)

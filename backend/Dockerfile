@@ -1,4 +1,8 @@
-# syntax=docker/dockerfile:1
+# 注意：这里**故意不写** `# syntax=docker/dockerfile:1`。
+# 那行会让构建器去 Docker Hub 拉取 docker/dockerfile 前端镜像——在只能走
+# 镜像加速站（或完全离线）的环境里，build 会在"解析构建器镜像"这一步就
+# 超时失败，而本 Dockerfile 用到的全是 BuildKit 内置前端原生支持的能力
+# （多阶段、COPY --from、COPY --chown）。
 # ---------- 构建阶段：装依赖并预编译字节码 ----------
 # 单独一层的意义：依赖清单不变时可命中缓存，改业务代码不必重装依赖。
 FROM python:3.12-slim AS builder

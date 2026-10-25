@@ -558,12 +558,29 @@ class AudioParser:
         return result
 
 
+#: 允许的转写 provider：云服务 API + 测试用 Mock（**没有本地模型选项**）。
+#: 与 OCR 同一架构约束：语音转写一律走云服务 API。
+ALLOWED_TRANSCRIBER_PROVIDERS = ("dashscope", "mock")
+
+
 def build_transcriber(
     provider: str, api_key: str, model: str = DEFAULT_MODEL, max_retries: int = 3, **kwargs
 ) -> Transcriber:
+    """按 provider 构造转写器。
+
+    非云 provider（local / funasr / whisper 本地部署 …）**直接报错**，
+    不静默退回 Mock——否则"配错了"看起来像"跑通了"，
+    线上表现为"音频入库了但没有文字"。
+    """
     if provider == "dashscope":
         return ParaformerTranscriber(
             api_key=api_key, model=model, max_retries=max_retries, **kwargs
         )
-    logger.info("使用 MockTranscriber（未配置千问 Key 或显式指定 mock）")
-    return MockTranscriber()
+    if provider == "mock":
+        logger.info("使用 MockTranscriber（显式指定 mock）")
+        return MockTranscriber()
+    raise ApiError(
+        ErrCode.INVALID_INPUT,
+        f"不支持的转写 provider={provider!r}：语音转写一律走云服务 API"
+        f"（{ '、'.join(ALLOWED_TRANSCRIBER_PROVIDERS) }），不支持本地/自部署模型",
+    )

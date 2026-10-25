@@ -546,7 +546,31 @@ class AgentRunner:
                     int(usage.total), answer_cost,
                     priced=(self._model_name in self._prices) and not getattr(usage, "estimated", True),
                 )
+        # F5：推荐追问（失败不伤主答案；必须在 done 之前发出）
+        followups = self._generate_followups(result.get("answer", ""))
+        if followups:
+            result["followups"] = followups
+            yield "followups", {"items": followups}
         yield "_final", result
+
+    def _generate_followups(self, answer: str) -> list[str]:
+        """生成推荐追问（**任何失败都吞掉**）。"""
+        if not answer or not answer.strip():
+            return []
+        try:
+            generator = getattr(self._llm, "generate_followups", None)
+            if callable(generator):
+                items = generator(answer, 3)
+            else:
+                from app.services.llm import generate_followups as _fallback
+
+                items = _fallback(self._llm, answer, 3)
+        except Exception as exc:  # noqa: BLE001 - 追问失败不影响主答案
+            logger.warning("生成推荐追问失败（本次不展示追问）: %s", exc)
+            return []
+        if not isinstance(items, list):
+            return []
+        return [str(i).strip() for i in items if str(i).strip()][:3]
 
     # ---- TASK-117：长期记忆 ----
 

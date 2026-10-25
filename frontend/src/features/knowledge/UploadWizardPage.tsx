@@ -6,20 +6,21 @@
 import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ingestTask } from "../../lib/api-client";
+import {
+  ACCEPT_ATTRIBUTE,
+  AUDIO_EXTENSIONS,
+  IMAGE_EXTENSIONS,
+  extOf,
+  validateExtension,
+} from "../../lib/file-types";
 import type { ChunkPolicy } from "../../types";
 
-const ACCEPT = ".pdf,.md,.markdown,.docx,.png,.jpg,.jpeg,.mp3,.wav";
 const MAX_SIZE_MB = 50;
 const MAX_FILES = 20;
 
-const IMAGE_EXT = [".png", ".jpg", ".jpeg"];
-const AUDIO_EXT = [".mp3", ".wav"];
+const IMAGE_EXT = IMAGE_EXTENSIONS;
+const AUDIO_EXT = AUDIO_EXTENSIONS;
 const PDF_EXT = [".pdf"];
-const WORD_EXT = [".docx"];
-
-function extOf(name: string): string {
-  return name.slice(name.lastIndexOf(".")).toLowerCase();
-}
 
 interface FileEntry {
   file: File;
@@ -57,10 +58,9 @@ export function UploadWizardPage() {
   const addFiles = (files: FileList | File[]) => {
     const next: FileEntry[] = [];
     for (const file of Array.from(files)) {
-      const ext = extOf(file.name);
-      const supported = [".pdf", ".md", ".markdown", ...WORD_EXT, ...IMAGE_EXT, ...AUDIO_EXT].includes(ext);
-      if (!supported) {
-        next.push({ file, error: `暂不支持 ${ext || "该类型"}（支持 PDF / MD / Word / 图片 / 音频）` });
+      const extError = validateExtension(file.name);
+      if (extError) {
+        next.push({ file, error: extError });
         continue;
       }
       if (file.size > MAX_SIZE_MB * 1024 * 1024) {
@@ -155,8 +155,8 @@ export function UploadWizardPage() {
               >
                 <div style={{ fontSize: 28 }} aria-hidden>⬆</div>
                 <div>拖拽文件到这里，或点击选择</div>
-                <div className="trace-id">支持 .pdf .md .png .jpg .mp3 .wav，单文件 ≤ {MAX_SIZE_MB}MB，最多 {MAX_FILES} 个</div>
-                <input ref={inputRef} type="file" accept={ACCEPT} multiple hidden onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+                <div className="trace-id">支持 PDF / Markdown / Word / Excel / PPT / 纯文本 / 代码 / 图片 / 音频，单文件 ≤ {MAX_SIZE_MB}MB，最多 {MAX_FILES} 个</div>
+                <input ref={inputRef} type="file" accept={ACCEPT_ATTRIBUTE} multiple hidden onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
               </div>
               {entries.length > 0 && (
                 <div className="upload-queue">

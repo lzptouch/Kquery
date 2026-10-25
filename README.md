@@ -34,7 +34,7 @@ cd backend && uv run pytest --cov=app                # 带覆盖率（门槛 80%
 cd backend && uv run ruff check app tests            # 静态检查
 ```
 
-当前 **336 个用例**，覆盖率 85%。CI 见 `.github/workflows/ci.yml`（Linux 上跑真实 Milvus Lite，Windows 自动回退 FAISS）。
+当前 **870 个用例**（后端）+ **39 个前端用例**（vitest）+ **53 项浏览器端到端断言**，覆盖率 85%。CI 见 `.github/workflows/ci.yml`（Linux 上跑真实 Milvus Lite，Windows 自动回退 FAISS）。
 
 ## 阶段进度
 
@@ -47,4 +47,10 @@ cd backend && uv run ruff check app tests            # 静态检查
 - [x] 阶段 7：GraphRAG 与多模态（qwen-plus 实体关系抽取 + 消歧归一 + 内存图 BFS + 稳定编号社区摘要 + qwen-vl-max 结构化描述统一向量空间 + graph_search/image_search 工具 + 图谱浏览器）
 - [x] 阶段 8：多智能体报告（Planner/Researcher/Validator/Writer/Critic 五角色 + Blackboard 黑板 + 拓扑分层并行 + Writer↔Critic 评分循环 + 报告中心）—— **已于 2026-10-17 下线**（见 `doc/plan/移除评测平台与报告中心-分析与实施计划.md`）
 - [x] 阶段 9：企业级护栏（认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 审计三事件只存哈希 + 敏感词长词优先扫描与掩码 + 租户滑动窗口配额 + 六个管理页面）—— 其中**评测平台已下线**
+- [x] 整合 doc-qa 独有能力（2026-10-25，详见 `doc/plan/整合doc-qa独有功能到Kquery-分析与实施计划.md`）：
+  Markdown 富文本渲染（marked + `[#N]` 角标）/ 浏览器语音输入（火山 STS，密钥留后端）/
+  扩展解析格式（.xlsx + .pptx + 纯文本 + 代码文件）/ 单文档「快问」通道（临时索引 + TTL + 范围隔离 + 会话维度）/
+  引文增强（参考汇总卡片 / 引文搜索 / 导出 TXT）/
+  OCR / 语音转写**一律云服务 API**（不提供本地或自部署模型路径，已用守卫测试钉死）/
+  推荐追问与会话自动命名 / 共享存储 Redis 化（缓存 + 限流 + 配额 + 快问临时态，Fail-Open 降级）
 - [ ] 阶段 10：见 `doc/series/stage-10-deployment/README.md`

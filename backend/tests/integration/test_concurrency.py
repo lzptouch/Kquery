@@ -9,7 +9,6 @@
 """
 import concurrent.futures
 import json
-import threading
 import time
 
 import pytest

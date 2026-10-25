@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import get_principal, require_role
+from app.dependencies import require_role
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 
 logger = logging.getLogger(__name__)

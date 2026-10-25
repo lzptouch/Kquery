@@ -51,6 +51,8 @@ def acl_filter_of(request: Request, principal: Principal):
     def check(doc_id: str) -> bool:
         if doc_id.startswith("__"):  # 系统内置块（社区摘要/图像/计算器）租户内可见
             return True
+        if doc_id.startswith("quick_"):  # F4 快问临时文档：不在知识库里，归属另行校验
+            return True
         try:
             doc = knowledge.get(doc_id)
         except Exception:  # noqa: BLE001

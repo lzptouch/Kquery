@@ -4,6 +4,7 @@
  */
 import { useRef, useState } from "react";
 import { uploadFile } from "../../../lib/api-client";
+import { ACCEPT_ATTRIBUTE, validateExtension } from "../../../lib/file-types";
 
 interface Props {
   accept?: string;
@@ -19,8 +20,6 @@ interface QueueItem {
   error?: string;
 }
 
-const ALLOWED_EXT = [".pdf", ".md", ".markdown", ".docx", ".png", ".jpg", ".jpeg", ".mp3", ".wav"];
-
 export function DocumentUploader({ maxSizeMB = 50, onUploaded }: Props) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [dragover, setDragover] = useState(false);
@@ -31,8 +30,8 @@ export function DocumentUploader({ maxSizeMB = 50, onUploaded }: Props) {
   };
 
   const validate = (file: File): string | null => {
-    const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
-    if (!ALLOWED_EXT.includes(ext)) return `不支持的格式 ${ext}（支持 PDF / Markdown / Word / 图片 / 音频）`;
+    const extError = validateExtension(file.name);
+    if (extError) return extError;
     if (file.size > maxSizeMB * 1024 * 1024) return `超过 ${maxSizeMB}MB 限制`;
     return null;
   };
@@ -102,11 +101,11 @@ export function DocumentUploader({ maxSizeMB = 50, onUploaded }: Props) {
         <div style={{ fontSize: 28 }} aria-hidden>
           ⬆
         </div>
-        <div>拖拽文件到此处，或点击选择（支持 PDF / Markdown / Word / 图片 / 音频，单文件 ≤ {maxSizeMB}MB）</div>
+        <div>拖拽文件到此处，或点击选择（支持 PDF / Markdown / Word / Excel / PPT / 纯文本 / 代码 / 图片 / 音频，单文件 ≤ {maxSizeMB}MB）</div>
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf,.md,.markdown,.docx,.png,.jpg,.jpeg,.mp3,.wav"
+          accept={ACCEPT_ATTRIBUTE}
           multiple
           hidden
           onChange={(e) => {

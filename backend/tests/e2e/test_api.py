@@ -30,9 +30,11 @@ def test_upload_and_list_files(client):
 
 
 def test_upload_unsupported_file(client):
+    # F3：.txt 已改为**支持**（纯文本解析器），原先用 notes.txt 断言 400 的老用例
+    # 必然失败。改用真正不支持的二进制扩展名，错误码语义保持不变（2003）。
     resp = client.post(
         "/knowledge/upload",
-        files={"file": ("notes.txt", b"plain text", "text/plain")},
+        files={"file": ("payload.bin", b"\x00\x01\x02", "application/octet-stream")},
     )
     assert resp.status_code == 400
     body = resp.json()

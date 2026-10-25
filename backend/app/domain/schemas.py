@@ -330,6 +330,8 @@ class AskRequest(BaseModel):
     session_id: str | None = None  # 携带则在会话上下文中提问（证据跨轮累积）
     mode: str = "auto"  # auto（默认线性）/ agent（状态机）
     user_id: str | None = None  # 归属判定（也可走 X-User-Id 头）
+    # F4 快问：限定只检索该临时文档（不传 = 走全知识库）
+    doc_id: str | None = None
 
 
 class AskResult(BaseModel):
@@ -357,6 +359,8 @@ class AskResult(BaseModel):
     self_check: "SelfCheckRecord | None" = None
     # 阶段 9 扩展：因权限被过滤的条数（只报数量，绝不暴露被过滤文档的元信息）
     acl_filtered: int = 0
+    # F5 扩展：推荐追问（LLM 不可用时为空列表，绝不影响主答案）
+    followups: list[str] = []
 
 
 class SelfCheckRecord(BaseModel):

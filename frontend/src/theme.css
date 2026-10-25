@@ -180,6 +180,187 @@ button {
   word-break: break-word;
 }
 
+/* ---- Markdown 富文本（F1）----
+ * 只用 CSS 变量，不写死颜色——暗色模式下（prefers-color-scheme: dark）
+ * 写死的 #fff / #333 会直接不可读。
+ * white-space: normal 覆盖 .answer-text 的 pre-wrap：Markdown 语义下段落内的
+ * 软换行应当折行显示，pre-wrap 会把模型输出里的单换行渲染成硬换行。 */
+.markdown-body {
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.7;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 16px 0 8px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.markdown-body h1 { font-size: 20px; }
+.markdown-body h2 { font-size: 18px; }
+.markdown-body h3 { font-size: 16px; }
+.markdown-body h4 { font-size: 15px; }
+
+.markdown-body p {
+  margin: 8px 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+
+.markdown-body li {
+  margin: 4px 0;
+}
+
+.markdown-body blockquote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--evidence-bg);
+}
+
+.markdown-body code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--evidence-bg);
+  border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+}
+
+.markdown-body pre {
+  margin: 10px 0;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--evidence-bg);
+}
+
+.markdown-body pre code {
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.markdown-body table {
+  width: 100%;
+  margin: 10px 0;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.markdown-body th {
+  background: var(--evidence-bg);
+  font-weight: 600;
+}
+
+.markdown-body a {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.markdown-body hr {
+  margin: 16px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.markdown-body img {
+  max-width: 100%;
+}
+
+/* ---- F4 快问附件面板 ---- */
+.quick-attach-panel {
+  margin-bottom: 8px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow-card);
+}
+
+.quick-attach-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.quick-attach-current {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+}
+
+.quick-attach-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--evidence-bg);
+}
+
+/* ---- F2 语音按钮 ---- */
+.voice-btn.recording {
+  color: #fff;
+  background: var(--error);
+  border-color: var(--error);
+}
+
+/* ---- F5 推荐追问 ---- */
+.followup-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.followup-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--evidence-bg);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.followup-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
 .stream-cursor {
   display: inline-block;
   width: 8px;
@@ -224,6 +405,37 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* 引文面板内的关键字搜索 */
+.evidence-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.evidence-search .input {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+/* 参考汇总卡片（N 条引文 · 来自 M 个文件） */
+.citation-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--evidence-bg);
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.citation-summary-text {
+  flex: 1;
 }
 
 .evidence-card {

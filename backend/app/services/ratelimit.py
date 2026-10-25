@@ -49,9 +49,81 @@ class TokenBucketLimiter:
         return self._buckets.get(tenant_id)
 
 
-def build_limiter() -> TokenBucketLimiter:
-    # 预留：生产接 Redis 时在此替换实现
+def build_limiter(state=None) -> TokenBucketLimiter:
+    """令牌桶工厂。
+
+    配了共享存储就用 Redis 版（多副本共享同一个桶），
+    否则用进程内实现（单副本）。
+    """
+    if state is not None and getattr(state, "redis_enabled", False):
+        return RedisTokenBucketLimiter(state)
     return TokenBucketLimiter()
+
+
+# ---- Redis 版：Lua 保证"回填 + 扣减"原子 ----
+
+# KEYS[1]=桶键；ARGV: rate(每秒补多少) capacity now ttl
+# 返回 {allowed(0/1), remaining}
+_TOKEN_BUCKET_LUA = """
+local key = KEYS[1]
+local rate = tonumber(ARGV[1])
+local capacity = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local ttl = tonumber(ARGV[4])
+local tokens = tonumber(redis.call('HGET', key, 'tokens'))
+local ts = tonumber(redis.call('HGET', key, 'ts'))
+if tokens == nil then tokens = capacity end
+if ts == nil then ts = now end
+if now > ts then
+  tokens = math.min(capacity, tokens + (now - ts) * rate)
+end
+local allowed = 0
+if tokens >= 1 then
+  tokens = tokens - 1
+  allowed = 1
+end
+redis.call('HSET', key, 'tokens', tokens, 'ts', now)
+redis.call('EXPIRE', key, ttl)
+return {allowed, tostring(tokens)}
+"""
+
+
+class RedisTokenBucketLimiter:
+    """共享存储版令牌桶（多副本共享同一份桶状态）。
+
+    **降级纪律**：Redis 不可用 → 回落到进程内桶（单副本语义），
+    绝不把"Redis 挂了"变成"请求全被限流"或"请求全被放行"。
+    """
+
+    def __init__(self, state, fallback: TokenBucketLimiter | None = None):
+        self._state = state
+        self._fallback = fallback or TokenBucketLimiter()
+        self._degraded = 0
+
+    def allow(self, tenant_id: str, rate_per_min: float, capacity: float) -> tuple[bool, int]:
+        now = time.time()
+        try:
+            result = self._state.eval(
+                _TOKEN_BUCKET_LUA,
+                [f"ratelimit:bucket:{tenant_id}"],
+                [rate_per_min / 60.0, capacity, now, 300],
+            )
+            allowed = int(result[0]) == 1
+            remaining = float(result[1]) if len(result) > 1 else 0.0
+        except Exception:  # noqa: BLE001 - Fail-Open：降级为进程内
+            self._degraded += 1
+            return self._fallback.allow(tenant_id, rate_per_min, capacity)
+        if allowed:
+            return True, 0
+        rate_per_s = rate_per_min / 60.0
+        wait = (1.0 - remaining) / rate_per_s if rate_per_s > 0 else 60.0
+        return False, max(1, int(wait) + 1)
+
+    def bucket_state(self, tenant_id: str) -> Bucket | None:
+        return self._fallback.bucket_state(tenant_id)
+
+    def stats(self) -> dict:
+        return {"backend": "redis", "degraded_operations": self._degraded}
 
 
 def resolve_bucket_limits(active_config, settings) -> tuple[float, float]:

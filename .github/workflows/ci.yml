@@ -67,3 +67,27 @@ jobs:
           ! grep -rn "if False else" tests/ --include=*.py
       - name: conftest 必须注入 admin 默认头（否则鉴权测试全红）
         run: grep -q "X-Roles" tests/conftest.py
+
+  # 前端护栏（B0）：此前 CI 只跑后端 3 个 job，前端 TS 错误与单测失败无人拦截。
+  # node 版本与 frontend/.nvmrc、frontend/Dockerfile 保持一致（22）。
+  frontend-build:
+    name: frontend (build + unit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: install
+        run: npm ci
+      - name: typecheck
+        run: npm run typecheck:test
+      - name: build
+        run: npm run build
+      - name: unit tests
+        run: npm test

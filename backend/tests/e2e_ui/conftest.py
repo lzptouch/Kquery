@@ -6,20 +6,28 @@
 
 运行前提（缺一自动 skip）：
 - 后端：127.0.0.1:8100（/healthz）
-- 前端 dev server：127.0.0.1:5173（KQUERY_API_TARGET 指向 8100）
+- 前端：默认 127.0.0.1:5173（vite dev server，KQUERY_API_TARGET 指向 8100），
+  也可用 `KQUERY_UI_WEB` 指向 Docker 部署的前端（http://127.0.0.1:8090）
 - 浏览器：系统 Microsoft Edge（无需下载 Chromium）
+
+**端口占用陷阱**：本机 5173 常年被别的项目占着（实测是另一个 vite 应用）。
+只判"端口通"会把 UI 测试指向**别人的页面**，表现为"元素找不到"——
+看起来像我们的前端坏了，其实是被测对象根本不是它。
+所以这里额外校验首页标题里有 "Kquery"，不是就跳过（并说明原因）。
 
 运行：
     cd backend && uv run pytest tests/e2e_ui -v
+    KQUERY_UI_WEB=http://127.0.0.1:8090 uv run pytest tests/e2e_ui -v   # 打 Docker 栈
 """
 from __future__ import annotations
 
 import os
 import socket
+import urllib.request
 
 import pytest
 
-WEB = "http://127.0.0.1:5173"
+WEB = os.environ.get("KQUERY_UI_WEB", "http://127.0.0.1:5173")
 API = "http://127.0.0.1:8100"
 
 
@@ -29,6 +37,20 @@ def _port_open(port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _serves_kquery(base: str) -> bool:
+    """这个地址上跑的确实是 Kquery 吗？
+
+    端口通 ≠ 是我们的应用：本机 5173 常年被别的 vite 项目占着，
+    打过去会得到"元素找不到"的假失败。
+    """
+    try:
+        with urllib.request.urlopen(base, timeout=3) as resp:
+            html = resp.read(4096).decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return False
+    return "kquery" in html.lower()
 
 
 @pytest.fixture(scope="session")
@@ -53,9 +75,16 @@ def web_page(page):
     因此不写死任何一种，而是**看页面上有没有登录框**再决定。这比让 CI 或
     本机去同步 .env 更可靠——两边只要有一个忘了改，UI 测试就会整片红。
     """
-    missing = [p for p in (5173, 8100) if not _port_open(p)]
+    from urllib.parse import urlparse
+
+    web_port = urlparse(WEB).port or (443 if WEB.startswith("https") else 80)
+    missing = [p for p in (web_port, 8100) if not _port_open(p)]
     if missing:
         pytest.skip(f"服务未启动（端口 {missing} 不通），跳过 UI 测试")
+    if not _serves_kquery(WEB):
+        pytest.skip(
+            f"{WEB} 上不是 Kquery（端口被别的应用占用或页面异常），跳过 UI 测试"
+        )
     page.goto(WEB, wait_until="domcontentloaded")
     page.wait_for_timeout(1500)
     if page.query_selector('input[name="password"]') is not None:

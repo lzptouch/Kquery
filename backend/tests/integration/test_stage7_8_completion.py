@@ -11,7 +11,6 @@
 注：原第 4/5/8 项（报告 SSE 事件、`rejected`/`capped` 区分、`_run_layer` 事件归属）
 属多智能体报告链路，已随报告中心下线移除。
 """
-import threading
 
 import pytest
 

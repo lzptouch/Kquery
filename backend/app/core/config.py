@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     dashscope_api_key: str = ""
     # auto: 有 key 走 dashscope，无 key 走 mock（便于无凭据环境下的功能测试）
     model_provider: str = "auto"  # auto | dashscope | mock
+    # OCR provider：**一律云服务 API**，只允许 auto | dashscope | mock。
+    # auto = 跟随 model_provider；dashscope = 强制云端；mock = 测试。
+    # 没有 local/onnx/paddleocr 这类本地模型选项（见 parsers/ocr.py 模块说明）：
+    # 本地 OCR 要在镜像构建期烤权重或运行时从 HuggingFace 下载，
+    # 内网环境两者都不可行，最终会变成"部署后 OCR 静默不可用"。
+    ocr_provider: str = "auto"
     llm_model: str = "qwen-plus"
     embedding_model: str = "text-embedding-v3"
     embedding_dim: int = 1024
@@ -151,6 +157,10 @@ class Settings(BaseSettings):
     # 空 = 进程内（单副本）。多副本必须配 Redis，否则限流/配额实际额度 × 副本数
     redis_url: str = ""
     redis_key_prefix: str = "kquery:"
+    # 语义缓存后端：auto（有 Redis 用 Redis）/ memory / redis
+    # redis 模式下 redis_url 为空 → 启动即失败（配置错误不该拖到运行期才暴露）
+    cache_backend: str = "auto"
+    cache_max_entries: int = 10000
     agent_verify_enabled: bool = False
     agent_max_verify_rounds: int = 1  # 最多回退重做几轮（防"改了还是不通过"死循环）
 
@@ -238,6 +248,38 @@ class Settings(BaseSettings):
     # ---- 上传约束 ----
     max_upload_mb: int = 50
 
+    # ---- F4 快问（单文档「上传即问」）----
+    # TTL 对齐 doc-qa（2 小时）：临时文档只服务当次问答，留太久会占存储。
+    quick_ask_ttl_s: int = 7200
+    # 同步 MVP 的规模上限：解析在请求内完成，超大文件会拖住请求线程。
+    quick_ask_max_pages: int = 20
+    quick_ask_max_mb: int = 20
+
+    # ---- F2 语音输入（火山引擎 STS）----
+    # 密钥由后端持有，前端只拿 STS token——密钥绝不能进前端产物。
+    volc_appid: str = ""
+    volc_access_key: str = ""
+    # 资源集群（语音识别通用集群）
+    volc_speech_cluster: str = "volcengine_input_common"
+    # STS token 有效期（秒）
+    speech_sts_duration_s: int = 300
+    speech_sts_timeout_s: float = 10.0
+
+    # ---- F2 语音转写（后端 ASR 代理）----
+    # 浏览器把录音 POST 上来，由后端代持云厂商凭据完成转写。
+    # provider：dashscope（百炼原生，qwen3-asr-flash / fun-asr-flash）
+    #          | openai（任何兼容 /v1/audio/transcriptions 的服务）
+    #          | none（关闭语音转写）
+    speech_asr_provider: str = "dashscope"
+    speech_asr_model: str = "qwen3-asr-flash"
+    # 自定义转写端点（留空 = 用 provider 默认地址）
+    speech_asr_base_url: str = ""
+    # 转写用 API Key（留空 = 复用 DASHSCOPE_API_KEY）
+    speech_asr_api_key: str = ""
+    # 单次转写音频上限（MB）与上游超时（秒）
+    speech_max_audio_mb: int = 10
+    speech_asr_timeout_s: float = 60.0
+
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @property
@@ -245,6 +287,17 @@ class Settings(BaseSettings):
         if self.model_provider != "auto":
             return self.model_provider
         return "dashscope" if self.dashscope_api_key else "mock"
+
+    @property
+    def resolved_ocr_provider(self) -> str:
+        """OCR 实际使用的 provider（只可能是云服务 API 或 mock）。
+
+        `auto` 跟随 `model_provider`；显式指定 `dashscope` 时强制走云端
+        （此时必须有平台凭据，否则启动期校验会拦下）。
+        """
+        if self.ocr_provider != "auto":
+            return self.ocr_provider
+        return self.resolved_provider
 
     # ---- 启动期校验（stage-10 §5.1：缺项宁可在 boot 时崩，也不要运行期才暴露）----
 
@@ -255,6 +308,9 @@ class Settings(BaseSettings):
         """
         return [
             {"key": "model_provider", "value": self.model_provider, "required": True,
+             "is_secret": False, "effective_scope": "process"},
+            # OCR 只允许云服务 API（auto | dashscope | mock），没有本地模型选项
+            {"key": "ocr_provider", "value": self.ocr_provider, "required": True,
              "is_secret": False, "effective_scope": "process"},
             {"key": "dashscope_api_key", "value": "***" if self.dashscope_api_key else "",
              "required": self.model_provider == "dashscope", "is_secret": True,
@@ -308,6 +364,13 @@ class Settings(BaseSettings):
 
         if self.model_provider not in {"auto", "dashscope", "mock"}:
             add("model_provider", f"非法取值 {self.model_provider}", "只能取 auto | dashscope | mock")
+        if self.ocr_provider not in {"auto", "dashscope", "mock"}:
+            # 本地/自部署 OCR 模型不在允许范围内（架构约束：OCR 一律云服务 API）
+            add("ocr_provider", f"非法取值 {self.ocr_provider}",
+                "OCR 只支持云服务 API：auto | dashscope | mock；不支持本地/自部署模型")
+        if self.ocr_provider == "dashscope" and not self.dashscope_api_key:
+            add("dashscope_api_key", "ocr_provider=dashscope 但未提供平台凭证",
+                "补齐 KQUERY_DASHSCOPE_API_KEY，或显式设置 ocr_provider=mock")
         if self.model_provider == "dashscope" and not self.dashscope_api_key:
             # 显式要求走平台却没给凭据：这是配置错误，不该静默降级成 mock
             add("dashscope_api_key", "model_provider=dashscope 但未提供平台凭证",
@@ -347,6 +410,12 @@ class Settings(BaseSettings):
             add("parametric_fallback_confidence", "兜底置信度必须落在 [0,1]", "推荐 0.3")
         if self.quota_per_minute <= 0:
             add("quota_per_minute", "分钟配额必须为正整数", "推荐 60")
+        if self.cache_backend not in {"auto", "memory", "redis"}:
+            add("cache_backend", f"非法取值 {self.cache_backend}", "只能取 auto | memory | redis")
+        if self.cache_backend == "redis" and not self.redis_url.strip():
+            # 显式要求 Redis 模式却没给地址：这是配置错误，不该静默退回内存
+            add("redis_url", "cache_backend=redis 但未提供 redis_url",
+                "补齐 REDIS_URL，或显式设置 cache_backend=memory 承认单副本语义")
         if self.platform_quota_warn_ratio <= 0 or self.platform_quota_warn_ratio >= 1:
             add("platform_quota_warn_ratio", "告警水位必须落在 (0,1)", "推荐 0.8")
         if issues:

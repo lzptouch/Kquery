@@ -63,6 +63,8 @@ export interface StreamHandlers {
     unsupported_claims_count?: number;
   }) => void;
   onError: (error: { code: number; message: string; retry_after?: number }) => void;
+  // ---- F5：推荐追问（后端在 done 之前发出）----
+  onFollowups?: (data: { items: string[] }) => void;
   // ---- 阶段 6：Agent 轨迹事件 ----
   onPlan?: (data: { steps: AgentPlanStep[]; max_iterations: number; replan?: boolean }) => void;
   onToolStart?: (data: { step_index: number; tool: string; input: string }) => void;
@@ -83,6 +85,9 @@ const KNOWN_EVENTS = new Set([
   // 阶段 7 预留：图谱关系路径。缺了它前端会把后端已发出的事件静默丢弃，
   // 表现为"跨模态证据形态不完整"且无处排查。
   "graph_path",
+  // F5：推荐追问。**必须登记**：白名单外的 event 会被直接丢弃且不报错，
+  // 表现是"后端有发、前端没显示"，且没有任何线索可查。
+  "followups",
   "done", "error",
 ]);
 
@@ -90,7 +95,7 @@ export async function askStream(
   question: string,
   signal: AbortSignal,
   handlers: StreamHandlers,
-  options: { sessionId?: string | null; mode?: "auto" | "agent" } = {},
+  options: { sessionId?: string | null; mode?: "auto" | "agent"; docId?: string | null } = {},
 ): Promise<void> {
   let resp: Response;
   try {
@@ -103,6 +108,8 @@ export async function askStream(
         question,
         ...(options.sessionId ? { session_id: options.sessionId } : {}),
         ...(options.mode ? { mode: options.mode } : {}),
+        // F4 快问：只检索该临时文档（不传 = 全知识库）
+        ...(options.docId ? { doc_id: options.docId } : {}),
       }),
       signal,
     });
@@ -154,6 +161,8 @@ export async function askStream(
     else if (event === "refused") handlers.onRefused(data as { reason: RefusalReason; trace_id: string; acl_filtered?: number });
     else if (event === "retrieval_stats")
       handlers.onRetrievalStats(data as Partial<RetrievalStats> & { from_cache: boolean; reranked: boolean });
+    else if (event === "followups")
+      handlers.onFollowups?.(data as { items: string[] });
     else if (event === "plan") handlers.onPlan?.(data as { steps: AgentPlanStep[]; max_iterations: number; replan?: boolean });
     else if (event === "tool_start") handlers.onToolStart?.(data as { step_index: number; tool: string; input: string });
     else if (event === "tool_end") handlers.onToolEnd?.(data as { step_index: number; tool: string; elapsed_ms: number; hit_count: number; error: string; truncated_from?: number });

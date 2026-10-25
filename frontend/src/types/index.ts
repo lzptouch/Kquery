@@ -347,6 +347,8 @@ export interface ChatMessage {
   fuseReason?: string;
   /** 阶段 9：因权限被过滤的结果数（只报数量，绝不展示被过滤文档的元信息） */
   aclFiltered?: number;
+  /** F5：推荐追问（LLM 不可用时为空） */
+  followups?: string[];
 }
 
 // ---------- 阶段 6：Agentic RAG ----------

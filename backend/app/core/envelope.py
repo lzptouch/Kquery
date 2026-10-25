@@ -37,6 +37,7 @@ class ErrCode(IntEnum):
     INDEX_NOT_READY = 3001  # 索引为空：需要检索但无任何可检索内容
     DOCUMENT_NOT_FOUND = 3002
     DOCUMENT_PARSE_FAILED = 3003
+    QUICK_DOC_EXPIRED = 3004  # 快问临时文档已过期或已被删除（TTL 到期 / 主动删）
 
     # ---- 31xx~38xx 入库与解析（阶段 3）----
     UNSUPPORTED_FILE_TYPE = 3101  # 文件格式不支持（向导已拦截，此处兜底）
@@ -50,6 +51,7 @@ class ErrCode(IntEnum):
     INDEX_BUILD_FAILED = 3701  # 索引构建失败，整批重试不可跳过
     VISION_UNAVAILABLE = 3801  # 图片解析不可用
     AUDIO_TRANSCRIBE_FAILED = 3802  # 音频转写不可用
+    SPEECH_UNAVAILABLE = 3803  # 语音输入不可用（未配置火山密钥等）
 
     # ---- 4xxx 检索与生成（阶段 0/2/4/5）----
     RETRIEVAL_FAILED = 4001

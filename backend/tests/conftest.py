@@ -49,6 +49,11 @@ def client():
         # 测试环境的 CRAG 阈值贴合 Mock 评分分布（生产默认 0.7/0.3 须按真实评测集标定）
         os.environ["CRAG_CORRECT_TH"] = "0.3"
         os.environ["CRAG_INCORRECT_TH"] = "0.1"
+        # 语音转写：测试里一律关掉。
+        # 原因有二：① .env 里的 DASHSCOPE_API_KEY 会被 Settings 读进来，
+        # 不关的话"语音不可用"类断言会被真实凭据反转；② 测试绝不能真调云厂商
+        # ASR（慢、贵、还不稳定）。需要转写行为的用例自己 monkeypatch。
+        os.environ["SPEECH_ASR_PROVIDER"] = "none"
         from app.core.config import get_settings
 
         get_settings.cache_clear()
@@ -57,7 +62,7 @@ def client():
         with TestClient(create_app(), headers=ADMIN_HEADERS) as c:
             yield c
         get_settings.cache_clear()
-        for key in ("DATA_DIR", "MODEL_PROVIDER", "AUTH_ENABLED", "RETRIEVAL_CONFIG_APPLY_DELAY_S", "VECTOR_STORE", "KQUERY_MILVUS_URI", "CRAG_CORRECT_TH", "CRAG_INCORRECT_TH"):
+        for key in ("DATA_DIR", "MODEL_PROVIDER", "AUTH_ENABLED", "RETRIEVAL_CONFIG_APPLY_DELAY_S", "VECTOR_STORE", "KQUERY_MILVUS_URI", "CRAG_CORRECT_TH", "CRAG_INCORRECT_TH", "SPEECH_ASR_PROVIDER"):
             os.environ.pop(key, None)
 
 

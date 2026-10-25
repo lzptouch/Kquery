@@ -17,6 +17,15 @@ from app.core.envelope import ErrCode
 
 logger = logging.getLogger(__name__)
 
+#: Mock 模式的确定性追问（F5）：供测试断言固定输出
+_MOCK_FOLLOWUPS = [
+    "这个结论的依据是什么？",
+    "还有哪些相关的规定？",
+    "在什么情况下不适用？",
+]
+#: Mock 模式的确定性会话标题（F5）
+_MOCK_TITLE = "知识库问答"
+
 
 class LLMError(Exception):
     """LLM 调用失败，携带错误码供上层映射统一信封。"""
@@ -25,7 +34,6 @@ class LLMError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
-
 
 @dataclass
 class TokenUsage:
@@ -178,6 +186,14 @@ class QwenLLM:
     def stream(self, prompt: str) -> Iterator[str]:
         return self._call_stream(prompt)
 
+    # ---- F5：推荐追问 / 会话标题 ----
+
+    def generate_followups(self, answer: str, n: int = 3) -> list[str]:
+        return generate_followups(self, answer, n)
+
+    def generate_title(self, question: str, answer: str) -> str:
+        return generate_title(self, question, answer)
+
 
 class MockLLM:
     """确定性假模型：从 prompt 中解析证据编号，生成带引用的可预期答案。"""
@@ -261,6 +277,12 @@ class MockLLM:
     def _answer(self, prompt: str) -> str:
         from app.services.embeddings import _tokenize
 
+        # F5：追问 / 标题类提示词的确定性应答
+        if "用户最可能继续追问的问题" in prompt:
+            return json.dumps(_MOCK_FOLLOWUPS, ensure_ascii=False)
+        if "为这次对话起一个不超过" in prompt:
+            return _MOCK_TITLE
+
         # 预处理类提示词优先按类型分发
         if "你是意图分类器" in prompt:
             return self._mock_intent(prompt)
@@ -342,6 +364,14 @@ class MockLLM:
         self._last_usage = TokenUsage.estimate(prompt, text)
         return text
 
+    # ---- F5：确定性追问与标题（供测试断言固定输出）----
+
+    def generate_followups(self, answer: str, n: int = 3) -> list[str]:
+        return _MOCK_FOLLOWUPS[:n]
+
+    def generate_title(self, question: str, answer: str) -> str:
+        return _MOCK_TITLE
+
     def stream(self, prompt: str) -> Iterator[str]:
         text = self._answer(prompt)
         self._last_usage = TokenUsage.estimate(prompt, text)
@@ -366,3 +396,83 @@ def build_llm(provider: str, api_key: str, model: str, temperature: float, max_r
         )
     logger.info("使用 MockLLM（未配置千问 Key 或显式指定 mock）")
     return MockLLM()
+
+
+# ---------- F5：推荐追问与会话命名 ----------
+
+FOLLOWUP_PROMPT = """根据下面的问答内容，提出 {n} 个用户最可能继续追问的问题。
+要求：每行一个，不要编号，不要解释，问题本身要具体。
+
+问答内容：
+{answer}
+"""
+
+TITLE_PROMPT = """根据下面的问答内容，为这次对话起一个不超过 20 字的中文标题。
+只输出标题本身，不要引号，不要解释。
+
+问答内容：
+{answer}
+"""
+
+
+def generate_followups(llm, answer: str, n: int = 3) -> list[str]:
+    """生成推荐追问。
+
+    **失败必须吞掉**：追问是锦上添花，主答案已经生成好了，
+    让追问失败把整次问答变成 500 是本末倒置。
+    """
+    if not answer or not answer.strip():
+        return []
+    try:
+        raw = llm.generate(FOLLOWUP_PROMPT.format(n=n, answer=answer[:4000]))
+    except Exception as exc:  # noqa: BLE001 - 追问失败不影响主答案
+        logger.warning("生成推荐追问失败（已忽略）: %s", exc)
+        return []
+    return _parse_followups(raw, n)
+
+
+def _parse_followups(raw: str, n: int) -> list[str]:
+    """解析追问列表。
+
+    兼容两种返回：纯文本多行、JSON 数组或 {"followups": [...]}。
+    解析不出来就返回空列表（宁可没有，不要给用户看半截 JSON）。
+    """
+    if not raw:
+        return []
+    text = raw.strip()
+    # ① JSON 形式：以 [ 或 { 开头就只按 JSON 解析，解析失败就返回空
+    #    （半截 JSON 展示给用户比不展示更糟）
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            data = json.loads(text)
+            items = data if isinstance(data, list) else data.get("followups") or data.get("questions") or []
+            if isinstance(items, list):
+                cleaned = [str(i).strip() for i in items if str(i).strip()]
+                if cleaned:
+                    return cleaned[:n]
+        except (ValueError, AttributeError, TypeError):
+            logger.debug("追问返回不是合法 JSON，忽略")
+        return []
+    # ② 纯文本多行
+    items = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("-*•0123456789. 、").strip()
+        if len(line) >= 4:
+            items.append(line)
+    return items[:n]
+
+
+def generate_title(llm, question: str, answer: str) -> str:
+    """生成会话标题（失败返回空串，调用方保留默认标题）。"""
+    content = (question or "")[:200] + "\n" + (answer or "")[:2000]
+    if not content.strip():
+        return ""
+    try:
+        raw = llm.generate(TITLE_PROMPT.format(answer=content))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("生成会话标题失败（已忽略）: %s", exc)
+        return ""
+    title = raw.strip().splitlines()[0].strip() if raw.strip() else ""
+    title = title.strip("\"'“”‘’ ")
+    return title[:40]
+

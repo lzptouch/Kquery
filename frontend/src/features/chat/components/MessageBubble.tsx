@@ -4,8 +4,9 @@
  * ② 中间过程（默认折叠）：检索链路统计 + 证据切片 + 相关度分，
  *    点击"检索过程与证据"展开；点击答案中的引用编号会自动展开并定位到对应证据。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage, Evidence } from "../../../types";
+import { downloadAnswerAsTxt } from "../../../lib/export-txt";
 import { AgentTraceTimeline } from "./AgentTraceTimeline";
 import { ConfidenceBar } from "./ConfidenceBar";
 import { EvidenceCard } from "./EvidenceCard";
@@ -22,18 +23,41 @@ interface Props {
   onViewOriginal: (evidence: Evidence) => void;
   onRetry?: () => void;
   onReask?: (question: string) => void;
+  /** F5：点击推荐追问（直接发问） */
+  onFollowup?: (question: string) => void;
   originalQuestion?: string;
   highlightRank?: number | null;
 }
 
 const COLLAPSE_THRESHOLD = 3;
 
-export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetry, onReask, originalQuestion, highlightRank }: Props) {
+export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetry, onReask, onFollowup, originalQuestion, highlightRank }: Props) {
   const [expandedRanks, setExpandedRanks] = useState<Set<number>>(new Set());
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
   const [processOpen, setProcessOpen] = useState(false); // 中间过程默认折叠
+  const [evidenceQuery, setEvidenceQuery] = useState(""); // 引文面板内的关键字过滤
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // 参考汇总：N 条引文来自 M 个文件（按 doc_id 去重，文件名可能为空）
+  const citationSummary = useMemo(() => {
+    const files = new Set<string>();
+    for (const ev of message.evidence) {
+      files.add(ev.doc_id || ev.filename || "");
+    }
+    return { count: message.evidence.length, files: files.size };
+  }, [message.evidence]);
+
+  // 引文过滤：内容 / 来源 / 文件名 / chunk_id 任一命中即可
+  const filteredEvidence = useMemo(() => {
+    const q = evidenceQuery.trim().toLowerCase();
+    if (!q) return message.evidence;
+    return message.evidence.filter((ev) =>
+      [ev.content, ev.source, ev.filename, ev.doc_id, ev.chunk_id]
+        .filter(Boolean)
+        .some((field) => String(field).toLowerCase().includes(q)),
+    );
+  }, [message.evidence, evidenceQuery]);
 
   // 流式期间出现轨迹 → 自动展开过程区（执行五态可见，§3.1）
   const traceCount = message.traceNodes?.length ?? 0;
@@ -84,8 +108,8 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
     message.analysis != null ||
     (message.traceNodes?.length ?? 0) > 0;
   const visibleEvidence = showAll
-    ? message.evidence
-    : message.evidence.slice(0, COLLAPSE_THRESHOLD);
+    ? filteredEvidence
+    : filteredEvidence.slice(0, COLLAPSE_THRESHOLD);
 
   // 拒答是一等公民：渲染拒答卡片（不是错误态）
   if (message.verdict === "refused" && !message.streaming) {
@@ -184,11 +208,58 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
           </div>
         )}
 
+        {/* 参考汇总：N 条引文来自 M 个文件（对齐 doc-qa 的"参考"卡片） */}
+        {!message.streaming && !message.error && citationSummary.count > 0 && (
+          <div className="citation-summary" aria-label="参考">
+            <span className="citation-summary-text">
+              {citationSummary.count} 条引文 · 来自 {citationSummary.files} 个文件
+            </span>
+            <button
+              type="button"
+              className="btn-text"
+              onClick={() => {
+                setProcessOpen(true);
+                setTimeout(() => {
+                  containerRef.current
+                    ?.querySelector(".evidence-list")
+                    ?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+                }, 60);
+              }}
+            >
+              查看引文
+            </button>
+          </div>
+        )}
+
         {!message.streaming && !message.error && message.content && (
           <div className="msg-actions">
             <button type="button" className="btn-text" onClick={() => copyText(message.content)}>
               {copied ? "已复制" : "复制"}
             </button>
+            <button
+              type="button"
+              className="btn-text"
+              onClick={() => downloadAnswerAsTxt(message, originalQuestion)}
+              aria-label="导出 TXT"
+            >
+              导出 TXT
+            </button>
+          </div>
+        )}
+
+        {/* F5：推荐追问（点击即发） */}
+        {!message.streaming && !message.error && (message.followups?.length ?? 0) > 0 && (
+          <div className="followup-list" aria-label="推荐追问">
+            {message.followups!.map((q, i) => (
+              <button
+                key={`${i}-${q}`}
+                type="button"
+                className="followup-btn"
+                onClick={() => onFollowup?.(q)}
+              >
+                {q}
+              </button>
+            ))}
           </div>
         )}
 
@@ -245,6 +316,27 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
                 )}
                 {message.evidence.length > 0 && (
                   <div className="evidence-list">
+                    <div className="evidence-search">
+                      <input
+                        className="input"
+                        type="search"
+                        value={evidenceQuery}
+                        placeholder="在引文中搜索关键字…"
+                        aria-label="在引文中搜索"
+                        onChange={(e) => {
+                          setEvidenceQuery(e.target.value);
+                          setShowAll(false);
+                        }}
+                      />
+                      {evidenceQuery.trim() && (
+                        <span className="trace-id">
+                          匹配 {filteredEvidence.length} / {message.evidence.length} 条
+                        </span>
+                      )}
+                    </div>
+                    {filteredEvidence.length === 0 && (
+                      <div className="trace-id">没有匹配的引文</div>
+                    )}
                     {visibleEvidence.map((ev) => (
                       <EvidenceCard
                         key={ev.rank}
@@ -255,9 +347,9 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
                         onViewOriginal={onViewOriginal}
                       />
                     ))}
-                    {message.evidence.length > COLLAPSE_THRESHOLD && (
+                    {filteredEvidence.length > COLLAPSE_THRESHOLD && (
                       <button type="button" className="btn-text" onClick={() => setShowAll(!showAll)}>
-                        {showAll ? "收起" : `展开全部 ${message.evidence.length} 条证据`}
+                        {showAll ? "收起" : `展开全部 ${filteredEvidence.length} 条证据`}
                       </button>
                     )}
                   </div>

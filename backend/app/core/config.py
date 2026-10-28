@@ -211,6 +211,9 @@ class Settings(BaseSettings):
     auth_session_ttl_s: int = 900  # 登录令牌有效期（默认 15 分钟）
     auth_bootstrap_admin_password: str = ""  # 首次启动为 admin 写入口令；仅当其尚无口令时生效
     acl_enabled: bool = True  # 文档级 ACL（检索前租户过滤 + 检索后 ACL 双保险）
+    # 知识库授权开关：合并进 acl_filter_of 同一闭包；为假时 KB 判定整体跳过，
+    # 行为逐位退回现状。生产必须与 auth_enabled + acl_enabled 同开才有意义。
+    kb_enabled: bool = True
     quota_per_minute: int = 60  # 租户分钟滑动窗口上限
     quota_per_day: int = 10000  # 租户每日调用上限
     quota_token_per_day: int = 0  # 租户每日 token 消耗上限（0 = 不限制该维度）
@@ -464,6 +467,14 @@ class Settings(BaseSettings):
     @property
     def users_file(self) -> Path:
         return self.data_dir / "users.json"
+
+    @property
+    def knowledge_bases_file(self) -> Path:
+        return self.data_dir / "knowledge_bases.json"
+
+    @property
+    def kb_grants_file(self) -> Path:
+        return self.data_dir / "kb_grants.json"
 
 
 @lru_cache

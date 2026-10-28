@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.api.upload_util import sanitize_filename, stream_to_disk
+from app.api.kb import resolve_kb_for_write
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
 from app.dependencies import audit_admin, enforce_rate_limit, require_role
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
@@ -54,6 +55,8 @@ async def ingest(request: Request) -> Envelope:
     form = await request.form()
     parse_policy = _parse_policy_field(form.get("parse_policy"), "parse_policy")
     chunk_policy = _parse_policy_field(form.get("chunk_policy"), "chunk_policy")
+    kb_id_raw = form.get("kb_id")
+    kb_id = str(kb_id_raw).strip() if kb_id_raw else "default"
     if error := validate_chunk_policy(chunk_policy):
         raise ApiError(ErrCode.CHUNK_POLICY_INVALID, error)
 
@@ -69,6 +72,7 @@ async def ingest(request: Request) -> Envelope:
     scanner = getattr(request.app.state, "sensitive_scanner", None)
     principal = getattr(request.state, "principal", None)
     tenant_id = principal.tenant_id if principal else settings.default_tenant_id
+    kb_id = resolve_kb_for_write(request, kb_id, tenant_id)
 
     # 上传前校验（兜底，前端已拦截）：文件名收敛（KQ-01）、同批重名拒绝、
     # 扩展名、大小（边写边计数，KQ-05）+ PII 硬拦截
@@ -98,7 +102,8 @@ async def ingest(request: Request) -> Envelope:
         raise
 
     # 两阶段提交：先建任务 → 文件移入任务目录 → 入队执行
-    task = manager.create_task(files_meta, parse_policy, chunk_policy, tenant_id=tenant_id)
+    task = manager.create_task(files_meta, parse_policy, chunk_policy, tenant_id=tenant_id,
+                               kb_id=kb_id)
     task_dir = manager.task_dir(task.task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     for meta in files_meta:

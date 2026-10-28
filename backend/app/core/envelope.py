@@ -53,6 +53,12 @@ class ErrCode(IntEnum):
     AUDIO_TRANSCRIBE_FAILED = 3802  # 音频转写不可用
     SPEECH_UNAVAILABLE = 3803  # 语音输入不可用（未配置火山密钥等）
 
+    # ---- 39xx 知识库 ----
+    KB_NOT_FOUND = 3901  # 知识库不存在（对外一律转 1201 防探测文案）
+    KB_DUPLICATED = 3902  # 同名/同 slug 知识库已存在
+    KB_NOT_EMPTY = 3903  # 删除非空知识库（必须先移出文档）
+    KB_GRANT_INVALID = 3904  # 授权目标用户不存在或已停用
+
     # ---- 4xxx 检索与生成----
     RETRIEVAL_FAILED = 4001
     GENERATION_FAILED = 4002

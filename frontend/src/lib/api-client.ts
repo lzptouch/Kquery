@@ -32,6 +32,9 @@ import type {
   AclImpact,
   AuditEvent,
   DocAcl,
+  KbGrant,
+  KbGrantResult,
+  KnowledgeBase,
   LoginResponse,
   MeResponse,
   PlatformQuota,
@@ -364,6 +367,42 @@ export function setDocAcl(docId: string, acl: { allow: string[]; deny: string[];
   });
 }
 
+// ---------- 知识库管理 ----------
+
+export function fetchKnowledgeBases(): Promise<Envelope<KnowledgeBase[]>> {
+  return request<KnowledgeBase[]>("/admin/kb");
+}
+
+export function createKnowledgeBase(kb: { name: string; description: string; is_public: boolean }): Promise<Envelope<KnowledgeBase>> {
+  return request("/admin/kb", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(kb),
+  });
+}
+
+export function updateKnowledgeBase(kbId: string, patch: { name?: string; description?: string; is_public?: boolean }): Promise<Envelope<KnowledgeBase>> {
+  return request(`/admin/kb/${encodeURIComponent(kbId)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch),
+  });
+}
+
+export function deleteKnowledgeBase(kbId: string): Promise<Envelope<{ kb_id: string; deleted: boolean }>> {
+  return request(`/admin/kb/${encodeURIComponent(kbId)}`, { method: "DELETE" });
+}
+
+export function fetchKbGrants(kbId: string): Promise<Envelope<KbGrant[]>> {
+  return request<KbGrant[]>(`/admin/kb/${encodeURIComponent(kbId)}/grants`);
+}
+
+export function setKbGrants(kbId: string, userIds: string[]): Promise<Envelope<KbGrantResult>> {
+  return request(`/admin/kb/${encodeURIComponent(kbId)}/grants`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_ids: userIds }),
+  });
+}
+
+export function fetchUserKbs(userId: string): Promise<Envelope<{ kb_id: string; name: string; is_public: boolean }[]>> {
+  return request(`/admin/users/${encodeURIComponent(userId)}/kbs`);
+}
+
 export function fetchAudit(params: { range_s?: number; event?: string; user_id?: string; trace_id?: string }): Promise<Envelope<AuditEvent[]>> {
   const q = new URLSearchParams();
   if (params.range_s) q.set("range_s", String(params.range_s));
@@ -402,10 +441,11 @@ export function deleteSensitiveWord(word: string, tenantId = "default"): Promise
   return request(`/admin/sensitive/${encodeURIComponent(word)}?tenant_id=${tenantId}`, { method: "DELETE" });
 }
 
-/** 单文件上传（XMLHttpRequest 以获得上传进度）。 */
+/** 单文件上传（XMLHttpRequest 以获得上传进度）。kbId 指定目标知识库，缺省归默认库。 */
 export function uploadFile(
   file: File,
   onProgress: (percent: number) => void,
+  kbId?: string,
 ): Promise<Envelope<KnowledgeFile>> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -425,6 +465,7 @@ export function uploadFile(
     xhr.onerror = () => reject(new Error("网络异常"));
     const form = new FormData();
     form.append("file", file);
+    if (kbId) form.append("kb_id", kbId);
     xhr.send(form);
   });
 }

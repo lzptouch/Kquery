@@ -24,6 +24,7 @@ from app.api import auth as auth_api
 from app.api import feedback as feedback_api
 from app.api import ingest as ingest_api
 from app.api import graph as graph_api
+from app.api import kb as kb_api
 from app.api import knowledge as knowledge_api
 from app.api import quickask as quickask_api
 from app.api import security as security_api
@@ -78,6 +79,7 @@ from app.services.graph.sqlite_store import build_graph_store
 from app.services.security.acl import ACLService
 from app.services.security.audit import AuditStore
 from app.services.security.auth import UserDirectory, build_auth_provider
+from app.services.security.kb import KBService
 from app.services.security.platform_quota import PlatformQuotaMonitor, install_monitor
 from app.services.security.quota import SlidingWindowQuota
 from app.services.security.sensitive import SensitiveScanner
@@ -403,9 +405,16 @@ def create_app() -> FastAPI:
             _bootstrap_admin_password(settings, user_directory)
         audit_store = AuditStore(settings.data_dir / "audit" / "audit.jsonl")
         acl_service = ACLService(settings.data_dir / "acl.json", user_directory)
+        # 知识库实体与授权（kb_enabled=false 时仍装配，判定在闭包内被跳过——
+        # 数据可留存，回滚只需重启翻开关，不丢授权记录）
+        kb_service = KBService(
+            settings.knowledge_bases_file, settings.kb_grants_file, user_directory
+        )
         # pipeline 装配早于 acl_service，回填版本提供者（bind_principal 的
-        # clone 会复制 __dict__，故请求级副本也能拿到最新版本）
-        pipeline._acl_version = lambda: acl_service.version
+        # clone 会复制 __dict__，故请求级副本也能拿到最新版本）。
+        # 版本必须复合：缓存命中路径跳过检索与全部权限过滤，
+        # 撤权（ACL 或 KB 任一）后版本不变则同用户旧答案仍被命中。
+        pipeline._acl_version = lambda: acl_service.version * 1_000_000 + kb_service.version
         # ACL 下推所需的依赖（bind_principal 会据此按主体构造可见清单）
         pipeline._acl_service = acl_service
         pipeline._knowledge = knowledge
@@ -662,6 +671,7 @@ def create_app() -> FastAPI:
         app.state.user_directory = user_directory
         app.state.audit_store = audit_store
         app.state.acl_service = acl_service
+        app.state.kb_service = kb_service
         app.state.quota_service = quota_service
         app.state.platform_monitor = platform_monitor
         app.state.sensitive_scanner = sensitive_scanner
@@ -880,6 +890,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions_api.router)
     app.include_router(graph_api.router)
     app.include_router(security_api.router)
+    app.include_router(kb_api.router)
     app.include_router(quickask_api.router)
     app.include_router(speech_api.router)
     return app

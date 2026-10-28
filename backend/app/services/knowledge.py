@@ -114,6 +114,15 @@ class KnowledgeService:
             self._docs = {d["doc_id"]: DocumentRecord.model_validate(d) for d in raw}
         except Exception as exc:
             raise RuntimeError(f"文档元数据文件损坏，拒绝启动: {exc}") from exc
+        # KB 迁移：存量文档无 knowledge_base_id 字段，加载时回填默认 KB。
+        # 默认 KB 由 KBService 首次启动创建（is_public=True），两者以 "default" 为锚。
+        migrated = False
+        for doc in self._docs.values():
+            if not doc.knowledge_base_id:
+                doc.knowledge_base_id = "default"
+                migrated = True
+        if migrated:
+            self._save_metadata()
 
     def _save_metadata(self) -> None:
         path = self._settings.metadata_file
@@ -142,6 +151,22 @@ class KnowledgeService:
         if doc is None:
             raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, f"文档不存在: {doc_id}", http_status=404)
         return doc
+
+    def move_to_kb(self, doc_id: str, knowledge_base_id: str) -> DocumentRecord:
+        """文档移库：只改归属字段，ACL 挂 doc_id 天然跟随（不重授权、不动索引）。
+
+        KB 存在性与租户匹配的校验在调用方（api/kb.py）完成。
+        """
+        with self._lock:
+            record = self.get(doc_id)
+            record.knowledge_base_id = knowledge_base_id or "default"
+            self._save_metadata()
+            return record
+
+    def count_by_kb(self, kb_id: str) -> int:
+        """该 KB 下的文档数（删除 KB 的非空保护用）。"""
+        with self._lock:
+            return sum(1 for d in self._docs.values() if (d.knowledge_base_id or "default") == kb_id)
 
     def filename_of(self, doc_id: str) -> str:
         doc = self._docs.get(doc_id)
@@ -213,12 +238,15 @@ class KnowledgeService:
         source_path: Path | None = None,
         tenant_id: str | None = None,
         relocate: bool = False,
+        knowledge_base_id: str = "default",
     ) -> DocumentRecord:
         """创建文档记录（简单路径与任务路径共用）。
 
         租户纪律（对照分析文档 KQ-02）：tenant_id 必须由调用方（认证主体）传入，
         缺省回落 default_tenant_id 只用于无主体的系统内部调用。
         content 为空时按 source_path 流式计算哈希（配合流式上传，不把整文件读进内存）。
+        KB 存在性与租户匹配的校验在调用方（upload/ingest 端点）完成，
+        本方法保持无副作用校验（KB 服务在 KnowledgeService 构造期尚不可知）。
         """
         settings = self._settings
         if content is not None:
@@ -248,6 +276,7 @@ class KnowledgeService:
             status=DOC_STATUS_PARSING,
             size=len(content) if content is not None else Path(source_path).stat().st_size,
             uploaded_at=datetime.now(timezone.utc).isoformat(),
+            knowledge_base_id=knowledge_base_id or "default",
         )
         self._docs[doc_id] = record
         self._save_metadata()
@@ -491,13 +520,15 @@ class KnowledgeService:
         chunk_policy: dict | None = None,
         parse_policy: dict | None = None,
         tenant_id: str | None = None,
+        knowledge_base_id: str = "default",
     ) -> DocumentRecord:
         """流式上传路径：文件已在磁盘上（边写边校验过大小），直接建档入库。"""
         ext = Path(filename).suffix.lower()
         if ext not in SUPPORTED_EXTENSIONS:
             raise ApiError(ErrCode.UNSUPPORTED_FILE, f"仅支持 {sorted(SUPPORTED_EXTENSIONS)} 文件")
         record = self.create_record(
-            filename, source_path=source_path, tenant_id=tenant_id, relocate=True
+            filename, source_path=source_path, tenant_id=tenant_id, relocate=True,
+            knowledge_base_id=knowledge_base_id,
         )
         return self._index_record(record, chunk_policy, parse_policy)
 

@@ -8,11 +8,12 @@
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, Request, UploadFile
+from fastapi import APIRouter, Depends, Form, Request, UploadFile
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.api.upload_util import sanitize_filename, stream_to_disk
+from app.api.kb import resolve_kb_for_write as _resolve_upload_kb
 from app.core.envelope import Envelope, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.core.envelope import ApiError, ErrCode
@@ -48,13 +49,18 @@ def _file_view(record) -> dict:
         "chunks": record.chunk_count,
         "status": record.status,
         "error": record.error,
+        "knowledge_base_id": record.knowledge_base_id or "default",
     }
+
+
+# KB 写路径校验复用 api/kb.py 的公共实现（与 ingest 端点同源，避免两处口径分叉）
 
 
 @router.post("/upload", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 async def upload(
     file: UploadFile,
     request: Request,
+    kb_id: str | None = Form(None),
     service: KnowledgeService = Depends(get_knowledge_service),
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
@@ -71,11 +77,13 @@ async def upload(
     tmp_path = settings.upload_dir / f".uploading-{uuid.uuid4().hex[:12]}.tmp"
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
     await stream_to_disk(file, tmp_path, settings.max_upload_mb)
+    target_kb = _resolve_upload_kb(request, kb_id, principal.tenant_id)
     record = await run_in_threadpool(
-        service.ingest_path, filename, tmp_path, None, None, principal.tenant_id
+        service.ingest_path, filename, tmp_path, None, None, principal.tenant_id, target_kb
     )
     audit_admin(request, "knowledge.upload", {
         "doc_id": record.doc_id, "filename": filename, "status": record.status,
+        "knowledge_base_id": target_kb,
     })
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 

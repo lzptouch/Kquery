@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { deleteFile, fetchKnowledgeStats, listFiles, offlineDocument, probeDocument, rebuildFile, reparseDocument, request } from "../../lib/api-client";
+import { deleteFile, fetchKnowledgeBases, fetchKnowledgeStats, listFiles, offlineDocument, probeDocument, rebuildFile, reparseDocument, request } from "../../lib/api-client";
 import { IntentBadge } from "../chat/components/QueryAnalysisPanel";
 import { DocumentUploader } from "./components/DocumentUploader";
 import { ProbeDialog } from "./components/ProbeDialog";
@@ -50,6 +50,9 @@ export function KnowledgePage() {
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [busyDoc, setBusyDoc] = useState<string | null>(null);
   const [probeDoc, setProbeDoc] = useState<KnowledgeFile | null>(null);
+  // kb_id → 展示名映射：文档只带 knowledge_base_id（机器 slug），
+  // 直接展示会让用户看到「ui测试库97616」这类标识而不是人读名称。
+  const [kbNames, setKbNames] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     setError(null);
@@ -61,6 +64,11 @@ export function KnowledgePage() {
         return;
       }
       setFiles(envelope.data);
+      // KB 名称映射：文档只带 knowledge_base_id，展示名要从 KB 列表反查
+      const kbEnvelope = await fetchKnowledgeBases();
+      if (kbEnvelope.data) {
+        setKbNames(Object.fromEntries(kbEnvelope.data.map((k) => [k.kb_id, k.name])));
+      }
       const statsEnvelope = await fetchKnowledgeStats();
       if (statsEnvelope.data) setStats(statsEnvelope.data);
       const patternsEnvelope = await request<QueryPattern[]>("/knowledge/query-patterns");
@@ -200,6 +208,7 @@ export function KnowledgePage() {
               <thead>
                 <tr>
                   <th>文件名</th>
+                  <th>所属知识库</th>
                   <th>状态</th>
                   <th>切块数</th>
                   <th>上传时间</th>
@@ -211,6 +220,9 @@ export function KnowledgePage() {
                 {files.map((f) => (
                   <tr key={f.doc_id}>
                     <td>{f.filename}</td>
+                    <td className="mono">
+                      {kbNames[f.knowledge_base_id || "default"] ?? (f.knowledge_base_id || "default")}
+                    </td>
                     <td>
                       <span
                         className={`status-tag ${f.status}`}

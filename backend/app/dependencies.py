@@ -33,6 +33,11 @@ def get_knowledge_service(request: Request) -> KnowledgeService:
     return request.app.state.knowledge
 
 
+def get_kb_service(request: Request):
+    """知识库服务。返回 None 表示未装配（kb_enabled=false 或启动早期）。"""
+    return getattr(request.app.state, "kb_service", None)
+
+
 def get_agent_runner(request: Request) -> AgentRunner:
     return request.app.state.agent_runner
 
@@ -64,16 +69,22 @@ def audit_admin(request: Request, action: str, detail: dict) -> None:
 
 
 def acl_filter_of(request: Request, principal: Principal):
-    """构造 ACL 过滤函数（缺文档一律拒绝——默认拒绝原则）。
+    """构造 ACL + KB 过滤函数（缺文档一律拒绝——默认拒绝原则）。
 
      收口：原先此逻辑只在 `api/ask.py` 内私有。现提取为共享依赖，
     所有需要按文档收口权限的检索路径共用同一实现与同一默认拒绝语义。
+
+    **KB 判定必须在本闭包内（检索链路的兜底路径）**，而非只加在下推
+    provider 上——provider 降级（清单过大 / 枚举异常）时后过滤是唯一闸门，
+    而默认语义下文档 ACL 对多数文档恒放行，KB 不在闭包里就会越权。
     """
     settings: Settings = request.app.state.settings
     if not settings.acl_enabled:
         return None
     acl = request.app.state.acl_service
     knowledge = request.app.state.knowledge
+    # KB 闸门：合并进同一闭包。kb_enabled=false 时整段跳过（行为逐位退回现状）。
+    kb = get_kb_service(request) if getattr(settings, "kb_enabled", True) else None
     # 请求级记忆化（批次 2 / KQ-12）：同一请求内同一文档只查一次——
     # 候选过滤、被拒候选、证据装配三处都会对同一 doc 判定，未缓存时是 3 次查询
     memo: dict[str, bool] = {}
@@ -90,7 +101,11 @@ def acl_filter_of(request: Request, principal: Principal):
         except Exception:  # noqa: BLE001
             memo[doc_id] = False  # 无主文档不可见
             return False
-        memo[doc_id] = acl.check(principal, doc)
+        ok = acl.check(principal, doc)
+        # KB 判定在后：ACL 先拒的文档不再查 KB（短路，与判定树顺序一致）
+        if ok and kb is not None:
+            ok = kb.check_doc(principal, doc)
+        memo[doc_id] = ok
         return memo[doc_id]
 
     return check

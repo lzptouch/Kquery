@@ -80,7 +80,9 @@ class TestAuthMatrix:
         # 账号密码档：新增 PUT /admin/users/{user_id}/password（管理员为账号设密）
         # → 24。注意 /auth/login、/auth/register 不在本守卫范围内——它们按设计
         # 必须是公开端点，把它们划进 /admin/ 才是错误。
-        assert len(routes) == 24, f"管理端点数量变化（当前 {len(routes)}），需显式确认并更新"
+        # 知识库管理：新增 /admin/kb（GET/POST）+ /admin/kb/{id}（PUT/DELETE）
+        # + grants（GET/PUT）+ documents（GET/PUT）+ /admin/users/{id}/kbs（GET）→ 33。
+        assert len(routes) == 33, f"管理端点数量变化（当前 {len(routes)}），需显式确认并更新"
 
     def test_every_admin_route_rejects_non_admin(self, client):
         routes = _admin_routes(client.app)

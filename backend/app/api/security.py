@@ -330,6 +330,7 @@ CAPABILITIES: list[dict] = [
     {"key": "view_all_tenant_data", "label": "看全员数据", "enforced": "acl", "by": "文档 ACL 身份表达式"},
     {"key": "ingest_document", "label": "文档入库", "enforced": "backend", "by": "/knowledge/ingest"},
     {"key": "manage_acl", "label": "文档 ACL 管理", "enforced": "backend", "by": "/admin/documents/{doc_id}/acl"},
+    {"key": "manage_kb", "label": "知识库管理", "enforced": "backend", "by": "/admin/kb"},
     {"key": "manage_users", "label": "用户管理", "enforced": "backend", "by": "/admin/users"},
     {"key": "manage_quota", "label": "配额管理", "enforced": "backend", "by": "/admin/quota"},
     {"key": "view_audit", "label": "审计查询", "enforced": "backend", "by": "/admin/audit"},

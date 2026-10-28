@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -59,4 +60,11 @@ class TestKnowledgePage:
                 timeout=30_000,
             )
         finally:
-            Path(tmp).unlink(missing_ok=True)
+            # Windows 上浏览器可能仍持有文件句柄 → 删不掉不算失败
+            # （临时文件由 OS 回收；用例失败根因不会是这个）
+            for _ in range(3):
+                try:
+                    Path(tmp).unlink(missing_ok=True)
+                    break
+                except PermissionError:
+                    time.sleep(0.3)

@@ -36,6 +36,7 @@ const MonitorPage = lazy(() => import("../features/admin").then((m) => ({ defaul
 const RetrievalConfigPage = lazy(() => import("../features/admin").then((m) => ({ default: m.RetrievalConfigPage })));
 const UsersPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.UsersPage })));
 const AclPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.AclPage })));
+const KbPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.KbPage })));
 const AuditPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.AuditPage })));
 const QuotaPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.QuotaPage })));
 const SensitivePage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.SensitivePage })));
@@ -73,6 +74,7 @@ export function AppRoutes() {
             <Route path="/admin/retrieval-config" element={<RetrievalConfigPage />} />
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/acl" element={<AclPage />} />
+            <Route path="/admin/kb" element={<KbPage />} />
             <Route path="/admin/audit" element={<AuditPage />} />
             <Route path="/admin/quota" element={<QuotaPage />} />
             <Route path="/admin/sensitive" element={<SensitivePage />} />

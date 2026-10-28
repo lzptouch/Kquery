@@ -174,6 +174,16 @@ class RagPipeline:
                 except Exception as exc:  # noqa: BLE001 - 拿不到就不下推
                     logger.debug("文档清单读取失败（不下推 ACL）: %s", exc)
                     return None
+                # 与后过滤同源：优先用请求级闭包（含 ACL + KB 两道闸门）枚举，
+                # 否则下推清单会含 KB 不可见文档、白占 top-k 名额。
+                # 时序依赖：本 provider 惰性求值，首次检索时才执行——
+                # 调用方在 bind_principal 之后才赋值 scoped._acl_filter
+                # （api/ask.py），故执行时闭包必已就绪；切勿把本 provider 改成立即求值。
+                judge = clone._acl_filter
+                if judge is not None:
+                    if len(docs) > 5000:
+                        return None
+                    return {d.doc_id for d in docs if judge(d.doc_id)}
                 return acl.visible_doc_ids(principal, docs)
 
             clone._visible_docs_provider = _provider

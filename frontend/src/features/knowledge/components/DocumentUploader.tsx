@@ -1,10 +1,11 @@
 /** 文档上传器：拖拽 / 点击选择 / 批量上传，
  * 扩展名与大小前置校验（不通过的文件标红并说明原因，其余继续），
- * 失败可重试。
+ * 失败可重试。支持选择目标知识库（缺省归默认库）。
  */
-import { useRef, useState } from "react";
-import { uploadFile } from "../../../lib/api-client";
+import { useEffect, useRef, useState } from "react";
+import { fetchKnowledgeBases, uploadFile } from "../../../lib/api-client";
 import { ACCEPT_ATTRIBUTE, validateExtension } from "../../../lib/file-types";
+import type { KnowledgeBase } from "../../../types";
 
 interface Props {
   accept?: string;
@@ -23,7 +24,16 @@ interface QueueItem {
 export function DocumentUploader({ maxSizeMB = 50, onUploaded }: Props) {
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [dragover, setDragover] = useState(false);
+  const [kbs, setKbs] = useState<KnowledgeBase[]>([]);
+  const [targetKb, setTargetKb] = useState("default");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    // 拉取失败不阻断上传：退回默认库即可（后端缺省同样归 default）
+    void fetchKnowledgeBases().then((env) => {
+      if (env.data) setKbs(env.data);
+    });
+  }, []);
 
   const updateItem = (id: string, patch: Partial<QueueItem>) => {
     setQueue((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -39,7 +49,7 @@ export function DocumentUploader({ maxSizeMB = 50, onUploaded }: Props) {
   const doUpload = async (item: QueueItem) => {
     updateItem(item.id, { status: "uploading", progress: 0, error: undefined });
     try {
-      const envelope = await uploadFile(item.file, (p) => updateItem(item.id, { progress: p }));
+      const envelope = await uploadFile(item.file, (p) => updateItem(item.id, { progress: p }), targetKb);
       if (envelope.status === "error" || !envelope.data) {
         updateItem(item.id, {
           status: "error",
@@ -80,6 +90,23 @@ export function DocumentUploader({ maxSizeMB = 50, onUploaded }: Props) {
 
   return (
     <div>
+      {kbs.length > 1 && (
+        <label className="graph-filter" style={{ marginBottom: 8, display: "inline-flex", gap: 6 }}>
+          上传到知识库
+          <select
+            className="probe-input"
+            aria-label="目标知识库"
+            value={targetKb}
+            onChange={(e) => setTargetKb(e.target.value)}
+          >
+            {kbs.map((k) => (
+              <option key={k.kb_id} value={k.kb_id}>
+                {k.name}{k.is_public ? "（公开）" : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <div
         className={`uploader-zone${dragover ? " dragover" : ""}`}
         role="button"

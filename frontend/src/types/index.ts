@@ -263,6 +263,7 @@ export interface KnowledgeFile {
   chunks: number;
   status: "uploaded" | "parsing" | "indexed" | "failed";
   error?: string | null;
+  knowledge_base_id?: string;
 }
 
 export interface Envelope<T> {
@@ -450,6 +451,36 @@ export interface AclImpact {
   added_users: string[];
   removed_users: string[];
   total_after: number;
+}
+
+// ---------- 知识库（KB 实体 + 按用户授权）----------
+
+export interface KnowledgeBase {
+  kb_id: string;
+  name: string;
+  description: string;
+  tenant_id: string;
+  is_public: boolean;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  doc_count: number;
+  granted_count: number;
+}
+
+export interface KbGrant {
+  kb_id: string;
+  user_id: string;
+  granted_by: string;
+  granted_at: string;
+  user_enabled: boolean;
+  user_roles: string[];
+}
+
+export interface KbGrantResult {
+  kb_id: string;
+  impact: AclImpact;
+  risk: string;
 }
 
 export interface AuditEvent {

@@ -35,6 +35,33 @@ class DocumentRecord(BaseModel):
     acl_allow: list[str] = Field(default_factory=list)  # 身份表达式：user:/role:/group:
     acl_deny: list[str] = Field(default_factory=list)  # 拒绝名单（优先于授权）
     acl_public: bool = True  # 租户内公开
+    #  扩展：所属知识库（空串在加载时归一化为 "default"，见 KnowledgeService._load_metadata）
+    knowledge_base_id: str = ""
+
+
+class KnowledgeBase(BaseModel):
+    """知识库：文档的上位容器。授权与检索过滤的第一类实体。
+
+    判定树见 services/security/kb.py（租户闸门 → 授权名单 → 库公开 → 默认拒绝）。
+    """
+
+    kb_id: str  # 全局唯一，slug 规则同 doc_id
+    name: str  # 展示名
+    description: str = ""
+    tenant_id: str  # 租户隔离
+    is_public: bool = False  # 租户内全员可见（默认 KB 显式置 True）
+    created_by: str = ""  # 创建者 user_id
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class KbGrant(BaseModel):
+    """KB 授权：某用户可用某知识库。"""
+
+    kb_id: str
+    user_id: str
+    granted_by: str  # 授权操作者（管理员）
+    granted_at: str = ""
 
 
 class Chunk(BaseModel):
@@ -111,6 +138,7 @@ class IngestTask(BaseModel):
     done_files: int = 0
     created_by: str = "system"  # 提交人，审计用
     tenant_id: str = "default"  # 提交主体租户（任务查询/重试/取消的归属依据，KQ-02）
+    kb_id: str = "default"  # 目标知识库（缺省归默认 KB，与文档归属一致）
     created_at: str = ""
     files: list[FileRecord] = Field(default_factory=list)
 

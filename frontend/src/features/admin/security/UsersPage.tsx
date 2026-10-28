@@ -1,6 +1,6 @@
-/** 用户与权限：列表 + 行内编辑角色/组/状态 + 重置口令。 */
+/** 用户与权限：列表 + 行内编辑角色/组/状态 + 重置口令 + 可访问知识库（只读）。 */
 import { useCallback, useEffect, useState } from "react";
-import { editUser, fetchUsers, setUserPassword } from "../../../lib/api-client";
+import { editUser, fetchUserKbs, fetchUsers, setUserPassword } from "../../../lib/api-client";
 import type { UserRecord } from "../../../types";
 import { PermissionMatrix } from "./PermissionMatrix";
 
@@ -13,6 +13,9 @@ export function UsersPage() {
   const [pwdFor, setPwdFor] = useState<string | null>(null);
   const [pwd, setPwd] = useState("");
   const [pwdMsg, setPwdMsg] = useState("");
+  // 可访问知识库：只读反查（授权的写入路径唯一在知识库管理页，防止双写不一致）
+  const [kbsFor, setKbsFor] = useState<string | null>(null);
+  const [kbsOf, setKbsOf] = useState<{ kb_id: string; name: string; is_public: boolean }[]>([]);
   // 四态补齐：此前本页面连 error 态都没有，请求失败时静默显示空表格，
   // 管理员会以为"库里就是一个用户都没有"
   const [loading, setLoading] = useState(true);
@@ -65,7 +68,7 @@ export function UsersPage() {
           ) : (
           <table className="files-table">
             <thead>
-              <tr><th>用户</th><th>租户</th><th>角色</th><th>组</th><th>状态</th><th>操作</th></tr>
+              <tr><th>用户</th><th>租户</th><th>角色</th><th>组</th><th>状态</th><th>可访问知识库</th><th>操作</th></tr>
             </thead>
             <tbody>
               {users.map((u) => (
@@ -107,6 +110,31 @@ export function UsersPage() {
                       </label>
                     ) : (
                       <span className={`status-tag ${u.enabled ? "st-pass" : "st-fail"}`}>{u.enabled ? "启用" : "禁用"}</span>
+                    )}
+                  </td>
+                  <td>
+                    <button
+                      type="button" className="btn-text"
+                      onClick={() => {
+                        if (kbsFor === u.user_id) {
+                          setKbsFor(null);
+                          return;
+                        }
+                        setKbsFor(u.user_id);
+                        void fetchUserKbs(u.user_id).then((env) => setKbsOf(env.data ?? []));
+                      }}
+                    >
+                      查看
+                    </button>
+                    {kbsFor === u.user_id && (
+                      <div className="muted" style={{ marginTop: 4 }}>
+                        {kbsOf.length === 0
+                          ? "仅默认公开知识库"
+                          : kbsOf.map((k) => (
+                              <div key={k.kb_id}>{k.name}{k.is_public ? "（公开）" : ""}</div>
+                            ))}
+                        <a href="/admin/kb">去授权</a>
+                      </div>
                     )}
                   </td>
                   <td>

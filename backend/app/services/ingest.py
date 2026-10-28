@@ -133,6 +133,7 @@ class TaskManager:
         chunk_policy: dict,
         created_by: str = "system",
         tenant_id: str | None = None,
+        kb_id: str = "default",
     ) -> IngestTask:
         """创建任务（两阶段提交）：先建档，API 保存完文件后调 submit() 入队。"""
         task = IngestTask(
@@ -142,6 +143,7 @@ class TaskManager:
             total_files=len(files),
             created_by=created_by,
             tenant_id=tenant_id or self._knowledge.default_tenant_id,
+            kb_id=kb_id or "default",
             created_at=datetime.now(timezone.utc).isoformat(),
             files=[
                 FileRecord(
@@ -353,7 +355,8 @@ class TaskManager:
             # 建档（幂等：重试时复用已有 doc 记录）；租户取任务提交主体（KQ-02）
             content = path.read_bytes()
             record = self._knowledge.create_record(
-                filename, content, source_path=path, tenant_id=task.tenant_id
+                filename, content, source_path=path, tenant_id=task.tenant_id,
+                knowledge_base_id=task.kb_id,
             )
             file.doc_id = record.doc_id
             # 上传落盘 → 解析之前也要占一个可见态（否则"上传中"两态在前端永远不出现）

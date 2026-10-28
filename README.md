@@ -1,6 +1,6 @@
 # Kquery 智能 RAG
 
-基于 `doc/series` 十阶段文档递进实现的生产级智能 RAG 系统。当前完成**阶段 1：最小可用 RAG**（文档上传 → 切块 → 向量索引 → 检索 → 千问生成 → 答案 + 引用溯源）。
+生产级智能 RAG 系统（混合检索 + Agentic 编排 + GraphRAG + 多模态 + 企业护栏）。**系统现状分析见 `doc/analysis/`（15 篇），设计与演进计划见 `doc/plan/`。**
 
 ## 目录
 
@@ -8,7 +8,8 @@
 | --- | --- | --- |
 | `backend/` | RAG 后端服务 | FastAPI + FAISS + 千问平台（uv 管理） |
 | `frontend/` | Web 前端 | Vite + React + TypeScript（nvm node 24） |
-| `doc/series/` | 十阶段设计文档 | — |
+| `doc/analysis/` | 系统现状分析（15 篇，按能力域编排） | — |
+| `doc/plan/` | 设计与演进计划 | — |
 
 ## 快速开始
 
@@ -53,7 +54,7 @@ cd backend && uv run ruff check app tests            # 静态检查
   引文增强（参考汇总卡片 / 引文搜索 / 导出 TXT）/
   OCR / 语音转写**一律云服务 API**（不提供本地或自部署模型路径，已用守卫测试钉死）/
   推荐追问与会话自动命名 / 共享存储 Redis 化（缓存 + 限流 + 配额 + 快问临时态，Fail-Open 降级）
-- [ ] 阶段 10：见 `doc/series/stage-10-deployment/README.md`
+- [ ] 阶段 10（部署演进）：规划见 `doc/plan/`
 
 ## 并发与容量（单进程单体）
 

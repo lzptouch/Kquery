@@ -82,7 +82,8 @@ class TestAuthMatrix:
         # 必须是公开端点，把它们划进 /admin/ 才是错误。
         # 知识库管理：新增 /admin/kb（GET/POST）+ /admin/kb/{id}（PUT/DELETE）
         # + grants（GET/PUT）+ documents（GET/PUT）+ /admin/users/{id}/kbs（GET）→ 33。
-        assert len(routes) == 33, f"管理端点数量变化（当前 {len(routes)}），需显式确认并更新"
+        # 敏感词/配额/审计下线：移除 audit×2 + quota×3 + sensitive×3 = 8 个 → 25。
+        assert len(routes) == 25, f"管理端点数量变化（当前 {len(routes)}），需显式确认并更新"
 
     def test_every_admin_route_rejects_non_admin(self, client):
         routes = _admin_routes(client.app)
@@ -331,113 +332,8 @@ class TestGraphTenantIsolation:
         assert stats_a["entities"] > stats_b["entities"]
 
 
-class TestPiiDetection:
-    """PII 检测必须独立于词表（此前「没配敏感词 = PII 全放行」是致命缺口）。"""
-
-    def _scanner(self, tmp_path, words=None):
-        import json as _json
-        from app.services.security.sensitive import SensitiveScanner
-        p = tmp_path / "words.json"
-        if words is not None:
-            p.write_text(_json.dumps({"words": words}), encoding="utf-8")
-        return SensitiveScanner(p)  # words=None 时文件不存在 → 空词表
-
-    def test_pii_masked_even_without_wordlist(self, tmp_path):
-        r = self._scanner(tmp_path).scan("联系人 13800138000，邮箱 a.b@x.com")
-        assert r["safe"] is False, "无词表时 PII 也必须被拦截"
-        assert r["action"] == "mask"
-        assert "13800138000" not in r["masked_text"]
-        assert "a.b@x.com" not in r["masked_text"]
-        assert set(r["categories"]) >= {"pii_phone", "pii_email"}
-
-    def test_id_card_masked(self, tmp_path):
-        r = self._scanner(tmp_path).scan("身份证 11010119900307777X")
-        assert r["safe"] is False
-        assert "11010119900307777X" not in r["masked_text"]
-        assert "pii_id_card" in r["categories"]
-
-    def test_bank_card_masked(self, tmp_path):
-        r = self._scanner(tmp_path).scan("卡号 6222021234567890123")
-        assert r["safe"] is False
-        assert "6222021234567890123" not in r["masked_text"]
-
-    def test_clean_text_passes(self, tmp_path):
-        r = self._scanner(tmp_path).scan("公司的年假政策是每年 5 天")
-        assert r["safe"] is True and r["action"] == "none"
-
-    def test_wordlist_refuse_still_wins(self, tmp_path):
-        """词表的 refuse 优先级仍高于 PII 掩码。"""
-        r = self._scanner(tmp_path, words=[
-            {"word": "绝密", "tenant_id": "default", "category": "secret",
-             "action": "refuse", "enabled": True},
-        ]).scan("绝密文件 13800138000")
-        assert r["action"] == "refuse"
-        assert "pii_phone" in r["categories"]
-
-    def test_pii_survives_tag_only_wordlist(self, tmp_path):
-        """词表只标 tag 时，PII 仍必须掩码（不因词表是 tag 而放行 PII）。"""
-        r = self._scanner(tmp_path, words=[
-            {"word": "内部", "tenant_id": "default", "category": "internal",
-             "action": "tag", "enabled": True},
-        ]).scan("内部资料，手机 13800138000")
-        assert r["action"] == "mask"
-        assert "13800138000" not in r["masked_text"]
-
-
-class TestInputSidePii:
-    """ 输入侧：文档含 PII 必须拒绝入库；提问含 PII 只探测不误伤。"""
-
-    def test_upload_with_pii_is_rejected(self, client):
-        r = client.post(
-            "/knowledge/ingest",
-            files={"files": ("customer-list.md", "客户张三 身份证 11010119900307777X".encode("utf-8"), "text/markdown")},
-            headers={"X-Tenant-Id": "default", "X-User-Id": "admin", "X-Roles": "admin"},
-        )
-        assert r.status_code == 400, f"含 PII 的文档应被拒绝，实得 {r.status_code}"
-        assert "脱敏" in r.json()["error"]["message"]
-
-    def test_clean_document_is_not_flagged_as_pii(self, tmp_path):
-        """正常文档不得被 PII 规则误判（否则会被入口硬拦，造成误伤）。
-
-        这里刻意在**单元级**验证而不是走完整 /knowledge/ingest：上传成功会立即启动
-        后台解析线程，与 pytest 临时目录清理存在竞态（Windows 上必现 ERROR），
-        那是测试脚手架问题而非被测行为。拒绝路径（见上一用例）不走后台线程，可端到端验证。
-        """
-        from app.api.ingest import _PII_CATEGORIES
-        from app.services.security.sensitive import SensitiveScanner
-
-        scanner = SensitiveScanner(tmp_path / "words.json")  # 无词表
-        text = "公司的年假政策为每年 5 天，申请需提前 3 个工作日。"
-        hit = scanner.scan(text, "default")
-        assert hit["safe"] is True, "正常文档被误判为含敏感信息"
-        assert not (set(hit["categories"]) & _PII_CATEGORIES)
-
-    def test_pdf_is_not_scanned_at_entry(self):
-        """二进制格式不做入口扫描（编码不确定，成本高），交给输出侧兜底。"""
-        from app.api.ingest import TEXT_SCANABLE_EXTENSIONS
-
-        assert ".pdf" not in TEXT_SCANABLE_EXTENSIONS
-        assert ".docx" not in TEXT_SCANABLE_EXTENSIONS
-        assert ".md" in TEXT_SCANABLE_EXTENSIONS and ".txt" in TEXT_SCANABLE_EXTENSIONS
-
-    def test_question_with_phone_is_not_blocked(self, client):
-        """提问里的手机号是正当查询条件，不能因 PII 规则被拒答。
-
-        注意：空知识库下会返回 warn 信封（4401 无证据），那是正常业务语义，
-        这里只断言"没有被 PII 规则拦截"。
-        """
-        r = client.post(
-            "/ask",
-            json={"question": "我的订单 13800138000 什么时候发货？"},
-            headers={"X-Tenant-Id": "default", "X-User-Id": "admin", "X-Roles": "admin"},
-        )
-        assert r.status_code == 200, "提问侧 PII 只探测留痕，不得阻断"
-        msg = r.json().get("error", {}).get("message", "")
-        assert "敏感" not in msg and "PII" not in msg, f"提问被 PII 规则误伤：{msg}"
-
-
 class TestTokenUsageAccounting:
-    """token 用量此前生产零采集，导致 token_daily 配额维度形同虚设。"""
+    """token 用量采集：LLM 客户端必须暴露 last_usage（供成本/用量统计）。"""
 
     def test_mock_llm_exposes_last_usage(self):
         from app.services.llm import MockLLM
@@ -470,54 +366,6 @@ class TestTokenUsageAccounting:
 
         u = QwenLLM._extract_usage(FakeResp(), "a" * 100, "b" * 50)
         assert u.estimated is True and u.input_tokens > 0
-
-    def test_platform_quota_records_tokens(self):
-        from app.services.security.platform_quota import PlatformQuotaMonitor
-
-        m = PlatformQuotaMonitor()
-        m.record_call("qwen-plus", tokens=100, estimated=False)
-        m.record_call("qwen-plus", tokens=50, estimated=True)
-        snap = m.snapshot()
-        assert snap["tokens"]["qwen-plus"] == 150
-        assert snap["tokens_estimated"]["qwen-plus"] == 50, "估算部分必须可区分"
-        assert snap["tokens_total"] == 150
-
-    def test_tokens_roll_over_daily(self):
-        from app.services.security.platform_quota import PlatformQuotaMonitor
-
-        m = PlatformQuotaMonitor()
-        m.record_call("qwen-plus", tokens=100)
-        m._day = "1999-01-01"  # 强制触发日切
-        m.record_call("qwen-plus", tokens=10)
-        assert m.snapshot()["tokens_total"] == 10, "跨自然日 token 应归零"
-
-    def test_token_quota_branch_is_reachable(self, client):
-        """回归护栏：dependencies 的 token_daily 分支此前永不触发。"""
-        import inspect
-
-        from app import dependencies
-
-        src = inspect.getsource(dependencies.enforce_rate_limit)
-        assert "record_tokens" in src or "token" in src, (
-            "配额依赖仍在 token 维度上做判定（须与 record_tokens 的采集口径一致）"
-        )
-
-    def test_settle_tokens_calls_quota(self, client, monkeypatch):
-        """pipeline._settle_tokens 必须真的调用配额回填。"""
-        pipeline = client.app.state.pipeline
-        called = {}
-
-        class FakeQuota:
-            def record_tokens(self, tenant_id, tokens):
-                called["tenant"] = tenant_id
-                called["tokens"] = tokens
-
-        monkeypatch.setattr(pipeline, "_quota", FakeQuota(), raising=False)
-        pipeline._llm.generate("x" * 50)  # 产生 last_usage
-        out = pipeline._settle_tokens("t1", 2)
-        assert out["tokens"] > 0 and called.get("tokens") == out["tokens"]
-        assert called.get("tenant") == "t1"
-
 
 class TestAgentPrometheusMetrics:
     """Agent 此前零埋点，大盘只有线性路径数据。"""
@@ -570,17 +418,6 @@ class TestAgentPrometheusMetrics:
         )
         assert r.status_code == 200
         assert "rag_agent_runs_total" in self._scrape(client)
-
-
-class TestAgentAuditDecoupling:
-    """Agent 路径审计不得被 acl_enabled 门控。"""
-
-    def test_agent_audit_present_when_acl_disabled(self):
-        with make_client(ACL_ENABLED="false") as c:
-            runner = c.app.state.agent_runner
-            assert runner._audit is not None, (
-                "acl_enabled=false 时 Agent 路径审计被一并关闭（审计不应与 ACL 开关耦合）"
-            )
 
 
 class TestHitlEndpoints:

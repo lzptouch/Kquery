@@ -40,7 +40,6 @@ from app.domain.schemas import RetrievalConfig, RetrievalStats
 from app.services.agent.tools import ToolRegistry
 from app.services.cache import InMemorySemanticCache, _cosine
 from app.services.security.auth import JwtAuthProvider, Principal, UserDirectory
-from app.services.security.quota import SlidingWindowQuota
 from app.services.vectorstore import chunk_version, with_version
 from app.services.validation.selfcheck import SelfCheckResult, estimate_claims
 
@@ -159,28 +158,6 @@ class TestLinearPathGuards:
         data = client.post("/ask", json={"question": "保修多久？", "mode": "auto"}).json()["data"]
         assert data["verdict"] == "refused"
         assert data["refusal_reason"] == "permission_denied"
-
-    def test_linear_path_writes_audit_events(self, client, tmp_path):
-        """线性路径此前不产生任何 rag.* 审计事件。"""
-        client.post("/knowledge/upload", files={"file": ("手册.md", SAMPLE_MD.encode(), "text/markdown")})
-        client.post("/ask", json={"question": "保修多久？", "mode": "auto"})
-        events = client.get("/admin/audit", params={"range_s": 600}).json()["data"]
-        kinds = {e["event"] for e in events}
-        assert "rag.request" in kinds
-        assert "rag.retrieve" in kinds
-        assert "rag.answer" in kinds
-
-    def test_linear_path_scans_sensitive_words(self, client):
-        """敏感词扫描此前只在 Agent 路径，线性路径原样返回。"""
-        client.post("/knowledge/upload", files={"file": ("手册.md", SAMPLE_MD.encode(), "text/markdown")})
-        client.post(
-            "/admin/sensitive",
-            json={"word": "绝密配方", "category": "机密", "action": "refuse", "tenant_id": "default"},
-        )
-        audit = client.app.state.audit_store
-        client.app.state.pipeline._scanner.scan  # 确认扫描器已挂在线性路径
-        # 直接断言挂载点存在（端到端拒答依赖模型是否生成敏感词，不确定）
-        assert client.app.state.pipeline._scanner is not None
 
     def test_empty_question_rejected(self, client):
         resp = client.post("/ask", json={"question": "   "})
@@ -433,50 +410,6 @@ class TestIngestQualityAndStages:
 # ---------------------------------------------------------------- 14. 真滑动窗口配额
 
 
-class TestSlidingWindowQuota:
-    def test_true_sliding_window_not_two_bucket_approximation(self):
-        quota = SlidingWindowQuota()
-        quota.set_policy("t1", per_minute=3, per_day=100)
-        for _ in range(3):
-            assert quota.check_and_consume("t1")[0] is True
-        assert quota.check_and_consume("t1")[0] is False
-        # 把窗口内的调用"推走"60 秒 → 真滑动窗口会放行，两桶近似不会
-        import app.services.security.quota as mod
-
-        original = mod.time.time
-        mod.time.time = lambda: original() + 61
-        try:
-            assert quota.check_and_consume("t1")[0] is True
-        finally:
-            mod.time.time = original
-
-    def test_token_dimension_enforced(self):
-        quota = SlidingWindowQuota()
-        quota.set_policy("t2", per_minute=100, per_day=100, token_per_day=50)
-        assert quota.check_and_consume("t2", tokens=40)[0] is True
-        allowed, _, dimension = quota.check_and_consume("t2", tokens=40)
-        assert allowed is False
-        assert dimension == "token_daily"
-
-    def test_record_tokens_backfills_actual_usage(self):
-        quota = SlidingWindowQuota()
-        quota.set_policy("t3", per_minute=100, per_day=100, token_per_day=100)
-        quota.check_and_consume("t3", tokens=10)
-        quota.record_tokens("t3", 70)
-        row = quota.overview(["t3"])[0]
-        assert row["today_tokens"] == 80
-
-    def test_overview_reports_all_three_limits(self):
-        quota = SlidingWindowQuota()
-        quota.set_policy("t4", per_minute=10, per_day=100, token_per_day=1000)
-        row = quota.overview(["t4"])[0]
-        assert row["limit_token_per_day"] == 1000
-        assert row["status"] == "ok"
-
-
-# ---------------------------------------------------------------- 15/16. 认证与用户目录
-
-
 class TestJwtAndUserDirectory:
     @staticmethod
     def _b64(data: bytes) -> str:
@@ -710,9 +643,6 @@ class TestRateLimitTenancy:
     def test_token_bucket_keyed_by_real_tenant(self, client):
         """此前桶 key 用 default_tenant_id 常量，多租户互相挤占。"""
         limiter = client.app.state.limiter
-        quota = client.app.state.quota_service
-        quota.set_policy("tenant-a", per_minute=100, per_day=1000)
-        quota.set_policy("tenant-b", per_minute=100, per_day=1000)
         rate, capacity = 100.0, 100
 
         for _ in range(5):
@@ -917,8 +847,9 @@ class TestPermissionMatrixEndpoint:
         assert "view_all_tenant_data" in rows["sales"]["denied"]
         assert rows["admin"]["user_count"] >= 1
         assert all(c["enforced"] in {"backend", "acl", "declared"} for c in data["capabilities"])
-        events = client.get("/admin/audit", params={"range_s": 600, "event": "admin.action"}).json()["data"]
-        assert any(e["payload"].get("action") == "users.permission_matrix" for e in events)
+        # 已下线能力不得残留在矩阵里（否则前端会渲染出指向不存在闸门的列）
+        cap_keys = {c["key"] for c in data["capabilities"]}
+        assert not ({"manage_quota", "view_audit", "manage_sensitive"} & cap_keys)
 
 
 # ---------------------------------------------------------------- 23. 工具注册

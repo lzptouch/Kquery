@@ -249,8 +249,6 @@ BODY_OVERRIDES: dict[tuple[str, str], dict | object] = {
     ("POST", "/sessions"): {"title": "扫描会话"},
     ("PATCH", "/sessions/{session_id}"): {"title": "扫描会话（改名）"},
     ("POST", "/graph/build"): {},
-    ("POST", "/admin/sensitive"): {"word": "扫描敏感词"},
-    ("PUT", "/admin/quota"): {"per_minute": 60, "per_day": 1000},
     ("PUT", "/admin/users/{user_id}"): {"roles": ["sales"]},
     ("PUT", "/admin/users/{user_id}/password"): {"password": "Sweep@12345"},
     ("POST", "/knowledge/retrieval-probe"): lambda fx: {"query": "计费规则",
@@ -267,7 +265,6 @@ BODY_OVERRIDES: dict[tuple[str, str], dict | object] = {
     ("POST", "/graph/build"): lambda fx: {"doc_id": fx.get("doc_id", ""),
                                       "rebuild_communities": False},
     ("PUT", "/admin/documents/{doc_id}/acl"): {"allow": [], "deny": [], "is_public": False},
-    ("POST", "/admin/sensitive"): {"word": "扫描敏感词", "category": "机密", "action": "mask"},
     ("POST", "/auth/register"): lambda fx: {"username": fx.get("username", "sweep_user"),
                                         "password": "Sweep@12345"},
 }

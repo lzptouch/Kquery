@@ -214,13 +214,8 @@ class Settings(BaseSettings):
     # 知识库授权开关：合并进 acl_filter_of 同一闭包；为假时 KB 判定整体跳过，
     # 行为逐位退回现状。生产必须与 auth_enabled + acl_enabled 同开才有意义。
     kb_enabled: bool = True
-    quota_per_minute: int = 60  # 租户分钟滑动窗口上限
-    quota_per_day: int = 10000  # 租户每日调用上限
-    quota_token_per_day: int = 0  # 租户每日 token 消耗上限（0 = 不限制该维度）
-    # 平台侧配额（账号级，所有租户共享的上游约束）：0 = 只统计不拦截
-    platform_quota_per_day: int = 0  # 账号每日平台调用预算（LLM+Embedding+Rerank）
-    platform_quota_warn_ratio: float = 0.8  # 余量低于该比例进入 warning
-    sensitive_scan_enabled: bool = True  # 输出侧敏感词扫描
+    # 说明：应用侧配额（分钟/每日/token）、平台侧额度监控与敏感词扫描已下线，
+    # 相关配置项与端点一并移除。突发保护仍由令牌桶限流承担（见 services/ratelimit.py）。
 
     # ----  工具：业务库 / 联网检索（未配置 DSN 时工具不注册）----
     sql_dsn: str = ""  # 只读业务库 DSN（sqlite/duckdb/postgres），空则不提供 sql_search
@@ -433,16 +428,12 @@ class Settings(BaseSettings):
                 "推荐 0.6（与 reflect 的 ANSWER_THRESHOLD 同口径）")
         if not 0.0 <= self.parametric_fallback_confidence <= 1.0:
             add("parametric_fallback_confidence", "兜底置信度必须落在 [0,1]", "推荐 0.3")
-        if self.quota_per_minute <= 0:
-            add("quota_per_minute", "分钟配额必须为正整数", "推荐 60")
         if self.cache_backend not in {"auto", "memory", "redis"}:
             add("cache_backend", f"非法取值 {self.cache_backend}", "只能取 auto | memory | redis")
         if self.cache_backend == "redis" and not self.redis_url.strip():
             # 显式要求 Redis 模式却没给地址：这是配置错误，不该静默退回内存
             add("redis_url", "cache_backend=redis 但未提供 redis_url",
                 "补齐 REDIS_URL，或显式设置 cache_backend=memory 承认单副本语义")
-        if self.platform_quota_warn_ratio <= 0 or self.platform_quota_warn_ratio >= 1:
-            add("platform_quota_warn_ratio", "告警水位必须落在 (0,1)", "推荐 0.8")
         if issues:
             # 注意：这里**不能**再 `logger = logging.getLogger(__name__)`。
             # 同一函数上方（如自助注册告警）已引用过模块级 logger，Python 见到

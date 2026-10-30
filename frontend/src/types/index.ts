@@ -22,51 +22,10 @@ export interface Evidence {
   source_chunks?: string[];
 }
 
-// ---------- GraphRAG 与多模态 ----------
-
-export interface GraphEntity {
-  name: string;
-  type: "Person" | "Org" | "Product" | "Concept" | "Event";
-  description: string;
-  degree: number;
-  community_id: string;
-  aliases: string[];
-}
-
-export interface GraphNode {
-  id: string;
-  type: string;
-  degree: number;
-}
-
-export interface GraphLink {
-  source: string;
-  target: string;
-  relation: string;
-  direction: "forward" | "backward";
-  weight: number;
-}
-
-export interface Subgraph {
-  nodes: GraphNode[];
-  links: GraphLink[];
-  truncated: boolean;
-}
-
-export interface EntityDetail extends GraphEntity {
-  community: { community_id: string; summary: string; size: number } | null;
-  in_edges: { from: string; relation: string; description: string }[];
-  out_edges: { to: string; relation: string; description: string }[];
-}
-
-export interface CommunityInfo {
-  community_id: string;
-  size: number;
-  summary: string;
-  members: string[];
-  generated_at: number;
-  model_version: string;
-}
+// ---------- 多模态 ----------
+//
+// 说明：图谱可视化（实体/子图/社区浏览）的前端已下线，后端 GraphRAG 能力保留，
+// 因此仅保留多模态相关的统计类型。
 
 export interface GraphStats {
   entities: number;
@@ -483,49 +442,6 @@ export interface KbGrantResult {
   risk: string;
 }
 
-export interface AuditEvent {
-  event_id: string;
-  trace_id: string;
-  event: string;
-  tenant_id: string;
-  user_id: string;
-  payload: Record<string, unknown>;
-  created_at: number;
-}
-
-export interface QuotaRow {
-  tenant_id: string;
-  limit_per_minute: number;
-  limit_per_day: number;
-  current_window: number;
-  today_count: number;
-  status: "ok" | "warning" | "exceeded";
-}
-
-/** 平台侧配额（账号级上游约束，全租户共享）。 */
-export interface PlatformQuota {
-  budget_per_day: number;
-  used_today: number;
-  remaining: number | null;
-  ratio: number;
-  status: "disabled" | "ok" | "warning" | "exhausted";
-  day: string;
-  models: Record<string, number>;
-  platform_errors: {
-    rate_limited: number;
-    quota: number;
-    timeout: number;
-    other: number;
-  };
-}
-
-export interface SensitiveWord {
-  word: string;
-  category: string;
-  action: "mask" | "refuse" | "tag";
-  tenant_id: string;
-  enabled: boolean;
-}
 /** 监控大盘首屏指标（/admin/metrics/summary） */
 export interface MetricsSummary {
   qps: number;

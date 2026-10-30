@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 
 OCR_PROMPT = "请识别图片中的全部文字，按阅读顺序输出，保留段落结构，表格区域用 Markdown 表格表示。"
 
+#: Markdown 表格的分隔行（`| --- | --- |` 或 `|:---|---:|`）。
+#: 它只由非单词字符组成，噪声过滤必须显式放行，否则表格会被拆散（见 `_clean_ocr_text`）。
+_MD_SEPARATOR_RE = re.compile(r"^\|[\s\-:|]+\|$")
+
 
 class OcrEngine(Protocol):
     def recognize(self, image_path: Path) -> str: ...
@@ -111,6 +115,16 @@ def _clean_ocr_text(text: str) -> str:
             continue
         # 孤立单字符（表格线误识别等噪声）
         if len(stripped) == 1 and not stripped.isalnum():
+            continue
+        # Markdown 表格的**分隔行**必须放行。
+        # 它只由 | - : 与空格组成，按"无意义噪声行"处理会被删掉——而删掉它，
+        # 表格就不再是合法 Markdown 表格：
+        #   · 3 行的表（表头 + 分隔 + 1 数据行）连表识别正则都匹配不上，
+        #     表格直接混进正文，被切块器拦腰切断，单元格与表头的对应关系断掉；
+        #   · 4 行的表虽然能被识别，存下来的 markdown 也缺了分隔行，
+        #     前端渲染出来不是表格。
+        if _MD_SEPARATOR_RE.match(stripped):
+            lines.append(line)
             continue
         if len(re.sub(r"[\W_]+", "", stripped)) == 0:
             continue

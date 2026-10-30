@@ -1,7 +1,4 @@
 export { AclPage } from "./AclPage";
-export { AuditPage } from "./AuditPage";
 export { KbPage } from "./KbPage";
 export { PermissionMatrix } from "./PermissionMatrix";
-export { QuotaPage } from "./QuotaPage";
-export { SensitivePage } from "./SensitivePage";
 export { UsersPage } from "./UsersPage";

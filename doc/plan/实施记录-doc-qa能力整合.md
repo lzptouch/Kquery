@@ -387,3 +387,49 @@ doc-qa（DeepDOC ONNX）与旧版计划文档的措辞里。本次做的是**把
 | `.xls` 支持 | 明确不支持（openpyxl 读不了 BIFF），入口给可读错误；如确有需求需单独立项 |
 | 近似缓存的跨副本语义 | Redis 后端下**精确命中跨副本、近似命中仅本副本**（Redis 上做全表余弦扫描不可行），已在 `cache.py` 的类文档中写明 |
 | 阶段 8 报告中心 | 仍按既定决策**不移植**（§2.7/§2.8 论证不变） |
+
+---
+
+## 七、2026-10-30 复核：交付物在当前代码中的落点
+
+> 目的：确认本篇记录的 B0~B6 交付**没有丢失、没有被后续改动回退**，并把文中过期的数字换算成当前值。
+
+### 7.1 批次交付物落点复核
+
+| 批次 | 记录中的交付物 | 2026-10-30 当前落点 | 判定 |
+|---|---|---|---|
+| B0 | `frontend/vitest.config.ts`、`frontend/tests/setup.ts`、`frontend/tsconfig.test.json`、CI 新增 `frontend` job、`.nvmrc`→22 | 四个文件均在；`.github/workflows/ci.yml` 的 `frontend` job 含 `typecheck` / `build` / `unit tests` 三步 | ✅ **仍在** |
+| B1 | `frontend/src/features/chat/components/Markdown.tsx`（新增）+ 改 `StreamText.tsx` / `ChatPage.tsx` / `theme.css` | `Markdown.tsx` 在（`:27` 角标正则、`:42-52` 丢弃原始 HTML、`:88` `dangerouslySetInnerHTML`） | ✅ **仍在** |
+| B2 | 新增 `parsers/spreadsheet.py`、`parsers/plaintext.py`；改 `parsers/router.py`、`main.py`、前端白名单 | 四个文件/位置均在；`router.py:27-42` 扩展名表与 `.xls` 提示 | ✅ **仍在** |
+| B3 | 语音输入（后端 ASR 代理 + `VoiceRecorder.tsx`） | `backend/app/api/speech.py`（3 端点）、`backend/app/services/speech/asr.py`、`frontend/src/features/chat/components/VoiceRecorder.tsx` | ✅ **仍在**（方案见 §五之二） |
+| B4 | 快问（`services/quickask.py` + 端点族 + 前端面板） | `quickask.py`（`:9-17` 四条硬约束、`:171-172` 临时目录、`:278-303` 同码 3004）、`knowledge.py:440-497`、`QuickAttachPanel.tsx` | ✅ **仍在** |
+| B5 | 追问 / 会话命名 | `pipeline.py:980-1002`、`agent/sessions.py:194-196`、`MessageBubble.tsx:250-264` | ✅ **仍在** |
+| B6 | Redis 化（`core/shared_state.py` + compose） | `shared_state.py` 的 `RedisStore` + Fail-Open 门面；`docker-compose.yml` 的 redis 服务 | ✅ **仍在** |
+| 追加 F9 | PPT/PPTX 解析 | `backend/app/services/parsers/presentation.py`；`backend/tests/unit/test_presentation_parser.py` | ✅ **仍在** |
+| 追加 F10 | 引文增强（前端） | `MessageBubble.tsx:39-60`（引文搜索与汇总）、`:239-246`（导出）、`frontend/src/lib/export-txt.ts` | ✅ **仍在** |
+| 追加 F11 | OCR / 转写「一律云服务 API」 | `backend/app/services/parsers/ocr.py`（`ALLOWED_OCR_PROVIDERS`）、`backend/tests/unit/test_ocr_cloud_only.py` | ✅ **仍在** |
+| 并发分支合并 | 与远端「高并发」分支合并（17 个冲突文件） | `services/pipeline_executor.py`、`api/ask.py`（`async def`）、`services/upstream.py`、`agent/runner.py:167-168` | ✅ **仍在**（详见 `doc/plan/单体内并发能力提升-分析与实施计划.md` §九） |
+
+### 7.2 文中过期数字的换算
+
+| 文中写的（2026-10-26） | 当前值（2026-10-30） | 口径 |
+|---|---|---|
+| 后端 794 用例 | **974 个用例 / 58 个测试文件** | `doc/analysis/README.md` §1.1（unit 369 / integration 565 / e2e 19 / e2e_ui 21） |
+| 前端 26 用例 | **48 个用例 / 8 个用例文件** | `doc/analysis/README.md` §1.1 |
+| 覆盖率 84.80% | 未复跑 | 门槛仍在 `backend/pyproject.toml`（`fail_under=80`）；本次未执行覆盖率，故**不写具体数值** |
+| 端点数（文中未列） | **89**（13 router 共 84 + `main.py` 内建 5） | `doc/analysis/README.md` §1.2 |
+
+### 7.3 复核结论
+
+- ✅ **B0~B6 与追加的 F9~F11 交付物全部在当前代码中可定位，无一回退。**
+- ⚠️ **本篇的数字全部是 2026-10-26 快照**，引用时必须换算；**当前数字的唯一登记处是 `doc/analysis/README.md` §一**。
+- ❌ **本篇 §六「遗留与后续」里的两条已被后续工作覆盖**：
+  - 「Redis 真实环境冒烟」——已在 §五之三 实测完成（`/healthz` 显示 `shared_state backend=redis`）；
+  - 「快问元数据扫描用错属性」——已在 §五之四 修复并复测。
+  - 剩余仍然有效的是「F11 的云端 OCR 依赖外部网络」这一条**环境性遗留**（不是代码缺陷）。
+
+## 维护触发
+
+- 本篇是**实施记录**（历史事实），原则上**只追加不修改**；只有当发现记录与代码不符时才更正。
+- 触发复核的条件：`frontend/vitest.config.ts`、`frontend/tests/setup.ts`、`frontend/src/features/chat/components/Markdown.tsx`、`backend/app/services/parsers/{spreadsheet,plaintext,presentation}.py`、`backend/app/services/quickask.py`、`backend/app/core/shared_state.py`、`backend/app/services/speech/asr.py`、`backend/app/services/parsers/ocr.py`
+- 数字类结论一律以 `doc/analysis/README.md` §一 为准，本篇不作为数字来源。

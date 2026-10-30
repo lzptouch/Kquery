@@ -352,7 +352,7 @@ export function ChatPage() {
         {rateLimit && (
           <div className="ratelimit-banner" role="alert">
             <span aria-hidden>⏱</span>
-            [限流] 当前租户配额已用完，
+            [限流] 当前请求过于频繁，
             <strong className="mono">{rateLimit.secondsLeft}</strong> 秒后自动重试
           </div>
         )}

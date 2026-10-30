@@ -30,9 +30,15 @@ export function DocumentUploader({ maxSizeMB = 50, onUploaded }: Props) {
 
   useEffect(() => {
     // 拉取失败不阻断上传：退回默认库即可（后端缺省同样归 default）
-    void fetchKnowledgeBases().then((env) => {
-      if (env.data) setKbs(env.data);
-    });
+    // 必须显式 catch：没有 catch 的 Promise 拒绝会变成 Unhandled Rejection——
+    // 浏览器控制台报 "Uncaught (in promise)"，E2E 的 console error 断言也会被它打挂。
+    void fetchKnowledgeBases()
+      .then((env) => {
+        if (env.data) setKbs(env.data);
+      })
+      .catch(() => {
+        // 列表拿不到就用默认库，不打扰用户
+      });
   }, []);
 
   const updateItem = (id: string, patch: Partial<QueueItem>) => {

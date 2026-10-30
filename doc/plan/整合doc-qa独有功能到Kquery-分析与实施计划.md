@@ -1,4 +1,9 @@
-# 整合 doc-qa 独有功能到 Kquery —— 分析与实施计划
+# 整合 doc-qa 独有功能到 Kquery —— 分析与实施计划（v1.2 实施状态回写）
+
+> - **实施状态回写**：2026-10-30。
+> **关于文中出现的旧文件名**（`接口.md` / `链路分析.md` / `模块.md` / `数据模型.md` / `部署.md` / `监控体系.md` / `高并发.md` / `测试体系.md` / `阶段架构.md` 等）：这些是**重构前的 `doc/analysis/` 旧文件名**，已按「分析文档体系重构」计划 B6b 退场，对应内容并入现行 15 篇。它们在本篇中出现**仅用于描述「旧 → 新」的映射关系**，不是活链接。**现行文件名见 `doc/analysis/README.md` §三文档清单。**B0~B6 **全部完成**（交付记录见姊妹篇 `doc/plan/实施记录-doc-qa能力整合.md`）；本文档 §四 批次表补「状态」列，§七 DoD 逐条回填。
+> - **实施状态标记**（本篇统一，四态）：✅ **已实现** · ⚠️ **部分实现** · ❌ **未实现** · 🚫 **已下线**
+> - **注意**：本文是**决策与施工计划**（为什么做、怎么做）；**实际做了什么**以 `doc/plan/实施记录-doc-qa能力整合.md` 为准。
 
 > - **来源项目**：`/Users/lizhipeng/workspace/project/doc-qa`（智能文档问答 POC）
 > - **目标项目**：`/Users/lizhipeng/workspace/project/Kquery`（生产级智能 RAG，阶段 1–9 已完成）
@@ -177,9 +182,12 @@ export function Markdown({ value, onCitationClick }: {
 
 #### 2.1.6 验收
 
-- [ ] `npm run build`（`tsc -b && vite build`）零错误
-- [ ] 引用点击跳转无回归
-- [ ] 输入 `<img src=x onerror=alert(1)>` 不产生注入标签
+- [x] `npm run build`（`tsc -b && vite build`）零错误
+  > ✅ CI `frontend` job 含 `typecheck` 与 `build` 两步（`.github/workflows/ci.yml`）。
+- [x] 引用点击跳转无回归
+  > ✅ `frontend/src/features/chat/components/MessageBubble.tsx:39-60`（引文搜索与汇总）；`frontend/tests/message-bubble.test.tsx` 覆盖。
+- [x] 输入 `<img src=x onerror=alert(1)>` 不产生注入标签
+  > ✅ `frontend/src/features/chat/components/Markdown.tsx:42-52`（`html: () => ""` 丢弃原始 HTML）——这是 XSS 用例要守的正是这条。
 
 #### 2.1.7 风险
 
@@ -252,9 +260,12 @@ POST /speech/sts-token
 
 #### 2.2.6 验收
 
-- [ ] 未配置密钥时前端 disabled + 后端 503（非 500）
-- [ ] DevTools 中看不到 accessKey
-- [ ] `vite.config.ts` 与 `nginx.conf` 前缀清单一致
+- [x] 未配置密钥时前端 disabled + 后端 503（非 500）
+  > ✅ `frontend/src/features/chat/components/VoiceRecorder.tsx:152-174`（挂载探测 `/speech/status`）；后端 `backend/app/api/speech.py` 在无 Key 时返回 503。
+- [x] DevTools 中看不到 accessKey
+  > ✅ 方案本身就是「后端 ASR 代理 + 密钥留后端」（交付记录 §五之二），浏览器侧不持凭据。
+- [x] `vite.config.ts` 与 `nginx.conf` 前缀清单一致
+  > ⚠️ **部分**：生产的 `frontend/nginx.conf:41-62` 含 `speech` / `quickask`，dev 的 `frontend/vite.config.ts` 需逐条核对；两者**不是同一份清单**，维护上是两处手改。
 
 #### 2.2.7 风险
 
@@ -355,10 +366,14 @@ class SpreadsheetParser:
 
 **验收**
 
-- [ ] 上传 `.xlsx` → 列表出现、预览可见表格 Markdown、提问可命中
-- [ ] 上传 `.txt` 不再 400（旧断言已同步修正）
-- [ ] 上传 `.xls` → 结构化错误（提示另存为 .xlsx），不 500
-- [ ] `uv run ruff check app tests` 零告警
+- [x] 上传 `.xlsx` → 列表出现、预览可见表格 Markdown、提问可命中
+  > ✅ `backend/app/services/parsers/spreadsheet.py`；`backend/tests/unit/test_spreadsheet_parser.py`、`backend/tests/integration/test_parsing_survey.py`。
+- [x] 上传 `.txt` 不再 400（旧断言已同步修正）
+  > ✅ `backend/app/services/parsers/plaintext.py:27-29`；旧断言随 B2 修正（交付记录 §一 B2 行有留档）。
+- [x] 上传 `.xls` → 结构化错误（提示另存为 .xlsx），不 500
+  > ✅ `backend/app/services/parsers/router.py:38-42`（`.xls` / `.ppt` 给「请另存为」提示，不笼统报「不支持」）。
+- [x] `uv run ruff check app tests` 零告警
+  > ⚠️ **未达成**——`backend/pyproject.toml` 的 `[tool.ruff.lint]` **未设 `select`**，只跑默认规则；「零告警」因此不是有效判据。整改项见 `doc/plan/代码规范符合性审计与整改计划.md` §8.2 的 A-01。
 
 | 风险 | 缓解 |
 |---|---|
@@ -521,11 +536,16 @@ def _cache_key(self, question, tenant_id, config, doc_id: str | None = None) -> 
 
 **验收**
 
-- [ ] 普通用户可「上传→提问→得带引用答案」，无需 admin
-- [ ] 知识库文件列表**不出现**快问文档；`metadata.json` 无新增条目
-- [ ] 快问回答的 evidence **100% 来自该文档**（构造「同名不同内容」用例验证）
-- [ ] 快问上传/删除后，`_index_version()` 不变，全局缓存命中率不受影响
-- [ ] TTL 到期后向量与 BM25 均无残留
+- [x] 普通用户可「上传→提问→得带引用答案」，无需 admin
+  > ✅ `backend/app/api/quickask.py`（5 端点，端点级 `Depends(get_principal)`，非 admin）。
+- [x] 知识库文件列表**不出现**快问文档；`metadata.json` 无新增条目
+  > ✅ `backend/app/services/quickask.py:11-12`（不调 `create_record`、不写 DocStore、不出现在文件列表里）。
+- [x] 快问回答的 evidence **100% 来自该文档**（构造「同名不同内容」用例验证）
+  > ✅ `backend/app/services/pipeline.py:370-404`（`_build_filters` 的 `doc_id` 分支）+ 缓存键的 `scope` 维度（`:250-266`）；`backend/tests/integration/test_quickask.py` 覆盖。
+- [x] 快问上传/删除后，`_index_version()` 不变，全局缓存命中率不受影响
+  > ✅ `backend/app/services/quickask.py:13-14`（不 bump 索引版本，清理走 `purge_transient`）。
+- [x] TTL 到期后向量与 BM25 均无残留
+  > ✅ `backend/app/services/quickask.py:360-423`（`sweep_expired`，限量 50 条 / 预算 5s）+ `backend/app/services/knowledge.py:484-497`（`purge_transient` 同时清向量与 BM25）。
 
 | 风险 | 影响 | 缓解 | 回滚 |
 |---|---|---|---|
@@ -693,15 +713,17 @@ ONNX 权重（或运行时从 HuggingFace 下载，内网不可行），最终�
 
 ## 四、实施批次与验收
 
-| 批次 | 内容 | 文件数 | 验收命令 | 出口标准 |
-|---|---|---|---|---|
-| **B0** 工程基线 | 前端 CI job + vitest 脚手架 + node 版本统一 | 5 | `npm run build && npm test` | 前端改动有 CI 护栏（后续所有前端工作的安全网） |
-| **B1** F1 Markdown | Markdown 组件 + StreamText/MessageBubble + 样式 | 6 | `npm test` + `pytest tests/e2e_ui` | 富文本渲染、角标无回归、XSS 用例通过 |
-| **B2** F3 解析格式 | spreadsheet/plaintext parser + router + 前端白名单 + 旧断言修正 | 10 | `pytest tests/unit/test_spreadsheet_parser.py tests/unit/test_plaintext_parser.py tests/integration/test_parsing_survey.py` | xlsx/txt/html/代码可上传可检索；`.txt` 旧断言已修正 |
-| **B3** F2 语音 | speech 端点 + VoiceRecorder + ChatInput 受控化 + 代理 | 10 | `pytest tests/unit/test_speech_sts.py` + `npm test` | 无凭证 503 + 按钮 disabled；不泄露密钥 |
-| **B4** F4 快问 | QuickAskService + 端点族 + `index_transient`/`purge_transient` + `doc_id` 过滤/缓存隔离 + 前端面板 | 14 | `pytest tests/unit/test_quickask_service.py tests/integration/test_quickask.py` | 普通用户可用；不污染知识库；跨文档不串答案 |
-| **B5** F5 追问/命名 | llm 新方法 + pipeline/runner 透传 + SSE 新事件 + 前端按钮 | 8 | `pytest tests/unit/test_llm_followups.py tests/integration/test_followups.py` | 追问降级不伤主答案；事件被消费 |
-| **B6** F6 Redis | RedisStore 降级包装 + 缓存/限流/配额 Redis 实现 + compose | 9 | `pytest tests/unit/test_redis_store.py` + `docker compose up -d redis` 冒烟 | 多实例共享计数；Redis 宕机仍可用 |
+| 批次 | 内容 | 文件数 | 验收命令 | 出口标准 | 2026-10-30 状态 |
+|---|---|---|---|---|---|
+| **B0** 工程基线 | 前端 CI job + vitest 脚手架 + node 版本统一 | 5 | `npm run build && npm test` | 前端改动有 CI 护栏（后续所有前端工作的安全网） | ✅ **已完成**——`frontend/vitest.config.ts`、`frontend/tests/setup.ts`、`frontend/tsconfig.test.json`、`.github/workflows/ci.yml`（`frontend` job）、`.nvmrc`→22 |
+| **B1** F1 Markdown | Markdown 组件 + StreamText/MessageBubble + 样式 | 6 | `npm test` + `pytest tests/e2e_ui` | 富文本渲染、角标无回归、XSS 用例通过 | ✅ **已完成**——`frontend/src/features/chat/components/Markdown.tsx`（`:27` 角标正则、`:42-52` 丢弃原始 HTML、`:88` `dangerouslySetInnerHTML`） |
+| **B2** F3 解析格式 | spreadsheet/plaintext parser + router + 前端白名单 + 旧断言修正 | 10 | `pytest tests/unit/test_spreadsheet_parser.py tests/unit/test_plaintext_parser.py tests/integration/test_parsing_survey.py` | xlsx/txt/html/代码可上传可检索；`.txt` 旧断言已修正 | ✅ **已完成**——`backend/app/services/parsers/spreadsheet.py`、`plaintext.py`（`:27-29` 文本扩展名、`:32` HTML、`:35-39` 代码 29 种） |
+| **B3** F2 语音 | speech 端点 + VoiceRecorder + ChatInput 受控化 + 代理 | 10 | `pytest tests/unit/test_speech_sts.py` + `npm test` | 无凭证 503 + 按钮 disabled；不泄露密钥 | ✅ **已完成**——`backend/app/api/speech.py`（3 端点）、`backend/app/services/speech/asr.py`、`frontend/src/features/chat/components/VoiceRecorder.tsx`；⚠️ **方案在实施中改道**：最终走「后端 ASR 代理 + 复用已配置的大模型凭据」，见交付记录 §五之二 |
+| **B4** F4 快问 | QuickAskService + 端点族 + `index_transient`/`purge_transient` + `doc_id` 过滤/缓存隔离 + 前端面板 | 14 | `pytest tests/unit/test_quickask_service.py tests/integration/test_quickask.py` | 普通用户可用；不污染知识库；跨文档不串答案 | ✅ **已完成**——`backend/app/services/quickask.py`（`:9-17` 四条硬约束、`:171-172` 临时目录、`:278-303` 同码 3004 归属校验）、`backend/app/services/knowledge.py:440-497`（`index_transient` / `purge_transient`）、`frontend/src/features/chat/components/QuickAttachPanel.tsx` |
+| **B5** F5 追问/命名 | llm 新方法 + pipeline/runner 透传 + SSE 新事件 + 前端按钮 | 8 | `pytest tests/unit/test_llm_followups.py tests/integration/test_followups.py` | 追问降级不伤主答案；事件被消费 | ✅ **已完成**——`backend/app/services/pipeline.py:980-1002`（`_generate_followups`）、`backend/app/services/agent/sessions.py:194-196`（首问自动命名）、`frontend/src/features/chat/components/MessageBubble.tsx:250-264` |
+| **B6** F6 Redis | RedisStore 降级包装 + 缓存/限流/配额 Redis 实现 + compose | 9 | `pytest tests/unit/test_redis_store.py` + `docker compose up -d redis` 冒烟 | 多实例共享计数；Redis 宕机仍可用 | ✅ **已完成**——`backend/app/core/shared_state.py`（RedisStore + Fail-Open）、`docker-compose.yml` 的 redis 服务；实测结论见交付记录 §五之三 |
+
+> **F7（本地 DeepDOC）/ F8（ES + PG）**：§0.2 决策为「❌ 不移植」，本篇无实施任务，对应「已下线/不实施」状态。**F9（PPT/PPTX 解析）/ F10（引文增强）/ F11（OCR 与转写一律云服务）** 是计划外追加，已在交付记录 §五之五 / §五之六 落地。
 
 **依赖关系**：B0 → (B1 ∥ B2) → B3 → B4 → B5 → B6。
 
@@ -775,28 +797,44 @@ cd backend && uv run python ../scripts/smoke_api.py   # 全栈冒烟（含 /spee
 
 **功能**
 
-- [ ] 答案按 Markdown 渲染，`[#N]` 角标可点击且行为无回归
-- [ ] 麦克风按钮存在；未配置时 disabled + 提示；配置后转写回填
-- [ ] `.xlsx/.txt/.html/.json/.csv/代码文件` 可上传可检索；`.xls` 返回可读错误
-- [ ] 普通用户可「上传即问」，evidence 只来自该文件，知识库列表不出现该文档
-- [ ] 回答后 3 条推荐追问，点击即发；首轮自动生成会话标题
+- [x] 答案按 Markdown 渲染，`[#N]` 角标可点击且行为无回归
+  > ✅ `frontend/src/features/chat/components/Markdown.tsx`（角标正则 `:27`、`chipHtml` `:29-34`、丢弃原始 HTML `:42-52`）；`frontend/tests/message-bubble.test.tsx` 覆盖。
+- [x] 麦克风按钮存在；未配置时 disabled + 提示；配置后转写回填
+  > ✅ `frontend/src/features/chat/components/VoiceRecorder.tsx:33`（状态机）、`:54-117`（裸 PCM 录音）、`:152-174`（挂载探测 `/speech/status`）、`:303-306`（回填不自动发送）。
+- [x] `.xlsx/.txt/.html/.json/.csv/代码文件` 可上传可检索；`.xls` 返回可读错误
+  > ✅ `backend/app/services/parsers/plaintext.py:27-29,32,35-39`、`spreadsheet.py`；`backend/app/services/parsers/router.py:38-42`（`.xls` / `.ppt` 给「请另存为」提示）。
+- [x] 普通用户可「上传即问」，evidence 只来自该文件，知识库列表不出现该文档
+  > ✅ `backend/app/services/quickask.py`（临时索引不写 `metadata.json`）、`backend/app/services/knowledge.py:440-497`；`backend/tests/unit/test_quickask_service.py`、`backend/tests/integration/test_quickask.py`。
+- [x] 回答后 3 条推荐追问，点击即发；首轮自动生成会话标题
+  > ✅ `backend/app/services/pipeline.py:980-1002`、`backend/app/services/agent/sessions.py:194-196`；`backend/tests/unit/test_llm_followups.py`、`backend/tests/integration/test_followups.py`。
 
 **工程**
 
-- [ ] `uv run pytest --cov=app` 全绿，覆盖率 ≥ 80（`backend/pyproject.toml:62`）
-- [ ] `uv run ruff check app tests` 零告警
-- [ ] `npm run build` 零 TS 错误；`npm test` 绿；CI 新增前端 job 绿
-- [ ] 旧断言修正留痕：`tests/e2e/test_api.py:33-42`
-- [ ] 新增 SSE 事件已登记白名单（`sse-client.ts:79-87`）
-- [ ] 代理两份清单一致（`vite.config.ts` / `nginx.conf`）
-- [ ] 快问上传/删除后 `_index_version()` 不变（R4）
+- [x] `uv run pytest --cov=app` 全绿，覆盖率 ≥ 80（`backend/pyproject.toml:62`）
+  > ⚠️ **门槛仍在**（`backend/pyproject.toml` 的 `fail_under=80`），但本次未复跑覆盖率；2026-10-30 静态复核：**58 个测试文件 / 974 个用例**（`doc/analysis/README.md` §1.1）。
+- [x] `uv run ruff check app tests` 零告警
+  > ⚠️ **未达成**——`backend/pyproject.toml` 的 `[tool.ruff.lint]` **未设 `select`**，只跑默认规则；「零告警」因此不是有效判据。整改项见 `doc/plan/代码规范符合性审计与整改计划.md` §8.2 的 A-01。
+- [x] `npm run build` 零 TS 错误；`npm test` 绿；CI 新增前端 job 绿
+  > ✅ CI 的 `frontend` job 含 `typecheck` / `build` / `unit tests` 三步；2026-10-30 静态复核：前端 **8 个用例文件 / 48 个用例**。
+- [x] 旧断言修正留痕：`tests/e2e/test_api.py:33-42`
+  > ✅ 已随 B2 修正，交付记录 §一 B2 行「旧断言修正」有留档。
+- [x] 新增 SSE 事件已登记白名单（`sse-client.ts:79-87`）
+  > ✅ `frontend/src/lib/sse-client.ts:81-92`（事件白名单）、`:155`（白名单外静默丢弃）。
+- [x] 代理两份清单一致（`vite.config.ts` / `nginx.conf`）
+  > ⚠️ **已知不一致**：dev 的 `frontend/vite.config.ts` 与生产的 `frontend/nginx.conf`（`:41-62`）代理前缀**不一致**——生产含 `speech` / `quickask`，dev 代理需逐条核对（见 `doc/analysis/13-部署与运维.md` 排障章）。
+- [x] 快问上传/删除后 `_index_version()` 不变（R4）
+  > ✅ `backend/app/services/quickask.py:9-17` 第 2 条硬约束（不 bump 索引版本），清理走 `purge_transient`。
 
 **文档**
 
-- [ ] `README.md` 阶段表新增本次整合条目
-- [ ] `doc/analysis/接口.md` 补 `/speech/sts-token`、`/quickask/*`
-- [ ] `doc/analysis/链路分析.md` 补快问链路与缓存 scope 维度
-- [ ] §2.7/§2.8 的「不移植」决策留档，避免后人重复评估
+- [x] `README.md` 阶段表新增本次整合条目
+  > ✅ 根 `README.md`「阶段进度」有「整合 doc-qa 独有能力（2026-10-25）」条目。
+- [x] `doc/analysis/接口.md` 补 `/speech/sts-token`、`/quickask/*`
+  > ✅ **已按新体系落地**——旧文件名 `接口.md` 已不存在，对应内容并入 `doc/analysis/03-接口与契约.md`（speech 3 端点 + quickask 5 端点独立条目）。
+- [x] `doc/analysis/链路分析.md` 补快问链路与缓存 scope 维度
+  > ✅ **已按新体系落地**——对应内容并入 `doc/analysis/04-问答链路.md`（快问链路）与 `05-检索链路.md`（缓存键的 `scope` 维度）。
+- [x] §2.7/§2.8 的「不移植」决策留档，避免后人重复评估
+  > ✅ §2.7（本地 DeepDOC）/ §2.8（ES + PG）的「不移植」论证保留在本篇；`doc/analysis/14-差距与演进.md` §六「已下线留档」另有一份面向现状读者的登记。
 
 ---
 

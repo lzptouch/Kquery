@@ -6,7 +6,6 @@ import pytest
 from app.core.shared_state import LocalStore, RedisStore, SharedState, StoreUnavailable
 from app.services.cache import RedisSemanticCache, build_cache
 from app.services.ratelimit import RedisTokenBucketLimiter, TokenBucketLimiter, build_limiter
-from app.services.security.quota import SlidingWindowQuota
 
 
 class _FakeRedis:
@@ -331,18 +330,3 @@ class TestRedisLimiter:
         assert isinstance(build_limiter(), TokenBucketLimiter)
 
 
-class TestRedisQuota:
-    def test_quota_falls_back_when_redis_down(self):
-        client = _FakeRedis()
-        state = SharedState.__new__(SharedState)
-        state._local = LocalStore()
-        state._redis = _redis_store(client)
-        state._degraded_ops = 0
-        client.down = True
-
-        quota = SlidingWindowQuota(state=state)
-        quota.set_policy("t1", per_minute=2, per_day=10)
-        assert quota.check_and_consume("t1")[0] is True
-        assert quota.check_and_consume("t1")[0] is True
-        allowed, _, dimension = quota.check_and_consume("t1")
-        assert allowed is False and dimension == "minute", "降级后仍是单副本语义（限额生效）"

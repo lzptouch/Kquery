@@ -37,10 +37,6 @@ const RetrievalConfigPage = lazy(() => import("../features/admin").then((m) => (
 const UsersPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.UsersPage })));
 const AclPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.AclPage })));
 const KbPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.KbPage })));
-const AuditPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.AuditPage })));
-const QuotaPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.QuotaPage })));
-const SensitivePage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.SensitivePage })));
-const GraphPage = lazy(() => import("../features/graph").then((m) => ({ default: m.GraphPage })));
 const KnowledgePage = lazy(() => import("../features/knowledge").then((m) => ({ default: m.KnowledgePage })));
 const PreviewPage = lazy(() => import("../features/knowledge").then((m) => ({ default: m.PreviewPage })));
 const QueryAnalysisPage = lazy(() => import("../features/knowledge").then((m) => ({ default: m.QueryAnalysisPage })));
@@ -69,15 +65,11 @@ export function AppRoutes() {
             <Route path="/knowledge/tasks/:taskId" element={<TaskProgressPage />} />
             <Route path="/knowledge/preview/:docId" element={<PreviewPage />} />
             <Route path="/knowledge/query-analysis" element={<QueryAnalysisPage />} />
-            <Route path="/graph" element={<GraphPage />} />
             <Route path="/admin/monitor" element={<MonitorPage />} />
             <Route path="/admin/retrieval-config" element={<RetrievalConfigPage />} />
             <Route path="/admin/users" element={<UsersPage />} />
             <Route path="/admin/acl" element={<AclPage />} />
             <Route path="/admin/kb" element={<KbPage />} />
-            <Route path="/admin/audit" element={<AuditPage />} />
-            <Route path="/admin/quota" element={<QuotaPage />} />
-            <Route path="/admin/sensitive" element={<SensitivePage />} />
           </Route>
 
           {/* 404 兜底：置于已登录层内，输错地址时会带着布局一起提示，

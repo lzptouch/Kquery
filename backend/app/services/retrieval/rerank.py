@@ -55,8 +55,6 @@ class DashScopeReranker:
             return []
         import dashscope
 
-        from app.services.security.platform_quota import get_monitor
-
         # 运行时热配置优先：此前 rerank_model 只影响缓存键，实际调用模型不变
         effective_model = model or self.model
         if effective_model != self.model:
@@ -65,7 +63,6 @@ class DashScopeReranker:
         last_error: Exception | None = None
         for attempt in range(self._max_retries):
             try:
-                get_monitor().record_call(effective_model)
                 # 批次 2：上游隔离仓。熔断打开抛 RerankError——hybrid 已把它降级为融合序
                 with bulkhead("rerank").acquire(timeout_s=30.0):
                     resp = dashscope.TextReRank.call(

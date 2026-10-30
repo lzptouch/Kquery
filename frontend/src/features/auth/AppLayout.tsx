@@ -61,15 +61,11 @@ export function AppLayout() {
             <>
               <div className="nav-section">管理区</div>
               <NavLink to="/knowledge">知识库</NavLink>
-              <NavLink to="/graph">图谱</NavLink>
               <NavLink to="/admin/monitor">监控大盘</NavLink>
               <NavLink to="/admin/retrieval-config">检索配置</NavLink>
               <NavLink to="/admin/users">用户权限</NavLink>
               <NavLink to="/admin/acl">文档 ACL</NavLink>
               <NavLink to="/admin/kb">知识库管理</NavLink>
-              <NavLink to="/admin/audit">审计日志</NavLink>
-              <NavLink to="/admin/quota">配额管理</NavLink>
-              <NavLink to="/admin/sensitive">敏感词</NavLink>
             </>
           )}
         </nav>

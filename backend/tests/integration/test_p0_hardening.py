@@ -6,9 +6,8 @@
 - KQ-04 语义缓存维度签名（同租户跨用户不命中）；
 - KQ-05 上传流式校验（超限即拒）；
 - KQ-06 图检索租户隔离；
-- KQ-08 删除编排（ACL/元数据/源文件收敛）+ 审计留痕（KQ-24）。
+- KQ-08 删除编排（ACL/元数据/源文件收敛）。
 """
-import json
 import time
 
 from tests.conftest import SAMPLE_MD
@@ -34,25 +33,6 @@ def _wait_task(client, task_id: str, headers: dict | None = None, timeout_s: flo
             return view
         time.sleep(0.1)
     raise TimeoutError(f"任务 {task_id} 未在 {timeout_s}s 内结束")
-
-
-def _audit_actions(client) -> list[str]:
-    """审计文件中的管理动作名（事件类型恒为 admin.action，动作名在 payload.action）。
-
-    审计已改为批量落盘：测试读文件前必须显式 flush。
-    """
-    client.app.state.audit_store.flush()
-    audit_file = client.app.state.settings.data_dir / "audit" / "audit.jsonl"
-    if not audit_file.exists():
-        return []
-    actions = []
-    for line in audit_file.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        record = json.loads(line)
-        if record["event"] == "admin.action":
-            actions.append(record["payload"].get("action", ""))
-    return actions
 
 
 class TestIngestFilenameSafety:
@@ -204,7 +184,7 @@ class TestGraphTenantIsolation:
 
 
 class TestDeleteOrchestration:
-    def test_delete_cleans_acl_metadata_source_and_writes_audit(self, client):
+    def test_delete_cleans_acl_metadata_and_source(self, client):
         data = _upload_as(client, TENANT_A, name="待删除.md")
         doc_id = data["doc_id"]
         source_path = client.app.state.knowledge.get(doc_id).source_path
@@ -226,16 +206,3 @@ class TestDeleteOrchestration:
             "ACL 条目应随文档删除（否则同名文档重新上传会继承旧权限）"
         )
 
-        actions = _audit_actions(client)
-        assert "knowledge.upload" in actions
-        assert "knowledge.delete" in actions
-
-    def test_ingest_writes_admin_audit(self, client):
-        resp = client.post(
-            "/knowledge/ingest",
-            files=[("files", ("审计.md", "普通内容。".encode(), "text/markdown"))],
-            headers=TENANT_A,
-        )
-        assert resp.status_code == 200
-        assert "knowledge.ingest" in _audit_actions(client)
-        _wait_task(client, resp.json()["data"]["task_id"], TENANT_A)

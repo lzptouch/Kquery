@@ -21,25 +21,17 @@ import type {
   TopQuery,
 } from "../types";
 import type {
-  CommunityInfo,
-  EntityDetail,
-  GraphEntity,
   GraphStats,
   MediaItem,
-  Subgraph,
 } from "../types";
 import type {
   AclImpact,
-  AuditEvent,
   DocAcl,
   KbGrant,
   KbGrantResult,
   KnowledgeBase,
   LoginResponse,
   MeResponse,
-  PlatformQuota,
-  QuotaRow,
-  SensitiveWord,
   UserRecord,
 } from "../types";
 
@@ -274,40 +266,11 @@ export function fetchAgentMetrics(): Promise<Envelope<AgentMetrics>> {
   return request<AgentMetrics>("/admin/metrics/agent");
 }
 
-// ---------- 图谱与多模态 ----------
+// ---------- 多模态 ----------
 
-export function fetchGraphEntities(q = "", types = ""): Promise<Envelope<GraphEntity[]>> {
-  const params = new URLSearchParams();
-  if (q) params.set("q", q);
-  if (types) params.set("types", types);
-  return request<GraphEntity[]>(`/graph/entities?${params}`);
-}
-
-export function fetchEntityDetail(name: string): Promise<Envelope<EntityDetail>> {
-  return request<EntityDetail>(`/graph/entity/${encodeURIComponent(name)}`);
-}
-
-export function fetchSubgraph(seed = "", depth = 1): Promise<Envelope<Subgraph>> {
-  const params = new URLSearchParams();
-  if (seed) params.set("seed", seed);
-  params.set("depth", String(depth));
-  return request<Subgraph>(`/graph/subgraph?${params}`);
-}
-
-export function fetchCommunities(): Promise<Envelope<CommunityInfo[]>> {
-  return request<CommunityInfo[]>("/graph/communities");
-}
-
+/** 图谱统计（仅取图片库规模等指标；图谱可视化已下线，后端图谱能力保留）。 */
 export function fetchGraphStats(): Promise<Envelope<GraphStats>> {
   return request<GraphStats>("/graph/stats");
-}
-
-export function buildGraph(docId?: string): Promise<Envelope<{ chunks_processed: number; entities_upserted: number; relations_upserted: number }>> {
-  return request("/graph/build", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: docId ?? null, rebuild_communities: true }),
-  });
 }
 
 export function searchMedia(query: string, topK = 4): Promise<Envelope<{ items: MediaItem[]; total: number }>> {
@@ -401,44 +364,6 @@ export function setKbGrants(kbId: string, userIds: string[]): Promise<Envelope<K
 
 export function fetchUserKbs(userId: string): Promise<Envelope<{ kb_id: string; name: string; is_public: boolean }[]>> {
   return request(`/admin/users/${encodeURIComponent(userId)}/kbs`);
-}
-
-export function fetchAudit(params: { range_s?: number; event?: string; user_id?: string; trace_id?: string }): Promise<Envelope<AuditEvent[]>> {
-  const q = new URLSearchParams();
-  if (params.range_s) q.set("range_s", String(params.range_s));
-  if (params.event) q.set("event", params.event);
-  if (params.user_id) q.set("user_id", params.user_id);
-  if (params.trace_id) q.set("trace_id", params.trace_id);
-  return request<AuditEvent[]>(`/admin/audit?${q}`);
-}
-
-export function fetchQuota(): Promise<Envelope<QuotaRow[]>> {
-  return request<QuotaRow[]>("/admin/quota");
-}
-
-export function setQuota(tenantId: string, perMinute: number, perDay: number): Promise<Envelope<unknown>> {
-  return request("/admin/quota", {
-    method: "PUT", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tenant_id: tenantId, per_minute: perMinute, per_day: perDay }),
-  });
-}
-
-export function fetchPlatformQuota(): Promise<Envelope<PlatformQuota>> {
-  return request<PlatformQuota>("/admin/quota/platform");
-}
-
-export function fetchSensitiveWords(tenantId?: string): Promise<Envelope<SensitiveWord[]>> {
-  return request<SensitiveWord[]>(`/admin/sensitive${tenantId ? `?tenant_id=${tenantId}` : ""}`);
-}
-
-export function addSensitiveWord(word: SensitiveWord): Promise<Envelope<unknown>> {
-  return request("/admin/sensitive", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(word),
-  });
-}
-
-export function deleteSensitiveWord(word: string, tenantId = "default"): Promise<Envelope<unknown>> {
-  return request(`/admin/sensitive/${encodeURIComponent(word)}?tenant_id=${tenantId}`, { method: "DELETE" });
 }
 
 /** 单文件上传（XMLHttpRequest 以获得上传进度）。kbId 指定目标知识库，缺省归默认库。 */

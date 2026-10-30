@@ -82,9 +82,6 @@ const KNOWN_EVENTS = new Set([
   "token", "evidence", "retrieval_stats", "query_analysis",
   "crag_branch", "refine", "confidence", "refused",
   "plan", "tool_start", "tool_end", "reflect", "iteration", "fuse", "replan",
-  //  预留：图谱关系路径。缺了它前端会把后端已发出的事件静默丢弃，
-  // 表现为"跨模态证据形态不完整"且无处排查。
-  "graph_path",
   // F5：推荐追问。**必须登记**：白名单外的 event 会被直接丢弃且不报错，
   // 表现是"后端有发、前端没显示"，且没有任何线索可查。
   "followups",

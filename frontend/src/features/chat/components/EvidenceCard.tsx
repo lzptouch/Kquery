@@ -71,11 +71,9 @@ export function EvidenceCard({ evidence, expanded, highlighted, onToggle, onView
               ? "关键词"
               : evidence.source_route === "vector"
                 ? "语义"
-                : evidence.source_route === "graph"
-                  ? "图谱"
-                  : evidence.source_route === "image"
-                    ? "📷 图像"
-                    : "融合"}
+                : evidence.source_route === "image"
+                  ? "📷 图像"
+                  : "融合"}
           </span>
         )}
         {evidence.score != null && <span className="mono">相关度 {evidence.score.toFixed(3)}</span>}
@@ -96,15 +94,6 @@ export function EvidenceCard({ evidence, expanded, highlighted, onToggle, onView
                 }}
               />
               <div hidden className="trace-id">图片不可用（资源已删除）</div>
-            </div>
-          )}
-          {/* 图谱证据：关系路径带方向标注 + 支撑块溯源 */}
-          {evidence.modality === "graph" && (
-            <div className="trace-id" style={{ marginBottom: 4 }}>
-              🔗 图谱关系（方向敏感）
-              {evidence.source_chunks && evidence.source_chunks.length > 0 && (
-                <span> · 支撑块：{evidence.source_chunks.join(", ")}</span>
-              )}
             </div>
           )}
           <div className="evidence-body">{evidence.content}</div>

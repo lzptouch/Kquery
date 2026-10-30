@@ -30,12 +30,32 @@ cd frontend && nvm use && npm install && npm run dev
 ## 测试
 
 ```bash
+cd backend && uv sync --extra dev                    # 必须带 --extra dev：playwright 在 extra 里，不在 dev 组
 cd backend && uv run pytest                          # 全部测试（Mock 模型，无需 API Key）
 cd backend && uv run pytest --cov=app                # 带覆盖率（门槛 80%，实测 85%）
 cd backend && uv run ruff check app tests            # 静态检查
 ```
 
-当前 **896 个用例**（后端）+ **39 个前端用例**（vitest）+ **53 项浏览器端到端断言**，覆盖率 85%。CI 见 `.github/workflows/ci.yml`（Linux 上跑真实 Milvus Lite，Windows 自动回退 FAISS）。
+> `uv sync` **默认不装 `dev` extra**（playwright / pytest-playwright 在 extra 里），
+> 而 `backend/tests/e2e_ui/` 的用例要 import playwright。
+> 少装这一步时 `uv run pytest` 会在**收集阶段**就报
+> `ModuleNotFoundError: No module named 'playwright'`，整片红——
+> 看着像测试坏了，其实是依赖没装全。
+
+当前 **1395 个用例**（后端，含 32 条 UI 用例需前端在跑 + 407 条格式专项）+ **54 个前端用例**（vitest）+ **53 项浏览器端到端断言**（`scripts/e2e_full.py`），覆盖率 85%。CI 见 `.github/workflows/ci.yml`（Linux 上跑真实 Milvus Lite，Windows 自动回退 FAISS）。
+
+格式专项（**52 个支持扩展名**逐一过通用解析契约，详见 [`doc/testing/`](./doc/testing/README.md)）：
+
+```bash
+cd backend && uv run pytest tests/format -v
+```
+
+浏览器 UI 用例默认打 `127.0.0.1:5173`（vite dev server）。
+打 Docker 部署的前端用：
+
+```bash
+cd backend && KQUERY_UI_WEB=http://127.0.0.1:8090 uv run pytest tests/e2e_ui -v
+```
 
 ## 阶段进度
 
@@ -46,14 +66,14 @@ cd backend && uv run ruff check app tests            # 静态检查
 - [x] 阶段 5：自反思与自校正（CRAG 三分支 + 证据评分 + 幻觉自检 + 受限重生成 + 显式拒答 + 置信度 + 拒答反馈工单 + 质量指标）
 - [x] 阶段 6：Agentic RAG（LangGraph 状态机 Plan/Tool/Reflect/Replan/Answer + 工具注册表与幻觉兜底 + 三层熔断 + 多轮会话存档 + 执行轨迹可视化）
 - [x] 阶段 7：GraphRAG 与多模态（qwen-plus 实体关系抽取 + 消歧归一 + 内存图 BFS + 稳定编号社区摘要 + qwen-vl-max 结构化描述统一向量空间 + graph_search/image_search 工具 + 图谱浏览器）
-- [x] 阶段 8：多智能体报告（Planner/Researcher/Validator/Writer/Critic 五角色 + Blackboard 黑板 + 拓扑分层并行 + Writer↔Critic 评分循环 + 报告中心）—— **已于 2026-10-17 下线**（见 `doc/plan/移除评测平台与报告中心-分析与实施计划.md`）
-- [x] 阶段 9：企业级护栏（认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 审计三事件只存哈希 + 敏感词长词优先扫描与掩码 + 租户滑动窗口配额 + 六个管理页面）—— 其中**评测平台已下线**
+- [x] 阶段 8：多智能体报告（Planner/Researcher/Validator/Writer/Critic 五角色 + Blackboard 黑板 + 拓扑分层并行 + Writer↔Critic 评分循环 + 报告中心）—— **已于 2026-10-17 下线**（下线记录见 `doc/plan/实施记录-doc-qa能力整合.md` 与 `doc/analysis/14-差距与演进.md` §六）
+- [x] 阶段 9：企业级护栏（认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 三个管理页面）—— 其中**评测平台、敏感词、配额、审计日志均已下线**（突发保护仍由令牌桶限流承担）
 - [x] 整合 doc-qa 独有能力（2026-10-25，详见 `doc/plan/整合doc-qa独有功能到Kquery-分析与实施计划.md`）：
   Markdown 富文本渲染（marked + `[#N]` 角标）/ 浏览器语音输入（火山 STS，密钥留后端）/
   扩展解析格式（.xlsx + .pptx + 纯文本 + 代码文件）/ 单文档「快问」通道（临时索引 + TTL + 范围隔离 + 会话维度）/
   引文增强（参考汇总卡片 / 引文搜索 / 导出 TXT）/
   OCR / 语音转写**一律云服务 API**（不提供本地或自部署模型路径，已用守卫测试钉死）/
-  推荐追问与会话自动命名 / 共享存储 Redis 化（缓存 + 限流 + 配额 + 快问临时态，Fail-Open 降级）
+  推荐追问与会话自动命名 / 共享存储 Redis 化（缓存 + 限流 + 快问临时态，Fail-Open 降级）
 - [ ] 阶段 10（部署演进）：规划见 `doc/plan/`
 
 ## 并发与容量（单进程单体）
@@ -81,5 +101,5 @@ cd backend && uv run ruff check app tests            # 静态检查
 - 自反思与自校正：CRAG 三分支 + 证据评分 + 幻觉自检 + 受限重生成 + 显式拒答 + 置信度 + 拒答反馈工单 + 质量指标
 - Agentic RAG：LangGraph 状态机 Plan/Tool/Reflect/Replan/Answer + 工具注册表与幻觉兜底 + 三层熔断 + 多轮会话存档 + 执行轨迹可视化
 - GraphRAG 与多模态：实体关系抽取 + 消歧归一 + 内存图 BFS + 社区摘要 + qwen-vl-max 结构化描述 + graph_search/image_search 工具 + 图谱浏览器
-- 企业级护栏：认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 审计只存哈希 + 敏感词扫描与掩码 + 租户配额 + 管理页面
+- 企业级护栏：认证 Principal 四要素 + 租户隔离 + 文档级 ACL 双过滤（默认拒绝/deny 优先）+ 突发令牌桶限流 + 管理页面（审计/配额/敏感词已下线）
 - doc-qa 能力整合：Markdown 富文本渲染 / 浏览器语音输入（云服务 API） / 扩展格式（.xlsx .pptx 纯文本 代码）/ 单文档「快问」通道 / 引文增强（参考卡片 / 引文搜索 / 导出 TXT）/ 共享存储 Redis 化

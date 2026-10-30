@@ -115,14 +115,11 @@ class QwenLLM:
     def _call_stream(self, prompt: str) -> Iterator[str]:
         from dashscope import Generation
 
-        from app.services.security.platform_quota import get_monitor
-
         last_error: Exception | None = None
         produced: list[str] = []
         self._last_usage = TokenUsage.estimate(prompt)
         for attempt in range(self._max_retries):
             try:
-                get_monitor().record_call(self.model)
                 # 批次 2：上游隔离仓。许可覆盖整段流式消费——并发控制的对象是
                 # "在飞的上游调用"，不是单次 HTTP 往返。熔断打开时快速失败不占线程。
                 with bulkhead("llm").acquire(timeout_s=self._timeout_s):
@@ -145,16 +142,6 @@ class QwenLLM:
                             yield chunk
                 # 流式末块才带 usage；读不到则用累计文本估算
                 self._last_usage = self._extract_usage(resp, prompt, "".join(produced))
-                # 平台配额此前只记调用次数（record_call 的 tokens 形参从未被使用），
-                # 现在把真实 token 补记上去，成本才能按模型归集。
-                try:
-                    get_monitor().record_call(
-                        self.model,
-                        tokens=self._last_usage.total,
-                        estimated=self._last_usage.estimated,
-                    )
-                except TypeError:
-                    pass  # 兼容未升级的 monitor 签名
                 return
             except LLMError:
                 raise
@@ -172,19 +159,14 @@ class QwenLLM:
 
     @staticmethod
     def _raise_for(status_code: int, message: str) -> None:
-        from app.services.security.platform_quota import get_monitor
-
         text = str(message)
         if status_code == 429 or "Throttl" in text:
-            get_monitor().record_platform_error("rate_limited")
             raise LLMError(ErrCode.RATE_LIMITED, "平台限流，请稍后重试")
         if "quota" in text.lower() or "Allocation" in text:
-            get_monitor().record_platform_error("quota")
-            raise LLMError(ErrCode.QUOTA_EXCEEDED, "平台配额不足，请联系管理员")
+            # 平台侧额度耗尽与限流同源，统一按限流语义返回
+            raise LLMError(ErrCode.RATE_LIMITED, "平台额度不足，请稍后重试")
         if "timeout" in text.lower():
-            get_monitor().record_platform_error("timeout")
             raise LLMError(ErrCode.GENERATION_TIMEOUT, "生成超时，请重试")
-        get_monitor().record_platform_error("other")
         raise LLMError(ErrCode.GENERATION_FAILED, f"生成失败: {message}")
 
     def generate(self, prompt: str) -> str:

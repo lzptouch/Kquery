@@ -108,12 +108,9 @@ class RagPipeline:
         self_checker: HallucinationChecker | None = None,
         # ---- 企业护栏在**线性路径**同样生效（此前只有 Agent 路径接入）----
         acl_filter: Callable[[str], bool] | None = None,
-        audit=None,  # AuditStore：三事件审计
-        scanner=None,  # SensitiveScanner：输出侧扫描
         history_store=None,  # ValidationHistoryStore：CRAG 轮次 / 自检明细落库
         # ACL 全局版本提供者：缓存键维度之一，权限变更后旧缓存失效
         acl_version_provider: Callable[[], int] | None = None,
-        quota=None,  # SlidingWindowQuota：token 用量结算，装配期晚于构造故回填
         # 当前主体可见文档清单提供者：把 ACL 下推到召回阶段。
         # 返回 None 表示"无法低成本枚举"→ 自动降级为后过滤。
         visible_docs_provider: Callable[[], set[str] | None] | None = None,
@@ -136,15 +133,12 @@ class RagPipeline:
         self._crag = crag_router
         self._self_checker = self_checker
         self._acl_filter = acl_filter
-        self._audit = audit
-        self._scanner = scanner
         self._history = history_store
         self._acl_version = acl_version_provider or (lambda: 0)
         # 当前主体可见文档清单提供者（装配期回填）。为 None 时只做后过滤。
         self._visible_docs_provider = visible_docs_provider
         # 本轮被上下文组装丢弃的候选项（前端据此解释"为什么没进上下文"）
         self._context_dropped: list[dict] = []
-        self._quota = quota
         # 批次 2 single-flight：相同 cache key 的并发请求合并为一次真实计算，
         # 等待者带 deadline 复用结果（bind_principal 的副本共享同一 dict 引用）
         self._inflight: dict[str, threading.Event] = {}
@@ -191,14 +185,12 @@ class RagPipeline:
             clone._visible_docs_provider = None
         return clone
 
-    def attach_security(self, audit=None, scanner=None, history_store=None) -> None:
-        """装配期回填 护栏。
+    def attach_history(self, history_store=None) -> None:
+        """装配期回填 校验历史存储。
 
-        这些组件在装配顺序上晚于流水线创建（审计库依赖认证配置、扫描器依赖词表），
+        校验历史（CRAG 轮次 / 自检明细）在装配顺序上晚于流水线创建，
         因此不能在构造参数里传——否则只能挂到 Agent 路径上，线性路径永远拿不到。
         """
-        self._audit = audit
-        self._scanner = scanner
         self._history = history_store
 
     @property
@@ -209,14 +201,6 @@ class RagPipeline:
     def _principal_user(self) -> str:
         return getattr(self, "_user_id", "anon")
 
-    def _log_request(self, trace_id: str, tenant_id: str, question: str) -> None:
-        if self._audit and trace_id:
-            self._audit.log_request(trace_id, tenant_id, self._principal_user, question)
-
-    def _log_retrieve(self, trace_id: str, tenant_id: str, retrieved: int, visible: int) -> None:
-        if self._audit and trace_id:
-            self._audit.log_retrieve(trace_id, tenant_id, self._principal_user, retrieved, visible)
-
     # ---- 缓存键 ----
 
     def _model_version(self, config: RetrievalConfig) -> str:
@@ -225,27 +209,6 @@ class RagPipeline:
             f"{provider}:{self._settings.llm_model}"
             f"+{self._settings.embedding_model}+{config.rerank_model}"
         )
-
-    def _settle_tokens(self, tenant_id: str, llm_calls: int) -> dict:
-        """把本次链路的 LLM token 用量结算到配额。
-
-        此前 `quota.record_tokens` 在生产代码中零调用，导致 `dependencies.py` 的
-        `token_daily` 配额分支永不触发——配额体系实际少了 token 这一个维度。
-        配额服务由装配期注入（不设全局单例，与 platform_quota 的处理保持一致的显式依赖）。
-        口径说明：LLM 实例只保留"最近一次"usage，故按调用次数线性外推；
-        返回值里的 estimated 让调用方能区分真值与估算。
-        """
-        usage = getattr(self._llm, "last_usage", None)
-        if usage is None or self._quota is None:
-            return {}
-        total = int(getattr(usage, "total", 0) or 0) * max(1, llm_calls)
-        if total <= 0:
-            return {}
-        try:
-            self._quota.record_tokens(tenant_id, total)
-        except Exception as exc:  # noqa: BLE001 - 结算失败不得影响主流程
-            logger.debug("token 用量结算失败（忽略）: %s", exc)
-        return {"tokens": total, "estimated": bool(getattr(usage, "estimated", True))}
 
     def _cache_dims(self, config: RetrievalConfig) -> tuple[str, str]:
         """返回 (config_digest, 维度签名)。同一次请求只算一次，键与签名共用。"""
@@ -502,7 +465,6 @@ class RagPipeline:
             "unvalidated": True, "self_check": None, "removed_claims": [],
             "answer_source": "parametric",
         }
-        self._log_answer(trace_id, tenant_id, answer, 0)
         yield "_final", {
             "answer": answer, "evidence": [], "analysis": analysis,
             "retrieval": hybrid_result.stats if hybrid_result else None,
@@ -666,23 +628,6 @@ class RagPipeline:
         doc_id: str | None = None,
     ) -> Iterator[tuple[str, dict]]:
         """校验闭环主流程。产出的事件同时支撑 /ask（聚合）与 /ask/stream（透传）。"""
-        self._log_request(trace_id, tenant_id, question)
-
-        # ---- 输入侧 PII 探测----
-        # 策略是**探测 + 留痕，不阻断**：用户问"我的订单 13800138000 怎么处理"是正常诉求，
-        # 直接拒答会误伤。真正需要硬拦的是"把含 PII 的文档灌进知识库"（见 ingest 侧）。
-        # 这里把命中的类别作为事件与审计线索暴露出来，便于事后追溯与提示用户。
-        if self._scanner:
-            q_scan = self._scanner.scan(question, tenant_id)
-            if not q_scan["safe"]:
-                logger.info(
-                    "输入侧 PII 探测：trace_id=%s categories=%s", trace_id, q_scan["categories"]
-                )
-                yield "input_pii_detected", {
-                    "categories": q_scan["categories"],
-                    "trace_id": trace_id,
-                }
-
         degrade = self._degrade_level()
         if degrade >= 1:
             # 降级阶梯（批次 4，默认关）：上游慢/熔断时跳过预处理（意图/改写/拆解
@@ -804,7 +749,6 @@ class RagPipeline:
                 if refined and refined not in existing:
                     query_items = [*query_items, ("refined", refined)]
 
-        self._log_retrieve(trace_id, tenant_id, retrieved_total, retrieved_total - acl_filtered)
         crag_payload = {"branch": final_branch if self._crag else "disabled", "rounds": rounds} if self._crag else None
 
         # ---- 拒答判定（一等公民：走成功状态码）----
@@ -927,18 +871,7 @@ class RagPipeline:
             }
             return
 
-        # ---- 输出侧敏感词扫描----
-        sensitive = {"safe": True, "categories": [], "action": "none"}
         verdict_out, refusal_reason_out = "answered", ""
-        if self._scanner:
-            sensitive = self._scanner.scan(answer, tenant_id)
-            if sensitive["action"] == "refuse":
-                # 命中最高密级：整体拒答，缓冲的证据也不外带
-                answer = ""
-                verdict_out, refusal_reason_out = "refused", REASON_PERMISSION
-                yield "refused", {"reason": refusal_reason_out, "trace_id": trace_id}
-            elif sensitive["action"] == "mask":
-                answer = sensitive["masked_text"]
 
         for ev in evidence:
             yield "evidence", ev.model_dump()
@@ -959,7 +892,6 @@ class RagPipeline:
             "self_check": self_check_record.model_dump() if self_check_record else None,
             "removed_claims": self_check_record.unsupported_claims if self_check_record else [],
         }
-        self._log_answer(trace_id, tenant_id, answer, len(sensitive["categories"]))
         # F5：推荐追问（失败不伤主答案）
         followups = self._generate_followups(answer)
         yield "_final", {
@@ -1042,10 +974,6 @@ class RagPipeline:
             "tenant_id": tenant_id,
             **record.model_dump(),
         })
-
-    def _log_answer(self, trace_id: str, tenant_id: str, answer: str, sensitive_hits: int) -> None:
-        if self._audit and trace_id:
-            self._audit.log_answer(trace_id, tenant_id, self._principal_user, answer, sensitive_hits)
 
     def _assemble(self, trace_id: str, started: float, events: list[tuple[str, dict]]) -> AskResult:
         final = next(payload for kind, payload in events if kind == "_final")
@@ -1150,8 +1078,6 @@ class RagPipeline:
 
             )
             self._prom.llm_calls_total.inc(final.get("llm_calls", 1))
-            # token 用量结算（激活此前永不触发的 token_daily 配额维度）
-            self._settle_tokens(tenant_id, int(final.get("llm_calls", 1)))
             self._record(question, tenant_id, True, result.elapsed_ms, from_cache=False, llm_called=True)
             self._record_quality(result)
             logger.info(
@@ -1265,8 +1191,6 @@ class RagPipeline:
             )
             final = next(p for k, p in events if k == "_final")
             self._prom.llm_calls_total.inc(final.get("llm_calls", 1))
-            # token 用量结算（激活此前永不触发的 token_daily 配额维度）
-            self._settle_tokens(tenant_id, int(final.get("llm_calls", 1)))
             self._record(question, tenant_id, True, result.elapsed_ms, from_cache=False,
                          llm_called=True, path="ask_stream")
             self._record_quality(result)

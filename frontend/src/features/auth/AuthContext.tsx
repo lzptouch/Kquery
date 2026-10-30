@@ -14,6 +14,7 @@ import {
   DEV_BYPASS,
   clearPrincipal,
   currentSession,
+  isInvalidCredential,
   setPrincipal,
   setUnauthorizedHandler,
 } from "../../lib/auth";
@@ -93,8 +94,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           roles: env.data.roles,
           token: stored.token,
         });
-      } else {
+      } else if (isInvalidCredential(env.error?.code)) {
+        // 只有"凭证确实无效/过期"才登出。
+        // 限流（429）、服务异常（5xx）、网关错误都不等于身份失效——
+        // 那些情况登出会把用户踢回登录页，还得重新输一遍口令，
+        // 而根因（后端在抖/被限流）一个都没解决。
         logout();
+      } else {
+        // 网络异常不等于身份无效：保留本地会话，让用户继续用并在下次请求时再判定。
+        if (!cancelled) adopt(stored);
       }
     }).catch(() => {
       // 网络异常不等于身份无效：保留本地会话，让用户继续用并在下次请求时再判定。

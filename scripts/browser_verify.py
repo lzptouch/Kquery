@@ -143,21 +143,10 @@ def run(base: str, api: str, password: str, out_dir: Path, headed: bool) -> int:
         check("预览页展示块列表", ("块" in body) or ("chunk" in body.lower()))
         page.screenshot(path=str(out_dir / "05-preview.png"), full_page=True)
 
-        section("4. 图谱页")
-        page.goto(f"{base}/graph", wait_until="networkidle", timeout=30000)
-        page.screenshot(path=str(out_dir / "06-graph.png"), full_page=True)
-        check("图谱页渲染（无白屏）", len(page.inner_text("body").strip()) > 30)
-
-        section("5. 管理面（监控 + 审计）")
+        section("4. 管理面（监控）")
         page.goto(f"{base}/admin/monitor", wait_until="networkidle", timeout=30000)
         page.screenshot(path=str(out_dir / "07-admin-monitor.png"), full_page=True)
         check("监控页渲染", len(page.inner_text("body").strip()) > 30)
-
-        page.goto(f"{base}/admin/audit", wait_until="networkidle", timeout=30000)
-        body = page.inner_text("body")
-        check("审计页包含知识库写操作记录", "knowledge.upload" in body,
-              "未找到 knowledge.upload 审计记录")
-        page.screenshot(path=str(out_dir / "08-admin-audit.png"), full_page=True)
 
         section("6. 控制台健康度")
         check("无 console error / pageerror", not CONSOLE_ERRORS,

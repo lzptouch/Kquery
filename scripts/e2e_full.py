@@ -348,17 +348,11 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
                   page_text(page)[:160])
 
         # ---------------------------------------------------------- 8. 图谱 / 管理
-        section("9. 图谱页与管理页")
-        page.goto(f"{base}/graph", wait_until="networkidle", timeout=30000)
-        check("图谱页可打开", len(page_text(page).strip()) > 50, page_text(page)[:120])
-
+        section("9. 管理页")
         for path, keyword in [
             ("/admin/monitor", "监控"),
             ("/admin/users", "用户"),
             ("/admin/acl", "ACL"),
-            ("/admin/audit", "审计"),
-            ("/admin/quota", "配额"),
-            ("/admin/sensitive", "敏感"),
             ("/admin/retrieval-config", "检索"),
         ]:
             page.goto(f"{base}{path}", wait_until="networkidle", timeout=30000)

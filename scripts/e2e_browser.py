@@ -163,21 +163,10 @@ def run(base: str, headed: bool, sample_file: str) -> int:
                   bool(re.search(r"切块|块|chunk", preview_text, re.I)),
                   f"预览页文本片段: {preview_text[:160]}")
 
-        # ---------------------------------------------------------- 图谱
-        section("5. 图谱页")
-        page.goto(f"{base}/graph", wait_until="networkidle", timeout=30000)
-        graph_text = page_text(page)
-        check("图谱页可打开", "图谱" in graph_text, graph_text[:120])
-        check("图谱页有实体或空态提示", bool(re.search(r"实体|图谱|为空|上传", graph_text)),
-              graph_text[:160])
-
         # ---------------------------------------------------------- 管理页
         section("6. 管理页与四态")
         for path, keyword in (("/admin/users", "用户"),
                               ("/admin/acl", "ACL"),
-                              ("/admin/audit", "审计"),
-                              ("/admin/quota", "配额"),
-                              ("/admin/sensitive", "敏感"),
                               ("/admin/monitor", "监控"),
                               ("/admin/retrieval-config", "检索")):
             page.goto(f"{base}{path}", wait_until="networkidle", timeout=30000)

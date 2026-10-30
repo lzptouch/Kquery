@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
-from app.dependencies import audit_admin, get_principal, require_role
+from app.dependencies import get_principal, require_role
 from app.services.security.auth import Principal
 
 logger = logging.getLogger(__name__)
@@ -76,7 +76,6 @@ def list_kbs(request: Request, principal: Principal = Depends(get_principal)) ->
         _kb_view(k, knowledge.count_by_kb(k.kb_id), len(kb.grants_of(k.kb_id)))
         for k in kbs
     ]
-    audit_admin(request, "kb.list", {"count": len(data)})
     return ok_envelope(data, trace_id, elapsed_ms_since(started))
 
 
@@ -99,8 +98,6 @@ def create_kb(req: KbCreateRequest, request: Request, principal: Principal = Dep
         tenant_id=principal.tenant_id,
         created_by=principal.user_id,
     )
-    audit_admin(request, "kb.create", {"kb_id": record.kb_id, "name": record.name,
-                                       "is_public": record.is_public})
     return ok_envelope(_kb_view(record, 0, 0), trace_id, elapsed_ms_since(started))
 
 
@@ -123,7 +120,6 @@ def update_kb(
         raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
     patch = req.model_dump(exclude_none=True)
     record = kb.update(kb_id, patch, updated_by=principal.user_id)
-    audit_admin(request, "kb.update", {"kb_id": kb_id, "fields": sorted(patch)})
     return ok_envelope(_kb_view(record, request.app.state.knowledge.count_by_kb(kb_id),
                                 len(kb.grants_of(kb_id))), trace_id, elapsed_ms_since(started))
 
@@ -138,7 +134,6 @@ def delete_kb(kb_id: str, request: Request, principal: Principal = Depends(get_p
     if existing is None or existing.tenant_id != principal.tenant_id:
         raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
     kb.delete(kb_id, doc_count=request.app.state.knowledge.count_by_kb(kb_id))
-    audit_admin(request, "kb.delete", {"kb_id": kb_id, "name": existing.name})
     return ok_envelope({"kb_id": kb_id, "deleted": True}, trace_id, elapsed_ms_since(started))
 
 
@@ -158,7 +153,6 @@ def list_grants(kb_id: str, request: Request, principal: Principal = Depends(get
     existing = kb.get(kb_id)
     if existing is None or existing.tenant_id != principal.tenant_id:
         raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
-    audit_admin(request, "kb.grants.list", {"kb_id": kb_id})
     return ok_envelope(kb.grants_of(kb_id), trace_id, elapsed_ms_since(started))
 
 
@@ -175,10 +169,6 @@ def set_grants(
     if existing is None or existing.tenant_id != principal.tenant_id:
         raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
     result = kb.set_grants(kb_id, req.user_ids, granted_by=principal.user_id)
-    audit_admin(request, "kb.grant.set", {
-        "kb_id": kb_id, "risk": result["risk"],
-        "added": result["impact"]["added_count"], "removed": result["impact"]["removed_count"],
-    })
     return ok_envelope(result, trace_id, elapsed_ms_since(started))
 
 
@@ -199,7 +189,6 @@ def list_kb_documents(kb_id: str, request: Request, principal: Principal = Depen
         d for d in knowledge.list_files(tenant_id=principal.tenant_id)
         if (d.knowledge_base_id or "default") == kb_id
     ]
-    audit_admin(request, "kb.docs.list", {"kb_id": kb_id, "count": len(docs)})
     return ok_envelope(
         [{"doc_id": d.doc_id, "filename": d.filename, "status": d.status,
           "chunks": d.chunk_count, "uploaded_at": d.uploaded_at} for d in docs],
@@ -236,8 +225,6 @@ def move_documents(
             continue
         knowledge.move_to_kb(doc_id, kb_id)
         moved.append(doc_id)
-    audit_admin(request, "kb.docs.move", {"kb_id": kb_id, "moved": len(moved),
-                                          "skipped": len(skipped)})
     return ok_envelope({"kb_id": kb_id, "moved": moved, "skipped": skipped},
                        trace_id, elapsed_ms_since(started))
 
@@ -256,7 +243,6 @@ def kbs_of_user(user_id: str, request: Request, principal: Principal = Depends(g
         raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
     kb = request.app.state.kb_service
     kbs = kb.kbs_of_user(user_id, record.get("tenant_id") or "default")
-    audit_admin(request, "kb.user.list", {"user_id": user_id, "count": len(kbs)})
     return ok_envelope(
         [{"kb_id": k.kb_id, "name": k.name, "is_public": k.is_public} for k in kbs],
         trace_id, elapsed_ms_since(started),

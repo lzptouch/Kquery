@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import audit_admin, require_role
+from app.dependencies import require_role
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 
 logger = logging.getLogger(__name__)
@@ -199,10 +199,6 @@ def build_graph(req: BuildGraphRequest, request: Request) -> Envelope:
         result = builder.build_from_chunks(chunks, tenant_id=tenant)
         if req.rebuild_communities:
             result["community"] = builder.rebuild_communities(tenant_id=tenant)
-    audit_admin(request, "graph.build", {
-        "doc_id": req.doc_id or "*", "rebuild_communities": req.rebuild_communities,
-        "chunks": len(chunks),
-    })
     return ok_envelope(result, trace_id, elapsed_ms_since(started))
 
 
@@ -280,7 +276,6 @@ def index_images(req: IndexImagesRequest, request: Request) -> Envelope:
                 indexed += 1
             else:
                 failed += 1
-    audit_admin(request, "media.index", {"limit": req.limit, "indexed": indexed, "failed": failed})
     return ok_envelope(
         {"indexed": indexed, "failed": failed, "skipped": skipped},
         trace_id, elapsed_ms_since(started),

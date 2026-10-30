@@ -133,10 +133,18 @@ class TestLogin:
         assert unknown.json()["error"]["code"] == wrong.json()["error"]["code"]
 
     def test_disabled_account_fails_like_wrong_password(self, password_client):
+        # 先提一个副手管理员：后端不允许把系统改成"一个启用的管理员都不剩"
+        # （那会让管理区永久失联且无法经接口恢复）。
+        headers = _auth(password_client, "admin", ADMIN_PASSWORD)
+        password_client.put(
+            "/admin/users/lisi",
+            json={"roles": ["admin"], "groups": [], "enabled": True},
+            headers=headers,
+        )
         password_client.put(
             "/admin/users/admin",
             json={"roles": ["admin"], "groups": [], "enabled": False},
-            headers=_auth(password_client, "admin", ADMIN_PASSWORD),
+            headers=headers,
         )
         disabled = _login(password_client, "admin", ADMIN_PASSWORD)
         wrong = _login(password_client, "admin", "WrongPass1")
@@ -227,10 +235,7 @@ class TestAdminAreaGating:
             ("GET", "/graph/stats"),
             ("GET", "/graph/entities"),
             ("GET", "/admin/users"),
-            ("GET", "/admin/audit"),
             ("GET", "/admin/documents/acl"),
-            ("GET", "/admin/quota"),
-            ("GET", "/admin/sensitive"),
             ("GET", "/admin/metrics/summary"),
             ("GET", "/admin/retrieval-config"),
         ],
@@ -485,11 +490,3 @@ class TestAdminPasswordReset:
         )
         assert resp.status_code == 403
 
-    def test_reset_does_not_write_password_into_audit(self, password_client):
-        admin = _auth(password_client, "admin", ADMIN_PASSWORD)
-        password_client.put(
-            "/admin/users/zhangsan/password", json={"password": USER_PASSWORD}, headers=admin
-        )
-        audit_file = password_client.app.state.settings.data_dir / "audit" / "audit.jsonl"
-        content = audit_file.read_text(encoding="utf-8") if audit_file.exists() else ""
-        assert USER_PASSWORD not in content, "口令被写进了审计文件"

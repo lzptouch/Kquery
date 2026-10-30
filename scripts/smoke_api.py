@@ -446,11 +446,10 @@ def run(base: str) -> int:
     check("权限矩阵含能力清单", bool(matrix.get("capabilities")), f"keys={sorted(matrix)}")
     check("权限矩阵含角色行", bool(matrix.get("matrix")))
 
-    status, body = call(base, "GET", "/admin/audit?range_s=600")
-    check("审计查询返回 200", status == 200, f"实际 {status}")
-
-    status, body = call(base, "GET", "/admin/quota/platform")
-    check("平台配额端点返回 200", status == 200, f"实际 {status}")
+    for path in ("/admin/audit", "/admin/audit/export", "/admin/quota",
+                 "/admin/quota/platform", "/admin/sensitive"):
+        status, _ = call(base, "GET", path)
+        check(f"已下线端点 {path} 返回 404", status == 404, f"实际 {status}")
 
     # ----------------------------------------------------------  会话
     section("Agent 会话")

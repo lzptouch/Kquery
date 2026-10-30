@@ -205,28 +205,11 @@ export function MonitorPage() {
           </div>
         )}
 
-        {/* 图谱与多模态指标区 */}
-        {graphStats && (graphStats.entities > 0 || graphStats.images > 0) && (
+        {/* 多模态指标区（图谱可视化已下线，此处只展示图片库规模） */}
+        {graphStats && graphStats.images > 0 && (
           <div className="card">
-            <h3 style={{ marginTop: 0 }}>图谱与多模态</h3>
+            <h3 style={{ marginTop: 0 }}>多模态</h3>
             <div className="metric-grid">
-              <MetricCard title="实体总数" value={String(graphStats.entities)} ariaLabel={`实体 ${graphStats.entities} 个`}>
-                <span className="trace-id">知识图谱节点数</span>
-              </MetricCard>
-              <MetricCard title="关系总数" value={String(graphStats.relations)} ariaLabel={`关系 ${graphStats.relations} 条`}>
-                <span className="trace-id">有向边</span>
-              </MetricCard>
-              <MetricCard title="社区数" value={String(graphStats.communities)} ariaLabel={`社区 ${graphStats.communities} 个`}>
-                <span className="trace-id">连通分量检测</span>
-              </MetricCard>
-              <MetricCard
-                title="孤立实体占比"
-                value={pct(graphStats.orphan_ratio)}
-                alert={graphStats.orphan_ratio > 0.2}
-                ariaLabel={`孤立实体占比 ${pct(graphStats.orphan_ratio)}`}
-              >
-                <span className="trace-id">&gt;20% 说明关系抽取质量下降</span>
-              </MetricCard>
               <MetricCard title="图片库规模" value={String(graphStats.images)} ariaLabel={`图像 ${graphStats.images} 张`}>
                 <span className="trace-id mono">{graphStats.caption_model}</span>
               </MetricCard>

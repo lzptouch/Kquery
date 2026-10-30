@@ -85,8 +85,8 @@ def _password_mode(request: Request) -> bool:
 def _login_limiter(request: Request) -> TokenBucketLimiter:
     """登录专用限流器，**不复用** `app.state.limiter`。
 
-    后者是租户问答配额桶（键为 tenant_id）。登录尝试若与它共用实例，
-    连输错几次口令就会吃掉用户真正的问答配额——两个无关资源共用一个
+    后者是租户问答令牌桶（键为 tenant_id）。登录尝试若与它共用实例，
+    连输错几次口令就会吃掉用户真正的问答请求额度——两个无关资源共用一个
     计数器，是很难被察觉的一类耦合。
     """
     limiter = getattr(request.app.state, "login_limiter", None)
@@ -94,17 +94,6 @@ def _login_limiter(request: Request) -> TokenBucketLimiter:
         limiter = TokenBucketLimiter()
         request.app.state.login_limiter = limiter
     return limiter
-
-
-def _audit(request: Request, trace_id: str, event: str, user_id: str, detail: dict) -> None:
-    """登录/注册走 `append` 而非 `log_admin`——后者语义是"管理员操作"。
-
-    租户固定记为 `default`：登录发生时尚未认证，无可信租户来源；
-    登录成功后的身份已由后续请求的审计覆盖。
-    """
-    audit_store = getattr(request.app.state, "audit_store", None)
-    if audit_store is not None:
-        audit_store.append(event, trace_id, "default", user_id, detail)
 
 
 def _ttl(request: Request) -> int:
@@ -130,8 +119,12 @@ def _issue_token(request: Request, identity: dict) -> str:
     )
 
 
-def _login_failed(request: Request, trace_id: str, username: str, reason: str) -> ApiError:
-    _audit(request, trace_id, "auth.login", username, {"result": reason})
+def _login_failed() -> ApiError:
+    """登录失败统一出口。
+
+    三种失败（账号不存在 / 口令错误 / 账号停用）必须同码同文案——单独提示
+    "已停用"等于确认账号存在。
+    """
     return ApiError(ErrCode.AUTH_FAILED, _LOGIN_FAILED_MESSAGE, http_status=401)
 
 
@@ -152,7 +145,6 @@ def login(req: LoginRequest, request: Request) -> Envelope:
         f"login:{req.username.lower()}", LOGIN_RATE_PER_MIN, LOGIN_BUCKET
     )
     if not allowed:
-        _audit(request, trace_id, "auth.login", req.username, {"result": "throttled"})
         raise ApiError(
             ErrCode.RATE_LIMITED, "登录尝试过于频繁，请稍后再试",
             http_status=429, retry_after=retry_after,
@@ -163,16 +155,15 @@ def login(req: LoginRequest, request: Request) -> Envelope:
         # 关键：账号不存在时也要跑一次等价强度的派生运算，否则"不存在"会因少一次
         # PBKDF2 而快几十倍，攻击者据此即可枚举账号。见 password.burn 的说明。
         pw.burn(req.password)
-        raise _login_failed(request, trace_id, req.username, "unknown_user")
+        raise _login_failed()
     if not pw.verify_password(req.password, record.get("password_hash")):
-        raise _login_failed(request, trace_id, req.username, "bad_password")
+        raise _login_failed()
     if not record.get("enabled", True):
         # 与上面两种失败同码同文案——单独提示"已停用"等于确认账号存在
-        raise _login_failed(request, trace_id, req.username, "disabled")
+        raise _login_failed()
 
     identity = directory.identity_of(req.username)
     token = _issue_token(request, identity)
-    _audit(request, trace_id, "auth.login", identity["user_id"], {"result": "ok"})
     return ok_envelope(
         {
             "token": token,
@@ -226,7 +217,6 @@ def register(req: RegisterRequest, request: Request) -> Envelope:
             "password_hash": pw.hash_password(req.password),
         },
     )
-    _audit(request, trace_id, "auth.register", username, {"roles": [DEFAULT_ROLE]})
     logger.info("新账号已注册: %s（角色 %s）", username, DEFAULT_ROLE)
     return ok_envelope(
         {"user_id": username, "roles": [DEFAULT_ROLE]},

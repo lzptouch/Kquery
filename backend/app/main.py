@@ -77,12 +77,8 @@ from app.services.graph.query import GraphQueryService
 from app.services.graph.resolver import EntityResolver
 from app.services.graph.sqlite_store import build_graph_store
 from app.services.security.acl import ACLService
-from app.services.security.audit import AuditStore
 from app.services.security.auth import UserDirectory, build_auth_provider
 from app.services.security.kb import KBService
-from app.services.security.platform_quota import PlatformQuotaMonitor, install_monitor
-from app.services.security.quota import SlidingWindowQuota
-from app.services.security.sensitive import SensitiveScanner
 from app.services.query.analysis_store import AnalysisStore
 from app.services.query.decomposer import Decomposer, SourceRouter
 from app.services.query.expanders import FusionExpander, HydeExpander, StepBackExpander
@@ -381,7 +377,7 @@ def create_app() -> FastAPI:
         app.state.analysis_store = analysis_store
         app.state.feedback_store = FeedbackStore(settings.data_dir / "feedback.json")
 
-        # 企业护栏（认证 → 配额 → ACL → 敏感词 → 审计 → 评测）
+        # 企业护栏（认证 → ACL → 评测）
         import json as _json9
 
         user_directory = UserDirectory(
@@ -403,7 +399,6 @@ def create_app() -> FastAPI:
         # 首个管理员口令引导：仅当目录里没有任何口令时才写入，避免每次启动重置密码
         if settings.auth_password_enabled:
             _bootstrap_admin_password(settings, user_directory)
-        audit_store = AuditStore(settings.data_dir / "audit" / "audit.jsonl")
         acl_service = ACLService(settings.data_dir / "acl.json", user_directory)
         # 知识库实体与授权（kb_enabled=false 时仍装配，判定在闭包内被跳过——
         # 数据可留存，回滚只需重启翻开关，不丢授权记录）
@@ -418,31 +413,10 @@ def create_app() -> FastAPI:
         # ACL 下推所需的依赖（bind_principal 会据此按主体构造可见清单）
         pipeline._acl_service = acl_service
         pipeline._knowledge = knowledge
-        quota_service = SlidingWindowQuota(state=shared_state)
-        quota_service.set_policy(
-            settings.default_tenant_id,
-            settings.quota_per_minute,
-            settings.quota_per_day,
-            token_per_day=settings.quota_token_per_day,
-        )
-        # token 用量结算。quota_service 晚于 pipeline 构造，此处回填
-        # （与 _acl_version 同一模式；bind_principal 的 clone 会复制 __dict__）
-        pipeline._quota = quota_service
-        # 平台侧配额（账号级上游约束）：模型客户端上报，网关读取
-        platform_monitor = PlatformQuotaMonitor(
-            per_day=settings.platform_quota_per_day,
-            warn_ratio=settings.platform_quota_warn_ratio,
-        )
-        install_monitor(platform_monitor)
-        sensitive_scanner = SensitiveScanner(settings.data_dir / "sensitive-words.json")
         #  校验历史（CRAG 轮次 / 自检明细）落库
         validation_history = ValidationHistoryStore(settings.data_dir / "validation-history")
-        # 护栏回填到**线性路径**：此前审计与敏感词只挂 Agent 路径，默认问答不产生任何痕迹
-        pipeline.attach_security(
-            audit=audit_store,
-            scanner=sensitive_scanner if settings.sensitive_scan_enabled else None,
-            history_store=validation_history,
-        )
+        # 校验历史回填到**线性路径**：此前只挂 Agent 路径，默认问答不产生任何痕迹
+        pipeline.attach_history(history_store=validation_history)
 
         # Agentic RAG（LangGraph 状态机 + 工具注册 + 会话存档）
         agent_llm = build_llm(
@@ -599,9 +573,6 @@ def create_app() -> FastAPI:
         app.state.agent_runner = AgentRunner(
             agent_graph, session_store, metrics_store, top_k=settings.top_k,
             registry=tool_registry,  # ReAct 模式的工具目录来源
-            # 审计是合规底线，不应由 acl_enabled 决定：无条件挂载
-            audit=audit_store,
-            scanner=sensitive_scanner if settings.sensitive_scan_enabled else None,
             crag_router=pipeline._crag,
             history_store=validation_history,
             score_top_n=settings.crag_score_top_n,
@@ -669,12 +640,8 @@ def create_app() -> FastAPI:
 
         app.state.auth_provider = auth_provider
         app.state.user_directory = user_directory
-        app.state.audit_store = audit_store
         app.state.acl_service = acl_service
         app.state.kb_service = kb_service
-        app.state.quota_service = quota_service
-        app.state.platform_monitor = platform_monitor
-        app.state.sensitive_scanner = sensitive_scanner
         logger.info(
             "Kquery 后端已启动（provider=%s, vector_store=%s, llm=%s, rerank=%s, 向量=%d, BM25=%d）",
             provider, settings.vector_store, settings.llm_model, settings.rerank_model, store.total, bm25.total,
@@ -855,10 +822,6 @@ def create_app() -> FastAPI:
         probe("auth", lambda: {"mode": type(state.auth_provider).__name__})
         # 批次 2：上游水位（许可占用/熔断状态）进健康报告
         probe("upstream", bulkheads_stats)
-        probe(
-            "platform_quota",
-            lambda: {"exhausted": state.platform_monitor.exhausted()},
-        )
 
         down = [d["name"] for d in deps if d["status"] == "down"]
         return JSONResponse(

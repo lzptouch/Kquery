@@ -18,7 +18,6 @@ from app.core.envelope import Envelope, ok_envelope
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.core.envelope import ApiError, ErrCode
 from app.dependencies import (
-    audit_admin,
     enforce_rate_limit,
     get_knowledge_service,
     get_principal,
@@ -81,10 +80,6 @@ async def upload(
     record = await run_in_threadpool(
         service.ingest_path, filename, tmp_path, None, None, principal.tenant_id, target_kb
     )
-    audit_admin(request, "knowledge.upload", {
-        "doc_id": record.doc_id, "filename": filename, "status": record.status,
-        "knowledge_base_id": target_kb,
-    })
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
 
@@ -114,7 +109,6 @@ def rebuild(
     started = now_ms()
     _assert_doc_tenant(principal, service.get(doc_id))
     record = service.rebuild(doc_id)
-    audit_admin(request, "knowledge.rebuild", {"doc_id": doc_id, "status": record.status})
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
 
@@ -131,7 +125,6 @@ def delete_file(
     _assert_doc_tenant(principal, service.get(doc_id))
     record = service.delete(doc_id)
     # 删除是不可逆动作，必须留痕（KQ-24）
-    audit_admin(request, "knowledge.delete", {"doc_id": doc_id, "filename": record.filename})
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
 
@@ -282,13 +275,16 @@ def reparse_document(
     set_trace_id(trace_id)
     started = now_ms()
     from app.services.chunkers.factory import validate_chunk_policy
+    from app.services.parsers.router import validate_parse_policy
 
     if error := validate_chunk_policy(req.chunk_policy):
         raise ApiError(ErrCode.CHUNK_POLICY_INVALID, error)
+    # 解析策略同样要校验：类型错的开关会被真值语义悄悄接受（见 validate_parse_policy）
+    if error := validate_parse_policy(req.parse_policy):
+        raise ApiError(ErrCode.INVALID_INPUT, error)
     service: KnowledgeService = request.app.state.knowledge
     _assert_doc_tenant(principal, service.get(doc_id))
     record = service.reparse(doc_id, req.chunk_policy, req.parse_policy)
-    audit_admin(request, "knowledge.reparse", {"doc_id": doc_id, "status": record.status})
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
 
@@ -303,7 +299,6 @@ def offline_document(
     service: KnowledgeService = request.app.state.knowledge
     _assert_doc_tenant(principal, service.get(doc_id))
     record = service.offline(doc_id)
-    audit_admin(request, "knowledge.offline", {"doc_id": doc_id})
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
 

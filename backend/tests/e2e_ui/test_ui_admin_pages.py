@@ -1,7 +1,7 @@
 """全部页面 UI 巡检 + 关键管理交互（真实点击 / 输入）。
 
 覆盖：每个可达页面都能打开且无 JS 错误；各管理页的关键交互能真的操作
-（改配额、加敏感词、设 ACL、编辑用户角色、检索配置、图谱查询）。
+（设 ACL、编辑用户角色、检索配置、监控大盘）。
 
 断言原则：
 - 只断言**页面真实可见**的内容（innerText / 可见元素），不碰组件内部状态；
@@ -24,15 +24,11 @@ PAGES = [
     ("/knowledge", "上传"),
     ("/knowledge/upload-advanced", "选择文件"),
     ("/knowledge/query-analysis", "Query 分析"),
-    ("/graph", "图谱"),
     ("/admin/monitor", "监控"),
     ("/admin/retrieval-config", "检索"),
     ("/admin/users", "用户"),
     ("/admin/acl", "ACL"),
     ("/admin/kb", "知识库"),
-    ("/admin/audit", "审计"),
-    ("/admin/quota", "配额"),
-    ("/admin/sensitive", "敏感词"),
 ]
 
 
@@ -61,30 +57,7 @@ class TestAllPagesLoad:
 
 
 class TestAdminInteractions:
-    def test_quota_page_can_edit_values(self, web_page):
-        """配额页：填租户 + 数值 → 保存 → 「已保存」+ 表格出现该租户的新上限。"""
-        page = web_page
-        page.goto(f"{WEB}/admin/quota", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
-        tenant = "uitest-tenant"
-        # 租户名是必填（保存按租户维度生效）
-        page.get_by_label("租户").fill(tenant)
-        page.get_by_label("每分钟").fill("77")
-        page.get_by_role("button", name="保存").first.click()
-        expect(page.get_by_text("已保存").first).to_be_visible(timeout=10_000)
-        # 表格里应出现该租户，分钟上限为 77
-        expect(page.get_by_text("77/min")).to_be_visible(timeout=10_000)
 
-    def test_sensitive_word_can_be_added(self, web_page):
-        """敏感词页：填词 → 点「添加」→ 列表出现该词。"""
-        page = web_page
-        page.goto(f"{WEB}/admin/sensitive", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
-        word = "UI探针敏感词"
-        page.get_by_placeholder("词条（≤50 字）").fill(word)
-        page.get_by_role("button", name="添加").first.click()
-        page.wait_for_timeout(1500)
-        expect(page.get_by_text(word).first).to_be_visible(timeout=10_000)
 
     def test_acl_page_lists_documents(self, web_page):
         """文档 ACL 页：列出文档并可打开编辑（allow/deny 输入框存在）。"""
@@ -120,18 +93,6 @@ class TestAdminInteractions:
         inputs.first.fill("7")
         assert inputs.first.input_value() == "7"
 
-    def test_graph_page_can_search(self, web_page):
-        """图谱页：输入查询词 → 触发检索（空库返回空是合法的，不报错即可）。"""
-        page = web_page
-        page.goto(f"{WEB}/graph", wait_until="domcontentloaded")
-        page.wait_for_timeout(1500)
-        boxes = page.locator("input[type=text], input:not([type])")
-        if boxes.count() == 0:
-            pytest.skip("图谱页未提供文本查询框")
-        boxes.first.fill("测试实体")
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(2000)
-        assert len(page.inner_text("body")) > 20
 
     def test_monitor_page_shows_metrics(self, web_page):
         """监控大盘：指标卡可见。"""
@@ -143,11 +104,3 @@ class TestAdminInteractions:
             f"监控大盘未渲染出指标：{body[:120]}"
         )
 
-    def test_audit_page_lists_events(self, web_page):
-        """审计页：能拉出事件列表（可为空表但结构在）。"""
-        page = web_page
-        page.goto(f"{WEB}/admin/audit", wait_until="domcontentloaded")
-        page.wait_for_timeout(2000)
-        body = page.inner_text("body")
-        assert "审计" in body
-        assert len(body) > 30

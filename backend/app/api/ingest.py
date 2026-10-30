@@ -16,22 +16,16 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 from app.api.upload_util import sanitize_filename, stream_to_disk
 from app.api.kb import resolve_kb_for_write
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import audit_admin, enforce_rate_limit, require_role
+from app.dependencies import enforce_rate_limit, require_role
 from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
 from app.services.chunkers.factory import validate_chunk_policy
-from app.services.parsers.router import SUPPORTED_EXTENSIONS
+from app.services.parsers.router import SUPPORTED_EXTENSIONS, validate_parse_policy
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/knowledge", tags=["ingest"], dependencies=[Depends(require_role("admin"))])
 
 MAX_BATCH_FILES = 20
-
-# PII 硬拦截只作用于能直接解码的纯文本。
-# PDF/DOCX/XLSX 等二进制若在入口扫描，成本高且编码不确定，改由输出侧掩码兜底。
-TEXT_SCANABLE_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml"}
-# 只有 PII 类命中才硬拦；租户自定义敏感词命中走原有策略（不因此拒绝入库）
-_PII_CATEGORIES = {"pii_id_card", "pii_phone", "pii_email", "pii_bank_card"}
 
 
 def _parse_policy_field(raw: str | None, name: str) -> dict:
@@ -55,6 +49,10 @@ async def ingest(request: Request) -> Envelope:
     form = await request.form()
     parse_policy = _parse_policy_field(form.get("parse_policy"), "parse_policy")
     chunk_policy = _parse_policy_field(form.get("chunk_policy"), "chunk_policy")
+    # 解析策略的字段类型必须校验：策略全是开关，类型错了会被真值语义悄悄接受
+    # （`{"pdf_tables": "yes"}` → 真值 → 表格识别照开），用户以为关了其实没关。
+    if error := validate_parse_policy(parse_policy):
+        raise ApiError(ErrCode.INVALID_INPUT, error)
     kb_id_raw = form.get("kb_id")
     kb_id = str(kb_id_raw).strip() if kb_id_raw else "default"
     if error := validate_chunk_policy(chunk_policy):
@@ -69,7 +67,6 @@ async def ingest(request: Request) -> Envelope:
 
     settings = request.app.state.settings
     manager = request.app.state.task_manager
-    scanner = getattr(request.app.state, "sensitive_scanner", None)
     principal = getattr(request.state, "principal", None)
     tenant_id = principal.tenant_id if principal else settings.default_tenant_id
     kb_id = resolve_kb_for_write(request, kb_id, tenant_id)
@@ -110,31 +107,8 @@ async def ingest(request: Request) -> Envelope:
         (staging / meta["filename"]).replace(task_dir / meta["filename"])
     staging.rmdir()
 
-    #  输入侧硬拦截：PII 不得进入知识库。
-    # 与"提问"不同——提问里的手机号可能是用户自己的查询条件（正当诉求），
-    # 但文档里的身份证/银行卡一旦入库就会被检索引用并进入回答，必须在入口拦住。
-    # 仅扫可解码的纯文本；PDF/DOCX 等二进制交给入库后的输出侧掩码兜底。
-    if scanner:
-        for meta in files_meta:
-            ext = "." + meta["filename"].rsplit(".", 1)[-1].lower()
-            if ext not in TEXT_SCANABLE_EXTENSIONS:
-                continue
-            try:
-                text = (task_dir / meta["filename"]).read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            hit = scanner.scan(text, tenant_id)
-            if not hit["safe"] and set(hit["categories"]) & _PII_CATEGORIES:
-                logger.warning(
-                    "拒绝入库（含 PII）: %s categories=%s", meta["filename"], hit["categories"]
-                )
-                manager.discard(task.task_id)
-                raise ApiError(
-                    ErrCode.INVALID_INPUT,
-                    f"{meta['filename']} 含个人敏感信息（{', '.join(sorted(set(hit['categories']) & _PII_CATEGORIES))}），"
-                    "请先脱敏后再上传",
-                    http_status=400,
-                )
+    # 说明：入库侧的内容审查（敏感词 / PII 硬拦截）已随敏感词功能下线，
+    # 文档一旦入库即可被检索引用并进入回答，此处不再做入口拦截。
     if not manager.submit(task.task_id):
         # 队列背压：拒绝时回收任务与已落盘文件，不留下"已受理但永不执行"的任务
         manager.discard(task.task_id)
@@ -142,10 +116,6 @@ async def ingest(request: Request) -> Envelope:
             ErrCode.RATE_LIMITED, "入库队列已满，请稍后重试",
             http_status=503, retry_after=30,
         )
-    audit_admin(request, "knowledge.ingest", {
-        "task_id": task.task_id, "total_files": task.total_files,
-    })
-
     return ok_envelope(
         {"task_id": task.task_id, "total_files": task.total_files},
         trace_id,
@@ -182,7 +152,6 @@ def retry_task(task_id: str, req: RetryRequest, request: Request) -> Envelope:
     started = now_ms()
     _assert_task_tenant(request, task_id)
     result = request.app.state.task_manager.retry(task_id, req.file_id)
-    audit_admin(request, "knowledge.task_retry", {"task_id": task_id, "file_id": req.file_id or "*"})
     return ok_envelope(result, trace_id, elapsed_ms_since(started))
 
 
@@ -193,5 +162,4 @@ def cancel_task(task_id: str, request: Request) -> Envelope:
     started = now_ms()
     _assert_task_tenant(request, task_id)
     result = request.app.state.task_manager.cancel(task_id)
-    audit_admin(request, "knowledge.task_cancel", {"task_id": task_id})
     return ok_envelope(result, trace_id, elapsed_ms_since(started))

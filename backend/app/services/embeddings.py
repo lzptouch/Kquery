@@ -100,12 +100,9 @@ class DashScopeEmbeddings:
     def _call(self, texts: list[str]) -> list[list[float]]:
         import dashscope
 
-        from app.services.security.platform_quota import get_monitor
-
         last_error: Exception | None = None
         for attempt in range(self._max_retries):
             try:
-                get_monitor().record_call(self.model)
                 # 批次 2：上游隔离仓（熔断打开时 CircuitOpenError 直接上抛，不重试）
                 with bulkhead("embedding").acquire(timeout_s=30.0):
                     resp = dashscope.TextEmbedding.call(

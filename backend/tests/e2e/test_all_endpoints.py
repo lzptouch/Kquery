@@ -41,7 +41,6 @@ PATH_PARAMS = {
 
 # 不走统一信封的端点（各自有明确契约，单独在别处覆盖）
 NO_ENVELOPE = {
-    "/admin/audit/export",  # text/csv 导出
     "/ask/stream",  # SSE
     "/metrics",  # Prometheus 文本
     "/health", "/livez", "/readyz", "/healthz",  # 运维探针（裸 JSON）
@@ -59,10 +58,6 @@ SKIP = {
     ("POST", "/speech/transcribe"),
     ("PUT", "/admin/users/{user_id}"),  # 会改用户角色/启停
     ("PUT", "/admin/users/{user_id}/password"),
-    ("PUT", "/admin/quota"),
-    ("PUT", "/admin/sensitive/{word}"),
-    ("POST", "/admin/sensitive"),
-    ("DELETE", "/admin/sensitive/{word}"),
     ("DELETE", "/quickask/{doc_id}"),
     ("DELETE", "/knowledge/files/{doc_id}"),
     ("POST", "/feedback/refusal"),
@@ -109,8 +104,9 @@ def _endpoints(app) -> list[tuple[str, str]]:
 def test_endpoint_count_matches_readme(client):
     """端点总数与 README 关键数字表一致（防新增端点忘记回填文档）。"""
     endpoints = _endpoints(client.app)
-    # 89 = 13 个 router 共 84 + main.py 内建 5（见 doc/analysis/README.md §1.2）
-    assert len(endpoints) == 89, f"端点数变为 {len(endpoints)}，README §1.2 需同步更新"
+    # 81 = 13 个 router 共 76 + main.py 内建 5（见 doc/analysis/README.md §1.2）
+    # 敏感词/配额/审计下线：移除 audit×2 + quota×3 + sensitive×3 = 8 个 → 89-8=81
+    assert len(endpoints) == 81, f"端点数变为 {len(endpoints)}，README §1.2 需同步更新"
 
 
 def test_all_endpoints_reachable_without_5xx(client):
@@ -128,9 +124,9 @@ def test_all_endpoints_reachable_without_5xx(client):
         if resp.status_code >= 500:
             failures.append(f"{method} {url} → {resp.status_code} {resp.text[:120]}")
     assert not failures, "以下端点返回 5xx：\n" + "\n".join(failures)
-    # 89 个端点里，31 个有真实副作用的写端点单独有专项用例，剩 58 个在此巡检
-    assert checked >= 55, f"巡检端点数过少（{checked}），枚举或跳过清单可能失效"
-    assert skipped <= 35, f"跳过端点过多（{skipped}），巡检覆盖面不足"
+    # 81 个端点里，27 个有真实副作用的写端点单独有专项用例，剩 54 个在此巡检
+    assert checked >= 50, f"巡检端点数过少（{checked}），枚举或跳过清单可能失效"
+    assert skipped <= 32, f"跳过端点过多（{skipped}），巡检覆盖面不足"
 
 
 def test_all_endpoints_follow_response_contract(client):

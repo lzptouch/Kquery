@@ -127,8 +127,6 @@ class AgentRunner:
         top_k: int = 4,
         registry=None,  # ToolRegistry：ReAct 模式需要工具目录
         memory=None,  # LongTermMemory：租户级长期记忆
-        audit=None,  # AuditStore
-        scanner=None,  # SensitiveScanner（输出侧扫描）
         crag_router=None,  # CragRouter：与线性路径同一阈值口径，产 crag_branch
         history_store=None,  # ValidationHistoryStore：CRAG 轮次落库
         score_top_n: int = 2,  # 证据充分度聚合的 Top-N（与 crag_score_top_n 对齐）
@@ -144,8 +142,6 @@ class AgentRunner:
         self._sessions = sessions
         self._metrics = metrics_store
         self._top_k = top_k
-        self._audit = audit
-        self._scanner = scanner
         self._crag = crag_router
         self._history = history_store
         self._score_top_n = max(1, score_top_n)
@@ -194,15 +190,11 @@ class AgentRunner:
     ) -> Iterator[tuple[str, dict]]:
         """事件流：plan/tool_start/tool_end/reflect/iteration/token/fuse/_final。
 
-         网关语义：token 事件被缓冲——答案经敏感词扫描后才放行
-        （输出侧扫描必须在响应返回前完成，不能"先漏后遮"）。
+         网关语义：token 事件被缓冲——答案定稿后才放行
+        （缓冲保证流式吐出的内容与最终答案一致）。
         """
         events: queue.Queue = queue.Queue()
         started = time.monotonic()
-
-        # 审计：请求事件（问题只存哈希）
-        if self._audit and trace_id:
-            self._audit.log_request(trace_id, tenant_id, user_id, question)
 
         # 会话上下文（跨轮证据累积）
         history: list[dict] = []
@@ -381,11 +373,6 @@ class AgentRunner:
                         self._prom.agent_tool_duration_seconds.labels(tool=tool).observe(
                             elapsed_ms / 1000.0
                         )
-                if self._audit and trace_id:
-                    # 审计：检索事件（召回数 / 可见数，差值即被权限过滤数）
-                    retrieved = payload.get("hit_count", 0) + payload.get("acl_filtered", 0)
-                    visible = payload.get("hit_count", 0)
-                    self._audit.log_retrieve(trace_id, tenant_id, user_id, retrieved, visible)
             elif event == "fuse" and self._prom is not None:
                 self._prom.agent_fuse_total.labels(
                     reason=str(payload.get("reason", "unknown"))
@@ -420,7 +407,7 @@ class AgentRunner:
             yield "_final", result
             return
 
-        # ---- 敏感词扫描（输出侧，响应前）----
+        # ---- 答案定稿（输出侧）----
         raw_answer = (final_state or {}).get("final_answer", "")
         answer_source = (final_state or {}).get("answer_source", "")
         # ---- 幻觉自检----
@@ -452,29 +439,13 @@ class AgentRunner:
             else:
                 confidence = None
 
-        sensitive = {"safe": True, "categories": [], "action": "none"}
-        if self._scanner and raw_answer:
-            sensitive = self._scanner.scan(raw_answer, tenant_id)
-            if sensitive["action"] == "refuse":
-                # 命中最高密级：整体拒答（缓冲的 token 作废）
-                if final_state is not None:
-                    final_state["final_answer"] = ""
-                    final_state["refusal"] = True
-            elif sensitive["action"] == "mask":
-                if final_state is not None:
-                    final_state["final_answer"] = sensitive["masked_text"]
-
-        # 扫描后放行（缓冲 token 以最终安全文本为准重新发射）
+        # 定稿后放行（缓冲 token 以最终文本为准重新发射）
         final_answer = (final_state or {}).get("final_answer", "")
         if final_answer and buffered_tokens:
             chunk = 24
             for i in range(0, len(final_answer), chunk):
                 yield "token", {"content": final_answer[i : i + chunk]}
 
-        if self._audit and trace_id:
-            self._audit.log_answer(
-                trace_id, tenant_id, user_id, final_answer, len(sensitive["categories"])
-            )
 
         # ---- 结果归一 ----
         result = self._build_result(
@@ -665,8 +636,8 @@ class AgentRunner:
         """用 `Command(resume=decision)` 唤醒挂起的 run，并产出后续事件流。
 
         与 `run()` 同为事件生成器，调用方（`/ask/runs/{id}/resume`）可复用同一套
-        消费代码。刻意不重跑会话/审计/敏感词那套前置逻辑——那些在第一段已经做过，
-        重复执行会写重复的审计记录。
+        消费代码。刻意不重跑会话那套前置逻辑——那些在第一段已经做过，
+        重复执行会产生重复的副作用。
         """
         from langgraph.types import Command
 
@@ -764,14 +735,6 @@ class AgentRunner:
 
         state = final_state or {}
         answer = state.get("final_answer", "")
-        if self._scanner and answer:
-            scanned = self._scanner.scan(answer, state.get("tenant_id", ""))
-            if scanned["action"] == "refuse":
-                state["final_answer"] = ""
-                state["refusal"] = True
-            elif scanned["action"] == "mask":
-                state["final_answer"] = scanned["masked_text"]
-            answer = state.get("final_answer", "")
         if answer and buffered:
             for i in range(0, len(answer), 24):
                 yield "token", {"content": answer[i : i + 24]}
@@ -918,7 +881,7 @@ class AgentRunner:
             for i, e in enumerate(top)
         ]
 
-        # 拒答归一：无证据 / 提示词级拒答 / 敏感词整体拒答
+        # 拒答归一：无证据 / 提示词级拒答
         # 通用知识兜底豁免：parametric 答案不以知识库证据为依据，不参与拒答归一
         refusal = (
             state.get("refusal", False) or answer.strip().startswith(NO_INFO_ANSWER)

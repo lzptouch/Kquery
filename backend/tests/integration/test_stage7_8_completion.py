@@ -283,9 +283,6 @@ class TestPermissionMatrix:
         # 管理类能力已由 /admin/* 的 require_role("admin") 强制
         assert caps["manage_acl"]["enforced"] == "backend"
         assert caps["manage_users"]["enforced"] == "backend"
-        assert caps["manage_quota"]["enforced"] == "backend"
-        assert caps["view_audit"]["enforced"] == "backend"
-        assert caps["manage_sensitive"]["enforced"] == "backend"
         # 评测平台下线：run_eval 能力与其把守端点 /admin/eval 一并移除，
         # 残留会变成"声明了但没人把守"的纸面权限。
         assert "run_eval" not in caps, "评测端点已下线，权限矩阵不应再声明 run_eval"
@@ -296,11 +293,6 @@ class TestPermissionMatrix:
         # 每项都要说得出把守它的端点（可核对，而非只能相信字符串）
         assert all(c.get("by") for c in caps.values()), "每项能力都应注明把守出处"
 
-    def test_matrix_query_is_audited(self, client):
-        client.get("/admin/users/permission-matrix")
-        events = client.get("/admin/audit", params={"range_s": 600, "event": "admin.action"}).json()["data"]
-        actions = [e["payload"].get("action") for e in events]
-        assert "users.permission_matrix" in actions
 
 
 # ---------------------------------------------------------------- 7. Query cost

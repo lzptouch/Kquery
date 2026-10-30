@@ -41,6 +41,50 @@ UNSUPPORTED_HINTS = {
     ".ppt": "不支持旧版 PowerPoint（.ppt），请另存为 .pptx 后重试",
 }
 
+#: 解析策略字段真源：键 → (允许的类型, 含义)
+#:
+#: 解析策略全是**开关**，而 Python 的真值语义会把类型错误的值悄悄接受：
+#: `{"pdf_tables": "yes"}` 里的 "yes" 是非空字符串 → 真值 → 表格识别照常开启。
+#: 用户以为自己关掉了某个能力，实际没关——最坏的情况是扫描件照样走云端 OCR，
+#: 费用照收，而界面上的开关显示的是"已关闭"。
+#:
+#: 类型元组里显式列出 ``bool``：``bool`` 是 ``int`` 的子类，
+#: 但反过来不成立——``isinstance(True, int)`` 为 True，
+#: 所以布尔位必须单独判，否则 ``True`` 会被整数字段放行。
+PARSE_POLICY_SCHEMA: dict[str, tuple[tuple[type, ...], str]] = {
+    "pdf_tables": ((bool,), "是否识别 PDF 几何表格"),
+    "pdf_ocr": ((bool,), "是否对扫描页做 OCR"),
+    "ocr_enabled": ((bool,), "是否启用图片 OCR 解析"),
+    "transcribe_enabled": ((bool,), "是否启用语音转写"),
+    "transcribe_model": ((str,), "语音转写模型名"),
+    "audio_max_chunk_s": ((int, float), "单次转写分片时长上限（秒）"),
+    "audio_min_sample_rate": ((int,), "转写最低采样率（Hz）"),
+    "audio_split_on_silence": ((bool,), "是否按静音切分音频"),
+    "audio_max_workers": ((int,), "转写并发分块数"),
+}
+
+
+def validate_parse_policy(policy: dict) -> str | None:
+    """解析策略入参校验，返回错误信息或 None（与 `validate_chunk_policy` 同风格）。
+
+    未知键也报错：策略键拼错（`pdf_table` 而不是 `pdf_tables`）时，
+    静默忽略等于"用户以为自己设了某个开关"——那正是这条校验要防的事。
+    """
+    if not isinstance(policy, dict):
+        return "parse_policy 必须是 JSON 对象"
+    for key, value in policy.items():
+        spec = PARSE_POLICY_SCHEMA.get(key)
+        if spec is None:
+            allowed = "、".join(sorted(PARSE_POLICY_SCHEMA))
+            return f"未知的解析策略字段 {key!r}（支持：{allowed}）"
+        types, _desc = spec
+        if bool not in types and isinstance(value, bool):
+            return f"{key} 必须是 {types[0].__name__} 类型，收到布尔值"
+        if not isinstance(value, types):
+            names = "/".join(t.__name__ for t in types)
+            return f"{key} 必须是 {names} 类型，收到 {type(value).__name__}"
+    return None
+
 # 文件类型展示分组（前端上传向导按此分栏）
 TYPE_GROUPS = {
     "document": {

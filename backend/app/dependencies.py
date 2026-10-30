@@ -1,7 +1,7 @@
 """共享依赖：路由通过 Depends 获取 lifespan 装配在 app.state 上的服务。
 
 依赖统一从这里出口，路由不直接触碰 app.state。
-认证（get_principal）与配额（滑动窗口）在此统一叠加——
+认证（get_principal）与突发限流（令牌桶）在此统一叠加——
 这正是当初"依赖统一出口"设计预留的挂载点。
 """
 import logging
@@ -10,7 +10,6 @@ from fastapi import Depends, Request
 
 from app.core.config import Settings
 from app.core.envelope import ApiError, ErrCode
-from app.core.tracing import get_trace_id
 from app.services.agent.runner import AgentRunner
 from app.services.agent.sessions import SessionStore
 from app.services.knowledge import KnowledgeService
@@ -44,28 +43,6 @@ def get_agent_runner(request: Request) -> AgentRunner:
 
 def get_session_store(request: Request) -> SessionStore:
     return request.app.state.session_store
-
-
-def audit_admin(request: Request, action: str, detail: dict) -> None:
-    """管理动作审计（知识库/入库/图谱等写端点共用，对照分析文档 KQ-24）。
-
-    身份以认证主体为准而不是请求头——审计的目的是事后追责，
-    写可伪造的身份等于没有审计。审计失败只告警不阻断主流程。
-    """
-    store = getattr(request.app.state, "audit_store", None)
-    if store is None:
-        return
-    principal = getattr(request.state, "principal", None)
-    try:
-        store.log_admin(
-            get_trace_id(),
-            principal.tenant_id if principal else "",
-            principal.user_id if principal else "",
-            action,
-            detail,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("管理动作审计写入失败（不影响主流程）: %s", exc)
 
 
 def acl_filter_of(request: Request, principal: Principal):
@@ -169,29 +146,17 @@ def require_role(role: str):
 
 
 def enforce_rate_limit(request: Request) -> None:
-    """配额：租户滑动窗口（分钟 + 每日 + token 三维度）。超额 429 + Retry-After。
-
-    令牌桶与滑动窗口并存：
-    任一超限即拒绝。
+    """突发限流：租户令牌桶。超额 429 + Retry-After。
 
     租户取**认证结果**而非请求头——按请求头分桶意味着任何人改一个 header
-    就能换一个桶，配额形同虚设。认证关闭时才回落到 header（开发兼容）。
+    就能换一个桶，限流形同虚设。认证关闭时才回落到 header（开发兼容）。
+
+    说明：应用侧配额（分钟/每日/token 三维）与平台侧额度监控已下线，
+    这里只保留令牌桶的突发保护；登录限流是独立实现，不走本依赖。
     """
     settings: Settings = request.app.state.settings
     limiter = request.app.state.limiter
-    quota = request.app.state.quota_service
     config = request.app.state.config_store.get_active()
-
-    # 平台侧配额（账号级上游约束，先于租户配额判定）
-    # 应用侧配额算得再精细，也无法阻止账号维度被平台限流——此处提前拦截。
-    platform = request.app.state.platform_monitor
-    if platform.exhausted():
-        raise ApiError(
-            ErrCode.QUOTA_EXCEEDED,
-            "平台侧账号额度已用尽，影响全部租户，请次日重试或联系管理员扩容",
-            http_status=429,
-            retry_after=platform.seconds_until_reset(),
-        )
 
     # 租户：以认证主体为准；未开启认证时回落到 header / 默认租户。
     # 注意路由级 dependencies 先于端点形参依赖求值，拿不到 request.state.principal，
@@ -201,37 +166,13 @@ def enforce_rate_limit(request: Request) -> None:
     tenant = principal.tenant_id or request.headers.get("X-Tenant-Id", settings.default_tenant_id)
     request.state.tenant_id = tenant
 
-    # 滑动窗口（租户维度：分钟 + 每日 + token）
-    allowed, retry_after, dimension = quota.check_and_consume(tenant)
-    if not allowed:
-        if dimension == "daily":
-            raise ApiError(
-                ErrCode.QUOTA_EXCEEDED,
-                "租户今日调用次数已用尽，次日恢复或联系管理员扩容",
-                http_status=429,
-                retry_after=retry_after,
-            )
-        if dimension == "token_daily":
-            raise ApiError(
-                ErrCode.QUOTA_EXCEEDED,
-                "租户今日 token 消耗已用尽，次日恢复或联系管理员扩容",
-                http_status=429,
-                retry_after=retry_after,
-            )
-        raise ApiError(
-            ErrCode.RATE_LIMITED,
-            f"当前租户配额已用完，{retry_after} 秒后可重试",
-            http_status=429,
-            retry_after=retry_after,
-        )
-
-    # 令牌桶（突发控制，保持 语义；**按真实租户**分桶）
+    # 令牌桶（突发控制；**按真实租户**分桶）
     rate, capacity = resolve_bucket_limits(config, settings)
     allowed, retry_after = limiter.allow(tenant, rate, capacity)
     if not allowed:
         raise ApiError(
             ErrCode.RATE_LIMITED,
-            f"当前租户配额已用完，{retry_after} 秒后可重试",
+            f"当前租户请求过于频繁，{retry_after} 秒后可重试",
             http_status=429,
             retry_after=retry_after,
         )

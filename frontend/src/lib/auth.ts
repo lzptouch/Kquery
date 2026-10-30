@@ -164,6 +164,25 @@ export function hasRole(roles: string[], role: string): boolean {
 }
 
 /**
+ * 错误码是否表示"凭证确实无效"。
+ *
+ * 只有这两种情况才允许据此登出：
+ * - `1101`：后端 `ErrCode.UNAUTHORIZED`（未认证或凭证过期）
+ * - `401`：`api-client` 遇到非 JSON 响应时直接回填的 HTTP 状态码
+ *
+ * 其它错误码都不代表身份失效：
+ * - `429` 限流：请求被拒是"现在太挤"，令牌照样有效
+ * - `5xx` 服务异常：后端在抖，令牌照样有效
+ * - `1201` 无权：恰恰说明**身份是有效的**，只是权限不够
+ *
+ * 把它们当成"登录失效"去登出，只会在后端抖动或被限流时
+ * 把所有在线用户一起踢回登录页——故障被放大，而不是被隔离。
+ */
+export function isInvalidCredential(code?: number | null): boolean {
+  return code === 1101 || code === 401;
+}
+
+/**
  * 认证失效（401）的全局回调注册。
  *
  * 放在 `auth.ts` 而不是 `api-client.ts`：`api-client` 与 `sse-client` 都要用它，

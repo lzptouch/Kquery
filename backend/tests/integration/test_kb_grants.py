@@ -140,14 +140,15 @@ class TestKbRetrievalDegradationGuards:
             settings.kb_enabled = True
 
 
-class TestKbAuditAndMatrix:
-    def test_grant_writes_audit_with_impact(self, client):
+class TestKbGrantAndMatrix:
+    def test_grant_returns_impact(self, client):
         created = client.post("/admin/kb", json={"name": "制度库", "is_public": False}).json()["data"]
-        client.put(f"/admin/kb/{created['kb_id']}/grants", json={"user_ids": ["lisi"]})
-        events = client.get("/admin/audit", params={"range_s": 600, "event": "admin.action"}).json()["data"]
-        grants = [e for e in events if e["payload"].get("action") == "kb.grant.set"]
-        assert grants, "授权操作必须写审计"
-        assert grants[0]["payload"]["added"] == 1
+        resp = client.put(f"/admin/kb/{created['kb_id']}/grants", json={"user_ids": ["lisi"]})
+        assert resp.status_code == 200
+        data = resp.json()["data"]
+        assert data["impact"]["added_count"] == 1, "授权接口必须回带影响人数"
+        assert data["impact"]["added_users"] == ["lisi"]
+        assert data["risk"] == "high", "扩权必须标为高风险（前端二次确认依据）"
 
     def test_permission_matrix_includes_manage_kb(self, client):
         data = client.get("/admin/users/permission-matrix").json()["data"]

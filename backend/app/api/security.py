@@ -2,17 +2,13 @@
 
 - /admin/users：用户列表与编辑（静态用户目录，演示用）；
 - /admin/documents/acl：ACL 列表 / 修改（返回影响人数，供前端风险提示）；
-- /admin/audit：审计查询（过滤 + trace 聚合）与 CSV 导出（不含原文）；
-- /admin/quota：配额总览与单租户配置；
-- /admin/sensitive：敏感词表 CRUD（按租户隔离）；
 - /admin/users/permission-matrix：角色 × 能力矩阵（前端 PermissionMatrix 组件的数据源）。
 
-管理操作本身写审计（admin.action）——审计查询者也留痕。
+说明：审计日志、配额、敏感词三组端点已下线（对应能力从 CAPABILITIES 中移除）。
 """
 import logging
 
-from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
@@ -24,14 +20,6 @@ logger = logging.getLogger(__name__)
 
 # 本文件全部为 /admin/* 管理端点：整 router 挂 admin 门禁
 router = APIRouter(tags=["security"], dependencies=[Depends(require_role("admin"))])
-
-
-def _audit_admin(request: Request, trace_id: str, action: str, detail: dict) -> None:
-    # 审计身份以认证主体为准：认证开启后请求头仍可伪造，principal 才可作审计依据
-    principal = request.state.principal
-    request.app.state.audit_store.log_admin(
-        trace_id, principal.tenant_id, principal.user_id, action, detail,
-    )
 
 
 # ---------- 用户 ----------
@@ -54,7 +42,6 @@ def list_users(request: Request) -> Envelope:
     trace_id = new_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    _audit_admin(request, trace_id, "users.list", {})
     directory = request.app.state.user_directory
     users = directory.all() if hasattr(directory, "all") else list(directory)
     return ok_envelope([_public_user(u) for u in users], trace_id, elapsed_ms_since(started))
@@ -64,6 +51,34 @@ class UserEditRequest(BaseModel):
     roles: list[str] = []
     groups: list[str] = []
     enabled: bool = True
+
+
+def _is_admin(record: dict) -> bool:
+    return bool(record.get("enabled", True)) and "admin" in (record.get("roles") or [])
+
+
+def _would_remove_last_admin(directory, user_id: str, patch: dict) -> bool:
+    """改完之后系统里是否就一个管理员都不剩了。
+
+    这是**不可自助恢复**的：降权立即生效（get_principal 会复核目录），
+    而恢复管理员身份的唯一入口（PUT /admin/users/{id}）本身又要求管理员权限——
+    于是把自己降掉的管理员只能去改容器里的 users.json 才能回来。
+    真实踩过一次：UI 端到端用例把 admin 的角色改成 sales，
+    之后所有管理端点一律 1201，整个管理区就此失联。
+
+    因此在写入前先判定：只要改完还剩至少一个启用中的管理员，就放行。
+    """
+    users = directory.all() if hasattr(directory, "all") else list(directory)
+    remaining = 0
+    for record in users:
+        if record.get("user_id") == user_id:
+            # 用补丁后的角色/状态重新判定这一条
+            effective = {**record, **patch}
+        else:
+            effective = record
+        if _is_admin(effective):
+            remaining += 1
+    return remaining == 0
 
 
 @router.put("/admin/users/{user_id}", response_model=Envelope)
@@ -78,15 +93,26 @@ def edit_user(user_id: str, req: UserEditRequest, request: Request) -> Envelope:
         if existing is None:
             # 防探测：不存在与无权限统一为 12xx + 同一句文案
             raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
+        if _would_remove_last_admin(directory, user_id, patch):
+            raise ApiError(
+                ErrCode.INVALID_INPUT,
+                "不能移除最后一个管理员：系统将无法再进入管理区，且无法通过接口恢复",
+                http_status=409,
+            )
         updated = directory.upsert(user_id, patch)
     else:  # 兼容旧静态目录
         users: list[dict] = directory
         target = next((u for u in users if u["user_id"] == user_id), None)
         if target is None:
             raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=404)
+        if _would_remove_last_admin(directory, user_id, patch):
+            raise ApiError(
+                ErrCode.INVALID_INPUT,
+                "不能移除最后一个管理员：系统将无法再进入管理区，且无法通过接口恢复",
+                http_status=409,
+            )
         target.update(patch)
         updated = target
-    _audit_admin(request, trace_id, "users.edit", {"user_id": user_id})
     return ok_envelope(_public_user(updated), trace_id, elapsed_ms_since(started))
 
 
@@ -114,9 +140,6 @@ def set_user_password(user_id: str, req: UserPasswordRequest, request: Request) 
         raise ApiError(ErrCode.INVALID_INPUT, weak, http_status=400)
 
     directory.set_password(user_id, password_mod.hash_password(req.password))
-    # 只审计"给谁重置了"，绝不记录口令本身（logging_setup 的脱敏正则不覆盖
-    # 显式拼接的字符串，写进 payload 就等于把口令抄进了审计文件）
-    _audit_admin(request, trace_id, "users.password_reset", {"user_id": user_id})
     return ok_envelope({"user_id": user_id, "password_set": True}, trace_id, elapsed_ms_since(started))
 
 
@@ -129,7 +152,6 @@ def list_acl(request: Request) -> Envelope:
     started = now_ms()
     acl = request.app.state.acl_service
     docs = request.app.state.knowledge.list_files()
-    _audit_admin(request, trace_id, "acl.list", {})
     return ok_envelope(acl.list_acl(docs), trace_id, elapsed_ms_since(started))
 
 
@@ -152,144 +174,8 @@ def set_acl(doc_id: str, req: SetAclRequest, request: Request) -> Envelope:
         doc_id, req.allow, req.deny, req.is_public,
         updated_by=request.state.principal.user_id,
     )
-    _audit_admin(request, trace_id, "acl.set", {
-        "doc_id": doc_id, "risk": result["risk"],
-        "added": result["impact"]["added_count"], "removed": result["impact"]["removed_count"],
-    })
     return ok_envelope(result, trace_id, elapsed_ms_since(started))
 
-
-# ---------- 审计 ----------
-
-@router.get("/admin/audit", response_model=Envelope)
-def query_audit(
-    request: Request,
-    range_s: int = Query(default=3600, ge=60, le=86400 * 30),
-    event: str | None = None,
-    tenant_id: str | None = None,
-    user_id: str | None = None,
-    trace_id: str | None = None,
-    limit: int = Query(default=200, ge=1, le=1000),
-) -> Envelope:
-    my_trace = new_trace_id()
-    set_trace_id(my_trace)
-    started = now_ms()
-    import time as _time
-
-    records = request.app.state.audit_store.query(
-        since=_time.time() - range_s, event=event, tenant_id=tenant_id,
-        user_id=user_id, trace_id=trace_id, limit=limit,
-    )
-    _audit_admin(request, my_trace, "audit.query", {"count": len(records)})
-    return ok_envelope(records, my_trace, elapsed_ms_since(started))
-
-
-@router.get("/admin/audit/export")
-def export_audit(request: Request, range_s: int = Query(default=86400)) -> PlainTextResponse:
-    """导出 CSV（不含问题与答案原文，仅 hash + 元数据）。"""
-    import time as _time
-
-    my_trace = new_trace_id()
-    _audit_admin(request, my_trace, "audit.export", {"range_s": range_s})
-    csv_text = request.app.state.audit_store.export_csv(since=_time.time() - range_s)
-    return PlainTextResponse(csv_text, media_type="text/csv")
-
-
-# ---------- 配额 ----------
-
-@router.get("/admin/quota", response_model=Envelope)
-def quota_overview(request: Request) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    quota = request.app.state.quota_service
-    directory = request.app.state.user_directory
-    known = (
-        directory.tenants()
-        if hasattr(directory, "tenants")
-        else {u["tenant_id"] for u in directory}
-    )
-    tenants = sorted(set(known) | {settings_default_tenant(request)})
-    return ok_envelope(quota.overview(tenants), trace_id, elapsed_ms_since(started))
-
-
-def settings_default_tenant(request: Request) -> str:
-    return request.app.state.settings.default_tenant_id
-
-
-@router.get("/admin/quota/platform", response_model=Envelope)
-def platform_quota_overview(request: Request) -> Envelope:
-    """平台侧额度余量（账号级上游约束，全租户共享）。
-
-    这是唯一能提前预警"整个系统即将不可用"的指标：应用侧配额只影响单租户，
-    而平台侧限流影响所有租户。同时给出各模型调用量与平台失败构成。
-    """
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    snapshot = request.app.state.platform_monitor.snapshot()
-    return ok_envelope(snapshot, trace_id, elapsed_ms_since(started))
-
-
-class QuotaConfigRequest(BaseModel):
-    tenant_id: str
-    per_minute: int = Field(ge=1, le=10000)
-    per_day: int = Field(ge=10, le=10_000_000)
-
-
-@router.put("/admin/quota", response_model=Envelope)
-def set_quota(req: QuotaConfigRequest, request: Request) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    request.app.state.quota_service.set_policy(req.tenant_id, req.per_minute, req.per_day)
-    _audit_admin(request, trace_id, "quota.set", {"tenant_id": req.tenant_id})
-    return ok_envelope({"tenant_id": req.tenant_id, "per_minute": req.per_minute, "per_day": req.per_day}, trace_id, elapsed_ms_since(started))
-
-
-# ---------- 敏感词 ----------
-
-@router.get("/admin/sensitive", response_model=Envelope)
-def list_sensitive(request: Request, tenant_id: str | None = None) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    return ok_envelope(
-        request.app.state.sensitive_scanner.list_words(tenant_id), trace_id, elapsed_ms_since(started)
-    )
-
-
-class AddSensitiveWordRequest(BaseModel):
-    word: str = Field(min_length=1, max_length=50)
-    category: str = Field(pattern="^(机密|隐私|禁语|内部)$")
-    action: str = Field(pattern="^(mask|refuse|tag)$")
-    tenant_id: str = "default"
-    enabled: bool = True
-
-
-@router.post("/admin/sensitive", response_model=Envelope)
-def add_sensitive(req: AddSensitiveWordRequest, request: Request) -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    scanner = request.app.state.sensitive_scanner
-    words = scanner.list_words()
-    words.append(req.model_dump())
-    scanner.save_words(words)
-    _audit_admin(request, trace_id, "sensitive.add", {"category": req.category})  # 不记词条本身
-    return ok_envelope({"added": True, "category": req.category}, trace_id, elapsed_ms_since(started))
-
-
-@router.delete("/admin/sensitive/{word}", response_model=Envelope)
-def delete_sensitive(word: str, request: Request, tenant_id: str = "default") -> Envelope:
-    trace_id = new_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    scanner = request.app.state.sensitive_scanner
-    words = [w for w in scanner.list_words() if not (w["word"] == word and w.get("tenant_id", "default") == tenant_id)]
-    scanner.save_words(words)
-    _audit_admin(request, trace_id, "sensitive.delete", {"tenant_id": tenant_id})
-    return ok_envelope({"deleted": True}, trace_id, elapsed_ms_since(started))
 
 
 @router.get("/admin/tools", response_model=Envelope, dependencies=[Depends(require_role("admin"))])
@@ -324,6 +210,9 @@ def list_tools(request: Request) -> Envelope:
 # `/admin/*` 端点挂上 `require_role("admin")` 之后，这 6 项**已经是真的**，
 # 继续标 declared 反而低估了实际防护等级。这里改为 backend 并注明把守端点，
 # 让运维能顺着 `by` 去核对，而不是只能相信这个字符串。
+#
+# 注：审计查询、配额管理、敏感词管理三项能力随对应功能下线而移除，
+# 其 `by` 端点已不存在——保留会让矩阵指向不存在的闸门。
 CAPABILITIES: list[dict] = [
     {"key": "ask", "label": "提问", "enforced": "backend", "by": "/ask"},
     {"key": "view_own_data", "label": "看自己数据", "enforced": "backend", "by": "Principal 租户/用户过滤"},
@@ -332,9 +221,6 @@ CAPABILITIES: list[dict] = [
     {"key": "manage_acl", "label": "文档 ACL 管理", "enforced": "backend", "by": "/admin/documents/{doc_id}/acl"},
     {"key": "manage_kb", "label": "知识库管理", "enforced": "backend", "by": "/admin/kb"},
     {"key": "manage_users", "label": "用户管理", "enforced": "backend", "by": "/admin/users"},
-    {"key": "manage_quota", "label": "配额管理", "enforced": "backend", "by": "/admin/quota"},
-    {"key": "view_audit", "label": "审计查询", "enforced": "backend", "by": "/admin/audit"},
-    {"key": "manage_sensitive", "label": "敏感词管理", "enforced": "backend", "by": "/admin/sensitive"},
 ]
 _ALL_CAPABILITIES = tuple(c["key"] for c in CAPABILITIES)
 _ASK_CAPABILITIES = ("ask", "view_own_data")
@@ -383,7 +269,6 @@ def permission_matrix(request: Request) -> Envelope:
             "granted": [c["key"] for c in CAPABILITIES if c["key"] in granted],
             "denied": [c["key"] for c in CAPABILITIES if c["key"] not in granted],
         })
-    _audit_admin(request, trace_id, "users.permission_matrix", {})
     return ok_envelope(
         {
             "capabilities": CAPABILITIES,

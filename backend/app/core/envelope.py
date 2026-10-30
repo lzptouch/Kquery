@@ -91,9 +91,8 @@ class ErrCode(IntEnum):
     INTERNAL_ERROR = 5001
     DEPENDENCY_UNAVAILABLE = 5201  # 关键依赖不可用
 
-    # ---- 6xxx 限流与配额 ----
-    RATE_LIMITED = 6101  # 触发租户配额：黄色横幅 + Retry-After 倒计时
-    QUOTA_EXCEEDED = 6201  # 平台/每日配额不足：运维事件
+    # ---- 6xxx 限流 ----
+    RATE_LIMITED = 6101  # 触发突发限流：黄色横幅 + Retry-After 倒计时
 
     @classmethod
     def is_degraded_code(cls, code: int) -> bool:

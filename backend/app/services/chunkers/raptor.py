@@ -6,15 +6,15 @@ L0 原始块 → 聚类 → 每簇生成 L1 摘要 → 对 L1 再聚类 → …�
 成本显式承认：每层聚类 + LLM 摘要都是 token 开销，只在 ingestion 阶段跑一次，
 检索路径零额外开销。长文档（chunk 多）才值得启用。
 """
-import logging
 
 import numpy as np
 
 from app.domain.schemas import Chunk
 from app.services.embeddings import Embeddings
 from app.services.llm import LLM
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 SUMMARY_PROMPT = """请用 100 字以内概括以下内容的共同主题与关键信息，直接输出摘要，不要解释：
 
@@ -46,7 +46,7 @@ def _kmeans(vectors: np.ndarray, k: int, seed: int = 42) -> np.ndarray:
 class RaptorChunker:
     name = "raptor"
 
-    def __init__(self, embeddings: Embeddings, llm: LLM):
+    def __init__(self, embeddings: Embeddings, llm: LLM) -> None:
         self._embeddings = embeddings
         self._llm = llm
 

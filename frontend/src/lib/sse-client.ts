@@ -9,7 +9,14 @@
  *  增量：retrieval_stats 事件（分阶段耗时）；
  * HTTP 429 时解析 Retry-After 并透传给界面（倒计时 + 自动重试）。
  */
-import { authErrorMessage, isAuthFailure, notifyUnauthorized, withAuth } from "./auth";
+import { CLIENT_TIMEOUT_CODE } from "./api-client";
+import {
+  backpressureMessage,
+  inProgressMessage,
+  isInProgressStatus,
+  parseRetryAfter,
+} from "./retry-after";
+import { SseParser } from "./sse-parse";
 import type {
   AgentPlanStep,
   AnswerSource,
@@ -39,10 +46,10 @@ export interface StreamHandlers {
   onEvidence: (evidence: Evidence) => void;
   onRetrievalStats: (stats: Partial<RetrievalStats> & { from_cache: boolean; reranked: boolean }) => void;
   onQueryAnalysis: (analysis: QueryAnalysis) => void;
-  onCragBranch: (data: { branch: string; avg_score: number; round: number; acl_filtered?: number }) => void;
+  onCragBranch: (data: { branch: string; avg_score: number; round: number; }) => void;
   onRefine: (data: { before: string; after: string }) => void;
   onConfidence: (data: ConfidencePayload) => void;
-  onRefused: (data: { reason: RefusalReason; trace_id: string; acl_filtered?: number }) => void;
+  onRefused: (data: { reason: RefusalReason; trace_id: string; }) => void;
   onDone: (data: {
     trace_id: string;
     elapsed_ms: number;
@@ -55,14 +62,15 @@ export interface StreamHandlers {
     verdict?: string;
     confidence?: number;
     answer_source?: AnswerSource;
-    acl_filtered?: number;  // 权限过滤数
-    retrieval?: import("../types").RetrievalStats | null;
+        retrieval?: import("../types").RetrievalStats | null;
     crag?: import("../types").CragInfo | null;
     refusal_reason?: string;
     regenerated?: boolean;
     unsupported_claims_count?: number;
   }) => void;
   onError: (error: { code: number; message: string; retry_after?: number }) => void;
+  /** 收到心跳（SSE 注释行 `: ping`）。用于重置空闲看门狗之外的保活提示，可省略。 */
+  onHeartbeat?: () => void;
   // ---- F5：推荐追问（后端在 done 之前发出）----
   onFollowups?: (data: { items: string[] }) => void;
   // ---- 阶段 6：Agent 轨迹事件 ----
@@ -76,17 +84,40 @@ export interface StreamHandlers {
   onReflect?: (data: { evidence_score: number; next_action: string; reason: string }) => void;
   onIteration?: (data: { current: number; max: number }) => void;
   onFuse?: (data: { reason: string; iteration: number }) => void;
+  // ---- 人在环（HITL）：写类工具待批 / 补充线索 ----
+  // **必须登记**：白名单外的 event 会被静默丢弃 → 后端挂起了、前端什么也没显示，
+  // 用户只会看到"卡住不动"，且没有任何线索可查。
+  onAwaitingHuman?: (data: import("./hitl").AwaitingHumanPayload) => void;
 }
 
 const KNOWN_EVENTS = new Set([
   "token", "evidence", "retrieval_stats", "query_analysis",
   "crag_branch", "refine", "confidence", "refused",
   "plan", "tool_start", "tool_end", "reflect", "iteration", "fuse", "replan",
+  // HITL：图在执行写类工具前挂起时发出（前端据此渲染审批卡片）
+  "awaiting_human",
   // F5：推荐追问。**必须登记**：白名单外的 event 会被直接丢弃且不报错，
   // 表现是"后端有发、前端没显示"，且没有任何线索可查。
   "followups",
   "done", "error",
 ]);
+
+/** 流式空闲上限：后端每 15s 发一条 `: ping` 注释行，4 次都没来就判定连接已死。
+ *
+ * 没有它的时候，中间代理静默断流（TCP 还在、但没有数据）会让 `reader.read()`
+ * **永不 settle**，界面永久停留在加载态，用户既看不到错也拿不到结果（`X-21` 残余）。
+ * 60s 是"4 个心跳周期"：够容忍一次网络抖动，又不至于让用户白等几分钟。
+ */
+const SSE_IDLE_TIMEOUT_MS = 60_000;
+
+/** 断线续传的尝试次数与退避（毫秒）。
+ *
+ * 两次足够覆盖"代理闪断 / 切后台回来"；再多就是在服务端已经放弃这个 run
+ * 之后反复来敲，只增加噪声。退避 300ms → 900ms：第一次要快（用户还在等），
+ * 第二次拉开一点给网络恢复的时间。
+ */
+const RESUME_ATTEMPTS = 2;
+const RESUME_BACKOFF_MS = [300, 900];
 
 export async function askStream(
   question: string,
@@ -94,13 +125,33 @@ export async function askStream(
   handlers: StreamHandlers,
   options: { sessionId?: string | null; mode?: "auto" | "agent"; docId?: string | null } = {},
 ): Promise<void> {
+  // 内部 controller 收拢两条中断来源：调用方主动取消、空闲看门狗。
+  // 直接用外部 signal 的话，看门狗只能靠 `Promise.race` 假取消——底层连接还开着。
+  const controller = new AbortController();
+  let idleExpired = false;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+
+  /** 收到任意字节（含心跳注释行）就重置；覆盖"响应头都还没回来"的那一段 */
+  const armIdle = () => {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleExpired = true;
+      abort();
+    }, SSE_IDLE_TIMEOUT_MS);
+  };
+
   let resp: Response;
   try {
+    armIdle();
     resp = await fetch("/ask/stream", {
       method: "POST",
-      //  前端配套：SSE 走 fetch（非 EventSource），因此可以带身份头。
-      // 若当初用 EventSource 就无法设置请求头，鉴权改造会在这里卡住。
-      headers: withAuth({ "Content-Type": "application/json" }),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
         ...(options.sessionId ? { session_id: options.sessionId } : {}),
@@ -108,19 +159,32 @@ export async function askStream(
         // F4 快问：只检索该临时文档（不传 = 全知识库）
         ...(options.docId ? { doc_id: options.docId } : {}),
       }),
-      signal,
+      signal: controller.signal,
     });
   } catch (err) {
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
+    if (idleExpired) {
+      handlers.onError({
+        code: CLIENT_TIMEOUT_CODE,
+        message: `连接超时：${SSE_IDLE_TIMEOUT_MS / 1000} 秒内没有收到任何数据。` +
+          "服务可能正在过载或连接已被中断，请重试。",
+      });
+      return;
+    }
     if ((err as Error).name === "AbortError") return;
     handlers.onError({ code: 5001, message: "网络异常，请检查连接后重试" });
     return;
   }
   if (!resp.ok || !resp.body) {
+    // 不会进入读循环：先停掉看门狗，否则 60s 后它会在一个已经结束的流上触发 abort
+    if (idleTimer !== undefined) clearTimeout(idleTimer);
     if (resp.status === 429 || resp.status === 503) {
       // 限流（429）与背压（503，并发闸门满）都是"稍后来"而不是"服务挂了"：
-      // 显式告知 + Retry-After 倒计时，与 5xx 服务区分开
-      const retryAfter = Number(resp.headers.get("Retry-After") ?? "5") || 5;
-      let message = resp.status === 429 ? "请求过于频繁，请稍后重试" : "服务繁忙，请稍后重试";
+      // 显式告知 + Retry-After 倒计时，与 5xx 服务区分开。
+      // 解析逻辑与 `api-client` **同源**（`lib/retry-after.ts`，`C-06`）：
+      // 两处各写一份必然漂移（此前非流式路径就没有这个分支）。
+      const retryAfter = parseRetryAfter(resp.headers);
+      let message = backpressureMessage(resp.status);
       try {
         const body = await resp.json();
         message = body?.error?.message ?? message;
@@ -130,23 +194,35 @@ export async function askStream(
       handlers.onError({ code: 6101, message, retry_after: retryAfter });
       return;
     }
-    // 鉴权失败必须与"服务挂了"区分：前者改身份即可，后者要等运维
-    if (isAuthFailure(resp.status)) {
-      // 只有 401 触发全局登出。403 是"已登录但无权"，跳转反而掩盖真实原因。
-      // 流式问答走的是 /ask（普通用户可用），正常不会 403；但统一口径能避免
-      // 将来某个端点收紧后，流式与普通请求对同一问题给出不同的处置。
-      if (resp.status === 401) notifyUnauthorized();
-      handlers.onError({ code: resp.status, message: authErrorMessage(resp.status) });
+    if (isInProgressStatus(resp.status)) {
+      // 409「正在处理中」（`MP-03`）：同一问题已有请求在飞，不是故障。
+      const retryAfter = parseRetryAfter(resp.headers);
+      let message = inProgressMessage();
+      try {
+        const body = await resp.json();
+        message = body?.error?.message ?? message;
+      } catch {
+        /* 忽略非 JSON 响应体 */
+      }
+      handlers.onError({ code: 6102, message, retry_after: retryAfter });
       return;
     }
     handlers.onError({ code: 5001, message: "服务暂时不可用，请稍后再试" });
     return;
   }
 
-  const reader = resp.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  // 分帧交给 `sse-parse`（支持多行 `data` 拼接 / `\r\n` / 注释心跳 / `id`），
+  // 这里只负责把"字节"翻译成"事件"
+  const parser = new SseParser();
   let terminated = false;
+  /** 已收到的最后一个事件 id（`{trace_id}:{seq}`）——续传的断点就是它。 */
+  let lastEventId: string | undefined;
+  /** 服务端是否声明支持续传（`X-SSE-Resume: enabled`）。
+   *
+   * **只认这一个证据**：没有它去重连等于重发问题（新开一条流、重复计费，
+   * 且用户已经看到的前半段会被冲掉）。 */
+  const resumeEnabled = (resp.headers.get("x-sse-resume") ?? "").toLowerCase() === "enabled";
 
   const dispatch = (event: string, data: unknown) => {
     if (!KNOWN_EVENTS.has(event)) return; // 未知事件静默忽略
@@ -156,7 +232,7 @@ export async function askStream(
     else if (event === "crag_branch") handlers.onCragBranch(data as { branch: string; avg_score: number; round: number });
     else if (event === "refine") handlers.onRefine(data as { before: string; after: string });
     else if (event === "confidence") handlers.onConfidence(data as ConfidencePayload);
-    else if (event === "refused") handlers.onRefused(data as { reason: RefusalReason; trace_id: string; acl_filtered?: number });
+    else if (event === "refused") handlers.onRefused(data as { reason: RefusalReason; trace_id: string; });
     else if (event === "retrieval_stats")
       handlers.onRetrievalStats(data as Partial<RetrievalStats> & { from_cache: boolean; reranked: boolean });
     else if (event === "followups")
@@ -167,6 +243,8 @@ export async function askStream(
     else if (event === "reflect") handlers.onReflect?.(data as { evidence_score: number; next_action: string; reason: string });
     else if (event === "iteration") handlers.onIteration?.(data as { current: number; max: number });
     else if (event === "fuse") handlers.onFuse?.(data as { reason: string; iteration: number });
+    else if (event === "awaiting_human")
+      handlers.onAwaitingHuman?.(data as import("./hitl").AwaitingHumanPayload);
     else if (event === "done") {
       terminated = true;
       handlers.onDone(data as { trace_id: string; elapsed_ms: number; from_cache?: boolean; session_id?: string | null; agent?: import("../types").AgentTrace; incomplete?: boolean; fuse_reason?: string });
@@ -176,35 +254,107 @@ export async function askStream(
     }
   };
 
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf("\n\n")) >= 0) {
-        const rawEvent = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 2);
-        let event = "";
-        let data = "";
-        for (const line of rawEvent.split("\n")) {
-          if (line.startsWith("event: ")) event = line.slice(7).trim();
-          else if (line.startsWith("data: ")) data = line.slice(6);
-        }
-        if (event && data) {
-          try {
-            dispatch(event, JSON.parse(data));
-          } catch {
-            /* 单条事件解析失败不阻断后续事件 */
-          }
-        }
+  const consume = (frames: ReturnType<SseParser["feed"]>) => {
+    // 心跳是"连接还活着"的唯一证据：注释帧不产生事件，但必须重置看门狗
+    if (frames.comments > 0) handlers.onHeartbeat?.();
+    for (const frame of frames.frames) {
+      if (frame.id) lastEventId = frame.id;
+      if (!frame.data) continue;
+      try {
+        dispatch(frame.event, JSON.parse(frame.data));
+      } catch {
+        /* 单条事件解析失败不阻断后续事件 */
       }
     }
-  } catch (err) {
-    if ((err as Error).name === "AbortError") return;
+  };
+
+  /** 读完一条连接的响应体。
+   *
+   * 返回 `"done"`：正常终止（收到 done/error）或调用方主动取消——都不该重连；
+   * 返回 `"retry"`：连接中断且**没有**终止事件——这半截答案不该丢，可尝试续传。
+   */
+  const pumpResponse = async (response: Response): Promise<"done" | "retry"> => {
+    const reader = response.body!.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        armIdle(); // 收到任意字节（含 `: ping`）即视为活着
+        consume(parser.feed(decoder.decode(value, { stream: true })));
+        if (terminated) {
+          // 已经拿到终局事件：主动放掉底层连接，别让 reader 挂着
+          await reader.cancel().catch(() => undefined);
+          return "done";
+        }
+      }
+      // 收尾：最后一条事件可能缺结尾空行，宽容解析而不是丢弃
+      consume(parser.flush());
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        // 外部取消（用户点了停止）→ 安静退出；看门狗触发 → 值得重连
+        return idleExpired ? "retry" : "done";
+      }
+      return "retry";
+    }
+    return terminated ? "done" : "retry";
+  };
+
+  let outcome = await pumpResponse(resp);
+
+  // ---- 断点续传（`Last-Event-ID`）----
+  // 只在服务端声明支持时尝试，且最多 2 次：网络真断了就没有第 3 次的必要，
+  // 也避免在服务端已经放弃这个 run 之后反复来敲。
+  for (let attempt = 0; outcome === "retry" && attempt < RESUME_ATTEMPTS; attempt += 1) {
+    const traceId = lastEventId ? lastEventId.slice(0, lastEventId.lastIndexOf(":")) : "";
+    if (!resumeEnabled || !traceId || controller.signal.aborted) break;
+    await new Promise((resolve) => setTimeout(resolve, RESUME_BACKOFF_MS[attempt] ?? 900));
+    if (controller.signal.aborted) return;
+    idleExpired = false;
+    let resumed: Response;
+    try {
+      armIdle();
+      resumed = await fetch(`/ask/stream/${encodeURIComponent(traceId)}`, {
+        method: "GET",
+        headers: lastEventId ? { "Last-Event-ID": lastEventId } : {},
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (idleExpired) {
+        handlers.onError({
+          code: CLIENT_TIMEOUT_CODE,
+          message: `续传超时：${SSE_IDLE_TIMEOUT_MS / 1000} 秒内没有收到任何数据。`,
+        });
+        return;
+      }
+      if ((err as Error).name === "AbortError") return;
+      break; // 续传请求本身失败：交给下面统一报"连接中断"
+    }
+    if (!resumed.ok || !resumed.body) {
+      if (idleTimer !== undefined) clearTimeout(idleTimer);
+      // 404 = 记录已过期 / 不可续传。明确告诉用户"已收到的可能不完整"，
+      // 而不是把它当成普通网络错误（那会让人以为再点一次就能接着看）
+      handlers.onError({
+        code: 4304,
+        message: "断线后无法续传（流式记录已过期），已收到的内容可能不完整，请重新提问。",
+      });
+      return;
+    }
+    resp = resumed;
+    outcome = await pumpResponse(resumed);
   }
-  // 流结束但未到终止事件 → 界面不允许永久停留在加载态
-  if (!terminated) {
+
+  if (idleTimer !== undefined) clearTimeout(idleTimer);
+  if (outcome === "retry") {
+    // 流结束但未到终止事件 → 界面不允许永久停留在加载态
+    if (controller.signal.aborted && !idleExpired) return;
+    if (idleExpired) {
+      handlers.onError({
+        code: CLIENT_TIMEOUT_CODE,
+        message: `连接中断：${SSE_IDLE_TIMEOUT_MS / 1000} 秒内没有收到任何数据（含心跳）。` +
+          "结果可能不完整，请重试。",
+      });
+      return;
+    }
     handlers.onError({ code: 5001, message: "连接中断，请重试" });
   }
 }

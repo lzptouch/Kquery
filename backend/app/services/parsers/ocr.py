@@ -24,18 +24,19 @@
 而不是在这里塞一个开关。
 """
 import hashlib
-import logging
 import re
 import time
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote
 
+from app.services.upstream import bulkhead
 from app.core.envelope import ApiError, ErrCode
 from app.domain.schemas import MediaAsset
 from app.services.parsers.base import ParseResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 OCR_PROMPT = "请识别图片中的全部文字，按阅读顺序输出，保留段落结构，表格区域用 Markdown 表格表示。"
 
@@ -51,10 +52,18 @@ class OcrEngine(Protocol):
 class QwenVlOcr:
     """千问 qwen-vl-ocr 真实引擎（限流指数退避重试）。"""
 
-    def __init__(self, api_key: str, model: str = "qwen-vl-ocr", max_retries: int = 3):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "qwen-vl-ocr",
+        max_retries: int = 3,
+        timeout_s: float = 60.0,
+    ) -> None:
         self._api_key = api_key
         self._model = model
         self._max_retries = max_retries
+        # `LM-03`：等待许可的上限（不许无限排队——要快速失败）
+        self._timeout_s = timeout_s
 
     def recognize(self, image_path: Path) -> str:
         import dashscope
@@ -62,25 +71,28 @@ class QwenVlOcr:
         last_error: Exception | None = None
         for attempt in range(self._max_retries):
             try:
-                resp = dashscope.MultiModalConversation.call(
-                    model=self._model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {"image": f"file://{quote(str(image_path.resolve()))}"},
-                                {"text": OCR_PROMPT},
-                            ],
-                        }
-                    ],
-                    api_key=self._api_key,
-                )
+                # `LM-03`：OCR 也纳入隔离仓（此前完全不受限）
+                with bulkhead("multimodal").acquire(timeout_s=self._timeout_s):
+                    resp = dashscope.MultiModalConversation.call(
+                        model=self._model,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"image": f"file://{quote(str(image_path.resolve()))}"},
+                                    {"text": OCR_PROMPT},
+                                ],
+                            }
+                        ],
+                        api_key=self._api_key,
+                        timeout=self._timeout_s,
+                    )
                 if resp.status_code == 200:
                     return resp.output.choices[0].message.content[0]["text"]
                 last_error = RuntimeError(f"OCR API {resp.status_code}: {resp.message}")
                 if "Throttl" not in str(resp.message) and resp.status_code not in (429, 500, 503):
                     raise last_error
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - OCR 调用失败，%ds 后重试
                 last_error = exc
                 if attempt == self._max_retries - 1:
                     break
@@ -136,7 +148,7 @@ def _clean_ocr_text(text: str) -> str:
 class OcrParser:
     name = "ocr"
 
-    def __init__(self, engine: OcrEngine, assets_dir: Path):
+    def __init__(self, engine: OcrEngine, assets_dir: Path) -> None:
         self._engine = engine
         self._assets_dir = assets_dir
 

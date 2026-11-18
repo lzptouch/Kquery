@@ -24,15 +24,15 @@
 的完整形态）。本模块解决的是"线程无上限 + 不可观测 + 不优雅停机"，
 把它们收敛到统一的、**可替换**的抽象上，将来换真队列只需换一个实现。
 """
-import logging
 import queue
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_QUEUE_SIZE = 200      # 排队上限（超出即背压，避免内存无界增长）
 DEFAULT_WORKERS = 2           # 默认并发 worker 数
@@ -61,7 +61,7 @@ class BackgroundQueue:
         name: str = "bg",
         workers: int = DEFAULT_WORKERS,
         queue_size: int = DEFAULT_QUEUE_SIZE,
-    ):
+    ) -> None:
         self._name = name
         self._workers = max(0, workers)
         self._queue: queue.Queue[_Job | None] = queue.Queue(maxsize=max(1, queue_size))
@@ -158,7 +158,7 @@ class BackgroundQueue:
                 fn()
                 with self._lock:
                     self._done += 1
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 后台任务失败
                 logger.exception("后台任务失败（内联）: %s", name)
                 with self._lock:
                     self._failed += 1

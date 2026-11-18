@@ -1,0 +1,44 @@
+# canary 流量切分（`OP-03`）：**注解式** canary。
+#
+# ## 为什么选注解式（而不是服务网格的虚拟路由）
+#
+# 两种做法：
+# ① **服务网格虚拟路由**：权重精确、可与 ServiceMonitor 配合，但引入网格依赖
+#    （Istio/Linkerd 的运维成本、CRD、升级负担）；
+# ② **Ingress 注解式 canary**（本项目采用）：无额外依赖，代价是
+#    **权重粒度粗**（按 canary 副本数比例近似，不是精确百分比）。
+#
+# 代价写在这里而不是藏起来：注解式实现下「10% 流量」≈「canary 副本数 / 总副本数」，
+# 权重不精确；而**回滚**是快的（把注解摘掉即可）。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kquery-canary
+  labels:
+    app: kquery
+    track: canary
+  annotations:
+    # ---- SSE 关键配置（与 base 一致，不给 canary 开小灶）----
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    # ---- canary 切分 ----
+    # 权重：canary 副本数 / 总副本数（注解式只能这样近似，见文件头说明）
+    nginx.ingress.kubernetes.io/upstream-vhost: "kquery-backend-canary"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: kquery.local
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: kquery-backend-canary
+                port:
+                  name: http
+  tls:
+    - hosts: ["kquery.local"]
+      secretName: kquery-tls

@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kquery-backend
+  labels:
+    app: kquery
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kquery
+      component: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # 先起新的再停旧的：SSE 长连接不能被硬切
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: kquery
+        component: backend
+      annotations:
+        # 滚动更新前先摘流量：SSE 连接需要时间排空
+        pre-stop: "sleep 10"
+    spec:
+      terminationGracePeriodSeconds: 70   # ≥ SSE 排空时间（preStop 10s + 缓冲）
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: backend
+          image: kquery/backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8100
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: MODEL_PROVIDER
+              value: dashscope
+            - name: VECTOR_STORE
+              value: milvus
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kquery-secrets
+                  key: redis-url
+                  optional: true
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kquery-secrets
+                  key: metrics-token
+                  optional: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          # 探针纪律：
+          # - startup 用 /livez（冷启动宽容：模型加载/索引加载可能要几十秒）
+          # - liveness **绝不用 /healthz**（它查 9 个依赖，依赖抖动会误杀 Pod）
+          # - readiness 用 /readyz（依赖不可达时摘流）
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30   # 最多容忍 150s 启动
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: kquery-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kquery-backend
+  labels:
+    app: kquery
+    component: backend
+spec:
+  selector:
+    app: kquery
+    component: backend
+  ports:
+    - name: http
+      port: 8100
+      targetPort: http
+---
+# init Job：替代 compose 的 init 容器（建 Milvus 集合 / 首建索引目录）
+# **幂等**：已存在即成功，重复执行安全
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kquery-backend-init
+  labels:
+    app: kquery
+    component: backend
+spec:
+  schedule: "0 3 * * *"     # 每天一次（幂等）
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: init
+              image: kquery/backend:latest
+              command: ["python", "-m", "app.cli.init_index"]
+              env:
+                - name: DATA_DIR
+                  value: /data
+                - name: VECTOR_STORE
+                  value: milvus
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: kquery-data

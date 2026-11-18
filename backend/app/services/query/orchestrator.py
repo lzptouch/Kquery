@@ -8,7 +8,6 @@
 - QueryAnalysis 记录（可回放，含策略版本）；
 - 检索用查询集合（原文 + 被真正使用的改写/子问题，预算截断）。
 """
-import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -25,8 +24,9 @@ from app.services.query.schemas import (
     Rewrite,
     SubQuestion,
 )
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class QueryPreprocessor:
@@ -38,7 +38,7 @@ class QueryPreprocessor:
         router: SourceRouter,
         query_budget: int = 6,
         enabled: bool = True,
-    ):
+    ) -> None:
         self._intent = intent_classifier
         self._expanders = expanders
         self._decomposer = decomposer

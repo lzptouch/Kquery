@@ -1,0 +1,6 @@
+{"query_id": "q001", "question": "RRF 融合的 k 常数默认是多少？融合候选池多大？", "doc_id": "kquery-retrieval", "tags": ["retrieval", "numeric"]}
+{"query_id": "q002", "question": "默认切块的 chunk_size 和 overlap 是多少？", "doc_id": "kquery-retrieval", "tags": ["chunking", "numeric"]}
+{"query_id": "q003", "question": "工具连续失败多少次会被摘除？恢复需要累计几次成功？", "doc_id": "kquery-agent", "tags": ["agent", "circuit_breaker"]}
+{"query_id": "q004", "question": "Agent 的取消语义是什么？", "doc_id": "kquery-agent", "tags": ["agent", "cancel"]}
+{"query_id": "q005", "question": "Docker Compose 下各服务的端口分别是什么？", "doc_id": "kquery-overview", "tags": ["deploy"]}
+{"query_id": "q006", "question": "BM25 与向量召回到底各自取多少候选？某一路失败会怎样？", "doc_id": "kquery-retrieval", "tags": ["retrieval", "degradation"]}

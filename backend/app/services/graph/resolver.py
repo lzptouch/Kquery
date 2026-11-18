@@ -12,15 +12,15 @@
 租户纪律（对照分析文档 KQ-06）：实体、别名、向量索引全部按租户分区。
 不同租户的同名词互不消歧，也不互相成为检索种子。
 """
-import logging
 import unicodedata
 
 import numpy as np
 
 from app.services.embeddings import Embeddings
 from app.services.graph.vector_index import EntityVectorIndex
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def normalize_name(name: str) -> str:
@@ -33,7 +33,7 @@ def _k(tenant_id: str, name: str) -> str:
 
 
 class EntityResolver:
-    def __init__(self, embeddings: Embeddings, sim_threshold: float = 0.85):
+    def __init__(self, embeddings: Embeddings, sim_threshold: float = 0.85) -> None:
         self._embeddings = embeddings
         self._threshold = sim_threshold
         # {tenant\x00name} → {name, type, aliases, vector}

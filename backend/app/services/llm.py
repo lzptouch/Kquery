@@ -7,16 +7,18 @@
 配额不足（直接失败，属运维事件）。
 """
 import json
-import logging
 import re
 import time
 from dataclasses import dataclass
 from typing import Iterator, Protocol
 
+from app.core.deadline import Deadline
+from app.domain.constants import NO_INFO_ANSWER
 from app.core.envelope import ErrCode
 from app.services.upstream import CircuitOpenError, bulkhead
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 #: Mock 模式的确定性追问（F5）：供测试断言固定输出
 _MOCK_FOLLOWUPS = [
@@ -29,12 +31,37 @@ _MOCK_TITLE = "知识库问答"
 
 
 class LLMError(Exception):
-    """LLM 调用失败，携带错误码供上层映射统一信封。"""
+    """LLM 调用失败，携带错误码供上层映射统一信封。
 
-    def __init__(self, code: ErrCode, message: str):
+    ## `retryable` / `degradable` 这两个标记（`LM-01`）
+
+    之前所有失败都长一个样，上层无法判断「换个模型有没有意义」——
+    结果要么直接失败，要么退到通用知识兜底（内容降级，用户看不出区别）。
+
+    | 情况 | retryable | degradable | 说明 |
+    |---|---|---|---|
+    | 429 / 配额耗尽 | ✅ | ✅ | 换个模型可能绕开（不同模型不同配额池） |
+    | 超时 | ✅ | ✅ | 慢的模型换快的 |
+    | 5xx | ✅ | ✅ | 平台侧瞬时故障 |
+    | 401 / 403（鉴权） | ❌ | ❌ | 换个模型也是同一个 Key——**降级只会掩盖配置错误** |
+    | 400（参数错） | ❌ | ❌ | 请求本身不合法，换模型也错 |
+    | 熔断打开 | ❌ | ❌ | **整条上游通道**病了，换同平台的模型无济于事 |
+    """
+
+    def __init__(
+        self,
+        code: ErrCode,
+        message: str,
+        *,
+        retryable: bool = False,
+        degradable: bool | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.retryable = retryable
+        # `degradable` 默认跟随 `retryable`：可重试的失败才可能换个模型成功
+        self.degradable = retryable if degradable is None else degradable
 
 @dataclass
 class TokenUsage:
@@ -62,13 +89,29 @@ class TokenUsage:
 
 
 class LLM(Protocol):
-    def generate(self, prompt: str) -> str: ...
+    def generate(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> str: ...
 
-    def stream(self, prompt: str) -> Iterator[str]: ...
+    # 注：`stream()` 是**协议声明**，但当前生产链路并未真正增量输出——
+    # 线性路径全程阻塞生成，Agent 路径的流式被缓冲后按终稿切片重放
+    # （`services/pipeline.py` 的 `_final` 分支）。真流式见 `doc/plan/01` §十 `C-13`（`A-22.4`）。
+    def stream(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]: ...
 
-    # 最近一次调用的 token 用量。刻意**不改 generate/stream 签名**：
+    # 最近一次调用的 token 用量。刻意**不改 generate/stream 的返回值**：
     # 那是 6 处调用方的公共契约，改返回值会让所有适配器一起返工；改为在实例上
     # 暴露只读属性，调用方用 getattr(llm, "last_usage", None) 兜底即可。
+    #
+    # `deadline` 是**新增的可选关键字参数**：不传就是旧行为（无上限），
+    # 传了就按剩余预算裁剪超时与重试。默认参数保证 6 处老调用方零改动。
     last_usage: TokenUsage
 
 
@@ -82,7 +125,7 @@ class QwenLLM:
         temperature: float = 0.0,
         max_retries: int = 3,
         timeout_s: float = 60.0,
-    ):
+    ) -> None:
         self._api_key = api_key
         self.model = model
         self.temperature = temperature
@@ -112,17 +155,32 @@ class QwenLLM:
                 return TokenUsage(input_tokens=inp, output_tokens=out, estimated=False)
         return TokenUsage.estimate(prompt, produced)
 
-    def _call_stream(self, prompt: str) -> Iterator[str]:
+    def _call_stream(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
         from dashscope import Generation
 
         last_error: Exception | None = None
         produced: list[str] = []
         self._last_usage = TokenUsage.estimate(prompt)
         for attempt in range(self._max_retries):
+            # 本次尝试的超时：取"配置上限"与"剩余预算"的较小者。
+            # 预算耗尽时直接失败，不再发起一次注定超时的调用。
+            attempt_timeout = self._timeout_s
+            if deadline is not None:
+                remaining_s = deadline.remaining_ms / 1000
+                if remaining_s <= 0:
+                    raise LLMError(
+                        ErrCode.GENERATION_TIMEOUT, "请求已超出时间预算，未再发起模型调用"
+                    )
+                attempt_timeout = max(0.5, min(self._timeout_s, remaining_s))
             try:
                 # 批次 2：上游隔离仓。许可覆盖整段流式消费——并发控制的对象是
                 # "在飞的上游调用"，不是单次 HTTP 往返。熔断打开时快速失败不占线程。
-                with bulkhead("llm").acquire(timeout_s=self._timeout_s):
+                with bulkhead("llm").acquire(timeout_s=attempt_timeout):
                     responses = Generation.call(
                         model=self.model,
                         messages=[{"role": "user", "content": prompt}],
@@ -131,7 +189,9 @@ class QwenLLM:
                         stream=True,
                         incremental_output=True,
                         api_key=self._api_key,
-                        timeout=self._timeout_s,
+                        timeout=attempt_timeout,
+                        # `ST-04` 输出上限：**None 时不下发该参数**（与上游默认一致）
+                        **({"max_tokens": int(max_tokens)} if max_tokens else {}),
                     )
                     for resp in responses:
                         if resp.status_code != 200:
@@ -146,34 +206,76 @@ class QwenLLM:
             except LLMError:
                 raise
             except CircuitOpenError as exc:
-                # 熔断打开不重试：打开期间重试只会放大等待，降级交由上层决定
-                raise LLMError(ErrCode.DEPENDENCY_UNAVAILABLE, f"上游熔断（{exc.upstream}），请稍后重试") from exc
+                # 熔断打开不重试、**也不降级**（`LM-01`）：熔断说明**整条上游通道**病了，
+                # 换同平台的另一个模型无济于事（同一个 Key、同一个域名）。
+                raise LLMError(
+                    ErrCode.DEPENDENCY_UNAVAILABLE,
+                    f"上游熔断（{exc.upstream}），请稍后重试",
+                    retryable=False,
+                    degradable=False,
+                ) from exc
             except Exception as exc:  # noqa: BLE001 - 网络类异常走重试
                 last_error = exc
                 if attempt == self._max_retries - 1:
                     break
                 wait = 2**attempt
+                if deadline is not None and not deadline.can_wait(wait, reserve_s=1.0):
+                    # 剩余预算不够"再等一次并且那次跑得起来" → 不做注定超时的重试
+                    logger.warning(
+                        "LLM 调用失败且剩余预算不足，放弃重试（%d/%d）: %s",
+                        attempt + 1, self._max_retries, exc,
+                    )
+                    break
                 logger.warning("LLM 调用失败，%ds 后重试（%d/%d）: %s", wait, attempt + 1, self._max_retries, exc)
-                time.sleep(wait)
+                if deadline is not None:
+                    deadline.wait_s(wait)
+                else:
+                    time.sleep(wait)
         raise LLMError(ErrCode.GENERATION_FAILED, f"生成失败: {last_error}")
 
     @staticmethod
     def _raise_for(status_code: int, message: str) -> None:
+        """把供应商状态码翻译成错误码 + **可重试 / 可降级标记**（`LM-01`）。
+
+        鉴权（401/403）与参数错（400）**不可降级**：同一个 Key 换个模型也一样失败，
+        降级只会把「配置错了」伪装成「模型不行」。
+        """
         text = str(message)
         if status_code == 429 or "Throttl" in text:
-            raise LLMError(ErrCode.RATE_LIMITED, "平台限流，请稍后重试")
+            raise LLMError(ErrCode.RATE_LIMITED, "平台限流，请稍后重试", retryable=True)
         if "quota" in text.lower() or "Allocation" in text:
             # 平台侧额度耗尽与限流同源，统一按限流语义返回
-            raise LLMError(ErrCode.RATE_LIMITED, "平台额度不足，请稍后重试")
+            raise LLMError(ErrCode.RATE_LIMITED, "平台额度不足，请稍后重试", retryable=True)
         if "timeout" in text.lower():
-            raise LLMError(ErrCode.GENERATION_TIMEOUT, "生成超时，请重试")
-        raise LLMError(ErrCode.GENERATION_FAILED, f"生成失败: {message}")
+            raise LLMError(ErrCode.GENERATION_TIMEOUT, "生成超时，请重试", retryable=True)
+        if status_code in (401, 403):
+            raise LLMError(
+                ErrCode.GENERATION_FAILED, f"模型服务鉴权失败（HTTP {status_code}）", retryable=False
+            )
+        if status_code == 400:
+            raise LLMError(
+                ErrCode.GENERATION_FAILED, "模型服务拒绝了请求（HTTP 400）", retryable=False
+            )
+        retryable = status_code >= 500
+        raise LLMError(
+            ErrCode.GENERATION_FAILED, f"生成失败: {message}", retryable=retryable
+        )
 
-    def generate(self, prompt: str) -> str:
-        return "".join(self._call_stream(prompt))
+    def generate(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        return "".join(self._call_stream(prompt, deadline=deadline, max_tokens=max_tokens))
 
-    def stream(self, prompt: str) -> Iterator[str]:
-        return self._call_stream(prompt)
+    def stream(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        return self._call_stream(prompt, deadline=deadline, max_tokens=max_tokens)
 
     # ---- F5：推荐追问 / 会话标题 ----
 
@@ -184,12 +286,338 @@ class QwenLLM:
         return generate_title(self, question, answer)
 
 
+class DeepSeekLLM:
+    """DeepSeek 生成模型（OpenAI 兼容的 `/chat/completions`）。
+
+    ## 与 `QwenLLM` 的差别
+
+    只有**传输层**不同：请求体是 OpenAI 兼容格式
+    （`{"model","messages","temperature","stream"}`），
+    响应增量在 `choices[0].delta.content`。
+    **重试 / 超时 / deadline / 隔离仓 / token 用量口径完全一致**——
+    这几件事的行为如果按供应商各写一套，换供应商就会换行为。
+
+    ## DeepSeek 不提供什么
+
+    DeepSeek 官方 API **只有对话补全**：没有 embeddings 端点、没有 rerank 端点。
+    「用 DeepSeek 做向量 / 重排」在直连 DeepSeek 时不可行——
+    详见 `services/openai_compat.py` 的模块说明。
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "deepseek-chat",
+        base_url: str = "https://api.deepseek.com",
+        temperature: float = 0.0,
+        max_retries: int = 3,
+        timeout_s: float = 60.0,
+    ) -> None:
+        self._api_key = api_key
+        self.model = model
+        self._base_url = base_url.rstrip("/")
+        self.temperature = temperature
+        self._max_retries = max(1, int(max_retries))
+        self._timeout_s = timeout_s
+        self._last_usage = TokenUsage()
+        #: 上游最后给出的 `finish_reason`（`length` = 被输出上限截断）
+        self._finish_reason: str = ""
+
+    @property
+    def last_usage(self) -> TokenUsage:
+        return self._last_usage
+
+    @property
+    def last_finish_reason(self) -> str:
+        """最后一次生成的 `finish_reason`（空串 = 上游没给）。"""
+        return self._finish_reason
+
+    @property
+    def _endpoint(self) -> str:
+        return f"{self._base_url}/chat/completions"
+
+    def _extra_payload(self) -> dict:
+        """provider 私有的请求字段（基类没有；子类按需覆盖）。"""
+        return {}
+
+    def _call_stream(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        # 按需载入：兼容端点客户端只在真正调用时才需要（DashScope 路径不必付导入成本）
+        from app.services.openai_compat import OpenAICompatError, stream_lines
+
+        last_error: Exception | None = None
+        produced: list[str] = []
+        self._last_usage = TokenUsage.estimate(prompt)
+        self._finish_reason = ""
+        for attempt in range(self._max_retries):
+            attempt_timeout = self._timeout_s
+            if deadline is not None:
+                remaining_s = deadline.remaining_ms / 1000
+                if remaining_s <= 0:
+                    raise LLMError(
+                        ErrCode.GENERATION_TIMEOUT, "请求已超出时间预算，未再发起模型调用"
+                    )
+                attempt_timeout = max(0.5, min(self._timeout_s, remaining_s))
+            try:
+                with bulkhead("llm").acquire(timeout_s=attempt_timeout):
+                    payload = {
+                        "model": self.model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": self.temperature,
+                        "stream": True,
+                        # `ST-04` 输出上限（None 时不下发，保持与上游默认一致）
+                        **self._output_budget(max_tokens),
+                        # provider 私有请求字段（默认空；子类覆盖，如智谱关思考）
+                        **self._extra_payload(),
+                    }
+                    for raw in stream_lines(
+                        self._endpoint, payload, self._api_key, timeout_s=attempt_timeout
+                    ):
+                        if raw == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue  # 心跳 / 非 JSON 片段：跳过
+                        self._raise_provider_error(chunk)
+                        choices = chunk.get("choices") or []
+                        if not choices:
+                            continue
+                        delta = (choices[0] or {}).get("delta") or {}
+                        # 推理模型会把思考过程放在 `reasoning_content`（MiniMax M3 系）
+                        # 或独立 delta 类型里：**不能当正文**，否则答案里混进分析过程。
+                        if delta.get("reasoning_content"):
+                            continue
+                        piece = delta.get("content")
+                        if piece:
+                            produced.append(piece)
+                            yield piece
+                        finish = (choices[0] or {}).get("finish_reason")
+                        if finish:
+                            self._finish_reason = str(finish)
+                text = "".join(produced)
+                self._last_usage = TokenUsage.estimate(prompt, text)
+                self._assert_payload(text)
+                return
+            except LLMError:
+                # 上游把业务错误塞在 HTTP 200 里（见 `_raise_provider_error`）：
+                # 已经是归一后的错误码，重试与降级口径由抛出方决定，不能再被下面的
+                # 通用捕获当「网络抖动」重试三次。
+                raise
+            except OpenAICompatError as exc:
+                last_error = exc
+                if exc.status_code in (401, 403):
+                    # 凭据错误：重试没有意义，**也不可降级**（同一个 Key 换个模型一样失败）
+                    raise LLMError(
+                        ErrCode.GENERATION_FAILED,
+                        f"模型服务鉴权失败（HTTP {exc.status_code}）",
+                        retryable=False,
+                        degradable=False,
+                    ) from exc
+                if exc.status_code == 429:
+                    raise LLMError(ErrCode.RATE_LIMITED, "平台限流，请稍后重试", retryable=True) from exc
+                if exc.status_code == 504:
+                    raise LLMError(ErrCode.GENERATION_TIMEOUT, "生成超时，请重试", retryable=True) from exc
+                if attempt == self._max_retries - 1:
+                    break
+                wait = 2**attempt
+                logger.warning(
+                    "模型调用失败，%ds 后重试（%d/%d）: %s", wait, attempt + 1, self._max_retries, exc
+                )
+                time.sleep(wait)
+            except Exception as exc:  # noqa: BLE001 - 统一转为重试或上抛
+                last_error = exc
+                if attempt == self._max_retries - 1:
+                    break
+                wait = 2**attempt
+                logger.warning(
+                    "模型调用失败，%ds 后重试（%d/%d）: %s", wait, attempt + 1, self._max_retries, exc
+                )
+                time.sleep(wait)
+        raise LLMError(ErrCode.GENERATION_FAILED, f"生成失败: {last_error}", retryable=True)
+
+    def generate(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        return "".join(self._call_stream(prompt, deadline=deadline, max_tokens=max_tokens))
+
+    def stream(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        return self._call_stream(prompt, deadline=deadline, max_tokens=max_tokens)
+
+    # ---- F5：推荐追问 / 会话标题 ----
+
+    def generate_followups(self, answer: str, n: int = 3) -> list[str]:
+        return generate_followups(self, answer, n)
+
+    def generate_title(self, question: str, answer: str) -> str:
+        return generate_title(self, question, answer)
+
+    def _output_budget(self, max_tokens: int | None) -> dict:
+        """把 `ST-04` 的输出上限翻译成该 provider 的请求字段。
+
+        默认就是 `max_tokens`；推理模型需要额外余量时子类覆盖
+        （思考 token 同样计入上限，见 `MiniMaxLLM._output_budget`）。
+        """
+        if not max_tokens:
+            return {}
+        return {"max_tokens": int(max_tokens)}
+
+    def _assert_payload(self, text: str) -> None:
+        """生成结果的**内容判据**（默认接受空串）。
+
+        子类在「空结果其实代表失败」时覆盖它——比让空答案一路走到
+        引用校验、再变成一条「模型没话说」的日志要好排查得多。
+        """
+        return None
+
+    def _raise_provider_error(self, chunk: dict) -> None:
+        """上游把业务错误塞在**HTTP 200 的响应体**里时的检查点（默认无操作）。
+
+        OpenAI 兼容协议靠 HTTP 状态码表意，但不是所有平台都照做。
+        子类在这里把业务错误翻译成 `LLMError`；**不检查的后果是把错误当成功**——
+        空 delta 被当成「模型没话说」，用户得到一个既没内容也没报错的答案。
+        """
+        return None
+
+
+class MiniMaxLLM(DeepSeekLLM):
+    """MiniMax 生成模型（OpenAI 兼容的 `/chat/completions`；M3 系列**原生多模态**）。
+
+    传输层与 `DeepSeekLLM` 完全相同，所以直接继承——两套实现会让
+    「重试 / 超时 / deadline / 隔离仓 / usage」按供应商漂移。
+
+    ## 唯一的协议差异：错误表意位置
+
+    MiniMax 用 **HTTP 200 + `base_resp.status_code`** 表意业务错误
+    （`0` 才是成功）。因此必须覆盖 `_raise_provider_error`，把它翻译成与其他
+    provider 一致的 `LLMError`——错误码、可重试、可降级这三件套是上层的熔断与
+    降级依据，不能按供应商各说各话。
+
+    ## 多模态
+
+    M3 系列接受 OpenAI 风格的 `image_url` content part，`image_url` 用 `data:` URL
+    （base64）传图，`services/multimodal.py` 的直答器负责拼装，本类只做**纯文本**补全。
+
+    ## 推理模型：思考 token 也算进输出上限
+
+    `MiniMax-M3.1-Flash` **恒开思考**（官方文档：只能用 `reasoning_effort` 调深度，
+    不能像 `MiniMax-M3` 那样传 `thinking: {"type": "disabled"}` 关掉），而思考 token
+    **计入 `max_tokens` 且按输出价计费**。`ST-04` 的输出上限设得小时，模型会把预算
+    全烧在思考上、`finish_reason=length`、正文为空——看起来像「模型没话说」。
+    因此在 `_output_budget` 里给上限加推理余量，`_assert_payload` 把空正文判成失败。
+    """
+
+    #: 业务错误码 → (错误码, 可重试, 可降级)。
+    #: 只收录**已确认**的码；没收录的非零码一律按「确定性业务拒绝」处理，
+    #: 不做重试（业务错误重试三次只是把同一个拒绝问三遍）。
+    _BUSINESS_ERRORS: dict[int, tuple[str, bool, bool]] = {
+        1001: (ErrCode.GENERATION_TIMEOUT, True, True),    # 请求超时
+        1002: (ErrCode.RATE_LIMITED, True, True),          # 触发限流
+        1004: (ErrCode.GENERATION_FAILED, False, False),   # 未授权 / Token 不匹配
+        1008: (ErrCode.GENERATION_FAILED, False, False),   # 余额不足
+    }
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "MiniMax-M3.1-Flash",
+        base_url: str = "https://api.minimax.chat/v1",
+        temperature: float = 0.0,
+        max_retries: int = 3,
+        timeout_s: float = 60.0,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            max_retries=max_retries,
+            timeout_s=timeout_s,
+        )
+
+    #: 推理余量：正文预算之外额外给 1024 token 的思考空间。
+    #: 依据是「思考 token 计入上限」（见类说明）——不改上限等于让小上限的问答
+    #: 随机变成空答案，而**空答案的报错位置离真正原因很远**（引用校验那一步）。
+    _REASONING_HEADROOM = 1024
+
+    def _output_budget(self, max_tokens: int | None) -> dict:
+        """给输出上限加上推理余量（M3.1-Flash 关不掉思考）。
+
+        用 `max_tokens` 而不是 `max_completion_tokens`：两者语义相同
+        （都含思考），同时下发反而可能被上游判为参数冲突。
+        """
+        if not max_tokens:
+            return {}
+        return {"max_tokens": int(max_tokens) + self._REASONING_HEADROOM}
+
+    def _assert_payload(self, text: str) -> None:
+        """空正文 = 失败（不是「模型没话说」）。
+
+        `MiniMax-M3.1-Flash` 恒开思考：`max_tokens` 被思考烧完时正文为空、
+        `finish_reason=length`。把这种情况报成 `GENERATION_FAILED`（不重试——
+        同样预算重试三次只会烧三次思考 token），并给出可执行的修法。
+        """
+        if text.strip():
+            if self._finish_reason == "length":
+                logger.warning(
+                    "MiniMax 输出被截断（finish_reason=length，len=%d）：思考 token 占用上限，"
+                    "答案可能不完整", len(text),
+                )
+            return
+        if self._finish_reason == "length":
+            raise LLMError(
+                ErrCode.GENERATION_FAILED,
+                "MiniMax 未返回正文：思考过程耗尽了 max_tokens（finish_reason=length）",
+                retryable=False,
+                degradable=True,
+            )
+        raise LLMError(
+            ErrCode.GENERATION_FAILED,
+            "MiniMax 返回空正文（finish_reason=%s）" % (self._finish_reason or "未知"),
+            retryable=False,
+            degradable=True,
+        )
+
+    def _raise_provider_error(self, chunk: dict) -> None:
+        base = chunk.get("base_resp") or {}
+        try:
+            code = int(base.get("status_code") or 0)
+        except (TypeError, ValueError):
+            return
+        if code == 0:
+            return
+        msg = str(base.get("status_msg") or "").strip()
+        err_code, retryable, degradable = self._BUSINESS_ERRORS.get(
+            code, (ErrCode.GENERATION_FAILED, False, False)
+        )
+        raise LLMError(
+            err_code,
+            f"MiniMax 返回业务错误 {code}: {msg or '（无描述）'}",
+            retryable=retryable,
+            degradable=degradable,
+        )
+
+
 class MockLLM:
-    """确定性假模型：从 prompt 中解析证据编号，生成带引用的可预期答案。"""
+    """确定性假模型：从 prompt 中解析证据编号，生成带引性的可预期答案。"""
 
-    _NO_INFO = "知识库无相关内容"
+    # 与 pipeline 的拒答检测口径**同一个常量**（此前各写一份字面量，
+    # 一旦漂移，mock 的拒答就检测不出来）
+    _NO_INFO = NO_INFO_ANSWER
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Mock 模式也要有 usage，否则配额结算路径在测试里走不通
         self._last_usage = TokenUsage()
 
@@ -210,6 +638,7 @@ class MockLLM:
 
     def _question_keywords(self, question: str) -> set[str]:
         """问句关键词：长度 ≥2 的词/二元组与英文数字词，去掉虚词。"""
+        # 破环：embeddings 依赖 llm 的分词器接口
         from app.services.embeddings import _tokenize
 
         tokens = _tokenize(question)
@@ -264,6 +693,7 @@ class MockLLM:
         return json.dumps(items, ensure_ascii=False)
 
     def _answer(self, prompt: str) -> str:
+        # 破环：embeddings 依赖 llm 的分词器接口
         from app.services.embeddings import _tokenize
 
         # F5：追问 / 标题类提示词的确定性应答
@@ -348,7 +778,14 @@ class MockLLM:
         answer_lines.append("引用片段编号：" + "、".join(f"[#{n}]" for n in cited_nums))
         return "\n".join(answer_lines)
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> str:
+        # `max_tokens` **存在但忽略**（`ST-04` 兼容纪律）：
+        # mock 不生成真实 token，截断会破坏既有断言。
         text = self._answer(prompt)
         self._last_usage = TokenUsage.estimate(prompt, text)
         return text
@@ -361,7 +798,13 @@ class MockLLM:
     def generate_title(self, question: str, answer: str) -> str:
         return _MOCK_TITLE
 
-    def stream(self, prompt: str) -> Iterator[str]:
+    def stream(
+        self,
+        prompt: str,
+        deadline: "Deadline | None" = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        # 同上：`max_tokens` 存在但忽略
         text = self._answer(prompt)
         self._last_usage = TokenUsage.estimate(prompt, text)
         # 按小片段吐出，模拟流式
@@ -374,7 +817,68 @@ class MockLLM:
         return self._last_usage
 
 
-def build_llm(provider: str, api_key: str, model: str, temperature: float, max_retries: int, timeout_s: float) -> LLM:
+class ZhipuLLM(DeepSeekLLM):
+    """智谱开放平台（`open.bigmodel.cn`）生成模型。
+
+    ## 为什么继承 `DeepSeekLLM`
+
+    智谱的 `/api/paas/v4/chat/completions` 与 DeepSeek 的请求/响应形状完全相同，
+    所以只覆盖**请求体增量**，重试 / 超时 / deadline / 隔离仓 / usage 口径全部继承——
+    这几件事一按供应商分叉，换模型就变成换行为。
+
+    ## 唯一差异：glm-4.5 系默认开思考
+
+    实测 2026-11-14：`glm-4.6` / `glm-4.5` / `glm-4.5-air` / `glm-4.5-flash`
+    在 `max_tokens=120` 时思考 token 把预算吃光，`finish_reason=length`、正文为空。
+    RAG 场景会拿到**空答案但不报错**，属于最难排查的失败模式，
+    所以默认下发 `thinking: {"type": "disabled"}`；需要推理链时才显式打开
+    （`KQUERY_ZHIPU_THINKING_ENABLED=1`）。
+
+    `glm-4-*` 老档位（`glm-4-air` / `glm-4-flash`）本来就不思考，
+    下发该字段也兼容（实测 200），因此不必按模型名分叉。
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "glm-4.6",
+        base_url: str = "https://open.bigmodel.cn/api/paas/v4",
+        temperature: float = 0.0,
+        max_retries: int = 3,
+        timeout_s: float = 60.0,
+        thinking_enabled: bool = False,
+    ) -> None:
+        super().__init__(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            max_retries=max_retries,
+            timeout_s=timeout_s,
+        )
+        self._thinking_enabled = bool(thinking_enabled)
+
+    def _extra_payload(self) -> dict:
+        return {"thinking": {"type": "enabled" if self._thinking_enabled else "disabled"}}
+
+
+def build_llm(
+    provider: str,
+    api_key: str,
+    model: str,
+    temperature: float,
+    max_retries: int,
+    timeout_s: float,
+    base_url: str = "",
+    thinking_enabled: bool = False,
+) -> LLM:
+    """按 provider 构造生成模型。
+
+    `provider` 取值：`dashscope`（千问）/ `deepseek` / `minimax` /
+    `zhipu`（后三者均为 OpenAI 兼容形状）/ `mock`（确定性假模型）。
+    **行为口径（重试 / 超时 / 隔离仓 / usage）全部一致**——
+    按供应商各写一套会让「换模型」变成「换行为」。
+    """
     if provider == "dashscope":
         return QwenLLM(
             api_key=api_key,
@@ -383,7 +887,35 @@ def build_llm(provider: str, api_key: str, model: str, temperature: float, max_r
             max_retries=max_retries,
             timeout_s=timeout_s,
         )
-    logger.info("使用 MockLLM（未配置千问 Key 或显式指定 mock）")
+    if provider == "deepseek":
+        return DeepSeekLLM(
+            api_key=api_key,
+            model=model or "deepseek-chat",
+            base_url=base_url or "https://api.deepseek.com",
+            temperature=temperature,
+            max_retries=max_retries,
+            timeout_s=timeout_s,
+        )
+    if provider == "minimax":
+        return MiniMaxLLM(
+            api_key=api_key,
+            model=model or "MiniMax-M3.1-Flash",
+            base_url=base_url or "https://api.minimax.chat/v1",
+            temperature=temperature,
+            max_retries=max_retries,
+            timeout_s=timeout_s,
+        )
+    if provider == "zhipu":
+        return ZhipuLLM(
+            api_key=api_key,
+            model=model or "glm-4.6",
+            base_url=base_url or "https://open.bigmodel.cn/api/paas/v4",
+            temperature=temperature,
+            max_retries=max_retries,
+            timeout_s=timeout_s,
+            thinking_enabled=thinking_enabled,
+        )
+    logger.info("使用 MockLLM（未配置 Key 或显式指定 mock）")
     return MockLLM()
 
 
@@ -458,7 +990,7 @@ def generate_title(llm, question: str, answer: str) -> str:
         return ""
     try:
         raw = llm.generate(TITLE_PROMPT.format(answer=content))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - 生成会话标题失败
         logger.warning("生成会话标题失败（已忽略）: %s", exc)
         return ""
     title = raw.strip().splitlines()[0].strip() if raw.strip() else ""

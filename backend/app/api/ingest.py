@@ -6,7 +6,6 @@
 - POST /knowledge/tasks/{id}/cancel：取消（仅排队/解析/切块可取消，索引中不可取消）。
 """
 import json
-import logging
 import uuid
 
 from fastapi import APIRouter, Depends, Request
@@ -14,16 +13,16 @@ from pydantic import BaseModel
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from app.api.upload_util import sanitize_filename, stream_to_disk
-from app.api.kb import resolve_kb_for_write
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import enforce_rate_limit, require_role
-from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
+from app.dependencies import enforce_rate_limit, reject_background_when_busy
+from app.core.tracing import elapsed_ms_since, get_trace_id, now_ms, set_trace_id
 from app.services.chunkers.factory import validate_chunk_policy
 from app.services.parsers.router import SUPPORTED_EXTENSIONS, validate_parse_policy
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-router = APIRouter(prefix="/knowledge", tags=["ingest"], dependencies=[Depends(require_role("admin"))])
+router = APIRouter(prefix="/knowledge", tags=["ingest"])
 
 MAX_BATCH_FILES = 20
 
@@ -40,9 +39,17 @@ def _parse_policy_field(raw: str | None, name: str) -> dict:
         raise ApiError(ErrCode.INVALID_INPUT, f"{name} 必须是 JSON 对象") from None
 
 
-@router.post("/ingest", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
+@router.post(
+    "/ingest",
+    response_model=Envelope,
+    dependencies=[Depends(enforce_rate_limit), Depends(reject_background_when_busy)],
+)
 async def ingest(request: Request) -> Envelope:
-    trace_id = new_trace_id()
+    """提交一个入库任务（异步执行）。
+
+    两阶段提交：先建档（任务落盘），文件保存完成后才入队执行。
+    队列满 → 503 + `Retry-After`（背压，不是故障）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
 
@@ -53,8 +60,6 @@ async def ingest(request: Request) -> Envelope:
     # （`{"pdf_tables": "yes"}` → 真值 → 表格识别照开），用户以为关了其实没关。
     if error := validate_parse_policy(parse_policy):
         raise ApiError(ErrCode.INVALID_INPUT, error)
-    kb_id_raw = form.get("kb_id")
-    kb_id = str(kb_id_raw).strip() if kb_id_raw else "default"
     if error := validate_chunk_policy(chunk_policy):
         raise ApiError(ErrCode.CHUNK_POLICY_INVALID, error)
 
@@ -69,7 +74,6 @@ async def ingest(request: Request) -> Envelope:
     manager = request.app.state.task_manager
     principal = getattr(request.state, "principal", None)
     tenant_id = principal.tenant_id if principal else settings.default_tenant_id
-    kb_id = resolve_kb_for_write(request, kb_id, tenant_id)
 
     # 上传前校验（兜底，前端已拦截）：文件名收敛（KQ-01）、同批重名拒绝、
     # 扩展名、大小（边写边计数，KQ-05）+ PII 硬拦截
@@ -99,8 +103,7 @@ async def ingest(request: Request) -> Envelope:
         raise
 
     # 两阶段提交：先建任务 → 文件移入任务目录 → 入队执行
-    task = manager.create_task(files_meta, parse_policy, chunk_policy, tenant_id=tenant_id,
-                               kb_id=kb_id)
+    task = manager.create_task(files_meta, parse_policy, chunk_policy, tenant_id=tenant_id)
     task_dir = manager.task_dir(task.task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     for meta in files_meta:
@@ -133,7 +136,10 @@ def _assert_task_tenant(request: Request, task_id: str) -> None:
 
 @router.get("/tasks/{task_id}", response_model=Envelope)
 def get_task(task_id: str, request: Request) -> Envelope:
-    trace_id = new_trace_id()
+    """入库任务状态：每个文件的阶段与进度、失败原因。
+
+    任务不存在 → 404（`TASK_NOT_FOUND`）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     _assert_task_tenant(request, task_id)
@@ -145,9 +151,10 @@ class RetryRequest(BaseModel):
     file_id: str | None = None
 
 
-@router.post("/tasks/{task_id}/retry", response_model=Envelope)
+@router.post("/tasks/{task_id}/retry", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def retry_task(task_id: str, req: RetryRequest, request: Request) -> Envelope:
-    trace_id = new_trace_id()
+    """重试入库任务里失败的文件（解析失败可单文件重试；切块/索引失败复用解析产物）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     _assert_task_tenant(request, task_id)
@@ -155,9 +162,10 @@ def retry_task(task_id: str, req: RetryRequest, request: Request) -> Envelope:
     return ok_envelope(result, trace_id, elapsed_ms_since(started))
 
 
-@router.post("/tasks/{task_id}/cancel", response_model=Envelope)
+@router.post("/tasks/{task_id}/cancel", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def cancel_task(task_id: str, request: Request) -> Envelope:
-    trace_id = new_trace_id()
+    """取消入库任务（置取消标志，worker 在文件边界检查并停下）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     _assert_task_tenant(request, task_id)

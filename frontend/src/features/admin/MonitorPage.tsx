@@ -231,6 +231,18 @@ export function MonitorPage() {
               <MetricCard title="Agent 执行次数" value={String(agent.runs)} ariaLabel={`执行 ${agent.runs} 次`}>
                 <span className="trace-id">时间范围内累计</span>
               </MetricCard>
+              {/* `MP-01`：工具失败率——工具可用性的**先行指标**：
+                  工具大面积失败时答案质量还没掉，但已经不该继续用这条链路了。 */}
+              <MetricCard
+                title="工具失败率"
+                value={pct(agent.tool_failure_rate ?? 0)}
+                alert={(agent.tool_failure_rate ?? 0) > 0.1}
+                ariaLabel={`工具失败率 ${pct(agent.tool_failure_rate ?? 0)}`}
+              >
+                <span className="trace-id">
+                  {agent.tool_failures ?? 0} 失败 / {agent.tool_calls_total ?? 0} 次调用
+                </span>
+              </MetricCard>
             </div>
             <div style={{ marginTop: 12 }}>
               <div className="trace-id" style={{ marginBottom: 6 }}>工具调用分布</div>

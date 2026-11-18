@@ -28,15 +28,17 @@ SQLite 解决前三条（事务原子性、增量写、按需查询），代价�
 这是相比 JSON 版最实质的改进。
 """
 import json
-import logging
 import sqlite3
 from collections import deque
 import threading
+import time
 from pathlib import Path
 
+from app.core.errors import StorageCorruptedError
 from app.domain.schemas import Community, EntityNode, RelationEdge
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 MAX_BFS_EDGES = 50
 
@@ -59,12 +61,60 @@ CREATE TABLE IF NOT EXISTS relations (
 CREATE INDEX IF NOT EXISTS idx_rel_source ON relations (tenant_id, source);
 CREATE INDEX IF NOT EXISTS idx_rel_target ON relations (tenant_id, target);
 CREATE TABLE IF NOT EXISTS communities (
-    community_id TEXT PRIMARY KEY,
+    -- 主键必须**带租户**（KQ-06）：此前是 community_id 单列主键，
+    -- 两个租户算出的同名社区会互相覆盖 —— A 租户的社区摘要被 B 租户顶掉，
+    -- 读出来还是"别人的内容"。这是数据隔离漏洞，不是性能问题。
     tenant_id    TEXT NOT NULL,
-    payload      TEXT NOT NULL
+    community_id TEXT NOT NULL,
+    payload      TEXT NOT NULL,
+    PRIMARY KEY (tenant_id, community_id)
 );
 CREATE INDEX IF NOT EXISTS idx_comm_tenant ON communities (tenant_id);
 """
+
+
+class _TimedLock:
+    """带计时的锁（`C-08`）：测「等了多久」与「持有了多久」。
+
+    为什么自己包一层而不是直接用 `threading.Lock`：
+    判据是「锁等待 P95 > 锁持有 P95 的 1/3 → 图写入成为瓶颈」，
+    这需要**两个**量，而 `threading.Lock` 都不提供。
+
+    计时用 `time.monotonic()`（单调钟）：系统时间被调整时不会算出负数耗时。
+    回调失败不影响业务（指标失败不该让图写入失败）。
+    """
+
+    def __init__(self, store_type: str, on_timing=None) -> None:
+        self._lock = threading.Lock()
+        self._store_type = store_type
+        self._on_timing = on_timing
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        started = time.perf_counter()
+        acquired = self._lock.acquire(blocking, timeout)
+        waited = time.perf_counter() - started
+        if acquired:
+            self._acquired_at = time.perf_counter()
+            self._waited = waited
+        return acquired
+
+    def release(self) -> None:
+        held = time.perf_counter() - getattr(self, "_acquired_at", time.perf_counter())
+        waited = getattr(self, "_waited", 0.0)
+        self._lock.release()
+        if self._on_timing is not None:
+            try:
+                self._on_timing(self._store_type, waited, held)
+            except Exception:  # noqa: BLE001 - 指标失败不该影响图写入
+                pass
+
+    def __enter__(self):
+        self.acquire()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.release()
+        return False
 
 
 class SqliteGraphStore:
@@ -74,18 +124,33 @@ class SqliteGraphStore:
     对图谱这种"写少读多、单机量级"的场景足够；真要高并发写应换服务端图库。
     """
 
-    def __init__(self, path: Path | str, k1: float = 0.0):
+    def __init__(self, path: Path | str, k1: float = 0.0, on_lock_timing=None) -> None:
+        # 锁等待 / 持有计时回调（`C-08`）：`on_lock_timing(wait_s, hold_s)`。
+        # 用回调而不是直接依赖 metrics：存储层不该知道 Prometheus 是什么。
+        self._on_lock_timing = on_lock_timing
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        with self._lock:
-            # WAL：读不阻塞写（图查询频繁、入库偶发，这个取舍很值）
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.executescript(_SCHEMA)
-            self._conn.commit()
+        self._lock = _TimedLock("sqlite", on_lock_timing)
+        try:
+            self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+            self._migrate_communities()
+            self._conn.row_factory = sqlite3.Row
+            with self._lock:
+                # WAL：读不阻塞写（图查询频繁、入库偶发，这个取舍很值）
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.executescript(_SCHEMA)
+                self._conn.commit()
+        except sqlite3.DatabaseError as exc:
+            # 真相源损坏 → 拒绝启动（`A-11`）。
+            # 此前是裸 `DatabaseError` 冒泡：虽能 fail-fast，但没有错误码、没有修复指引，
+            # 值班只能自己猜「是不是文件坏了、能不能删」。
+            logger.exception("SQLite 图存储损坏，拒绝启动: %s", self._path)
+            raise StorageCorruptedError(
+                "SQLite 图存储文件损坏或不可读",
+                remedy="从备份恢复该数据库文件，或删除该文件后重建图谱（POST /graph/build）",
+                path=self._path,
+            ) from exc
 
     # ---- 写入 ----
 
@@ -318,12 +383,51 @@ class SqliteGraphStore:
                 rows = self._conn.execute("SELECT payload FROM relations").fetchall()
         return [RelationEdge(**json.loads(r["payload"])) for r in rows]
 
+    def _migrate_communities(self) -> None:
+        """老库迁移：communities 主键从 (community_id) 改成 (tenant_id, community_id)。
+
+        `CREATE TABLE IF NOT EXISTS` **不会**改已有表的主键，所以必须显式迁移：
+        建新表 → 拷贝（按 tenant_id 归并同名社区）→ 换名 → 删旧表。
+        """
+        try:
+            rows = self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='communities'"
+            ).fetchall()
+            if not rows:
+                return
+            cols = self._conn.execute("PRAGMA table_info(communities)").fetchall()
+            pk = [c[1] for c in cols if c[5]]  # 主键列
+            if "tenant_id" in pk:
+                return  # 已是复合主键
+            logger.info("迁移 communities 表：主键补上 tenant_id")
+            self._conn.executescript(
+                """
+                BEGIN;
+                CREATE TABLE communities_v2 (
+                    tenant_id    TEXT NOT NULL,
+                    community_id TEXT NOT NULL,
+                    payload      TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, community_id)
+                );
+                INSERT OR REPLACE INTO communities_v2 (tenant_id, community_id, payload)
+                    SELECT COALESCE(tenant_id, 'default'), community_id, payload FROM communities;
+                DROP TABLE communities;
+                ALTER TABLE communities_v2 RENAME TO communities;
+                CREATE INDEX IF NOT EXISTS idx_comm_tenant ON communities (tenant_id);
+                COMMIT;
+                """
+            )
+        except Exception as exc:  # noqa: BLE001 - 迁移失败不该让服务起不来
+            logger.warning("communities 表迁移失败（沿用旧表）: %s", exc)
+
     def set_community(self, community: Community) -> None:
         with self._lock:
             self._conn.execute(
-                "INSERT INTO communities (community_id, tenant_id, payload) VALUES (?,?,?) "
-                "ON CONFLICT(community_id) DO UPDATE SET payload=excluded.payload",
-                (community.community_id, community.tenant_id or "default",
+                "INSERT INTO communities (tenant_id, community_id, payload) VALUES (?,?,?) "
+                "ON CONFLICT(tenant_id, community_id) DO UPDATE SET payload=excluded.payload",
+                # 列顺序是 (tenant_id, community_id, payload) —— 参数顺序必须对齐，
+                # 否则 tenant_id 与 community_id 互换，跨租户隔离直接失效。
+                (community.tenant_id or "default", community.community_id,
                  community.model_dump_json()),
             )
             self._commit()
@@ -372,11 +476,11 @@ class SqliteGraphStore:
         with self._lock:
             try:
                 self._conn.close()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 图存储关闭失败
                 logger.debug("图存储关闭失败（忽略）: %s", exc)
 
 
-def build_graph_store(settings, data_dir: Path):
+def build_graph_store(settings, data_dir: Path, on_lock_timing=None):
     """按配置构造图存储。
 
     - `graph_store_backend=sqlite`（默认）：SQLite 增量持久化
@@ -385,14 +489,15 @@ def build_graph_store(settings, data_dir: Path):
     **自动迁移**：选 sqlite 但只存在旧 JSON 文件时，先把 JSON 导入 SQLite，
     再把 JSON 改名备份——避免升级后"图谱看起来被清空了"。
     """
+    # 破环：store 与 sqlite_store 互相提供实现
     from app.services.graph.store import InMemoryGraphStore
 
     backend = str(getattr(settings, "graph_store_backend", "sqlite") or "sqlite").lower()
     json_path = Path(getattr(settings, "graph_path", "") or (data_dir / "graph" / "graph.json"))
     if backend != "sqlite":
-        return InMemoryGraphStore(json_path)
+        return InMemoryGraphStore(json_path, on_lock_timing=on_lock_timing)
     db_path = json_path.with_suffix(".db")
-    store = SqliteGraphStore(db_path)
+    store = SqliteGraphStore(db_path, on_lock_timing=on_lock_timing)
     if json_path.exists():
         _migrate_json_to_sqlite(json_path, store)
     return store

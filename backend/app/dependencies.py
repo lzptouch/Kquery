@@ -1,23 +1,33 @@
 """共享依赖：路由通过 Depends 获取 lifespan 装配在 app.state 上的服务。
 
 依赖统一从这里出口，路由不直接触碰 app.state。
-认证（get_principal）与突发限流（令牌桶）在此统一叠加——
-这正是当初"依赖统一出口"设计预留的挂载点。
-"""
-import logging
+突发限流（令牌桶）在此统一叠加——这正是当初"依赖统一出口"设计预留的挂载点。
 
-from fastapi import Depends, Request
+## 认证已下线（2026-11-12）
+
+`get_principal` 不再解析任何凭证：注册 / 登录 / 口令 / JWT / 静态凭证 / 用户目录
+整套认证能力已删除（详见 `backend/app/core/identity.py` 的模块说明）。本依赖保留
+下来，是因为身份是**数据隔离维度**（文档归属 / 会话归属 / 缓存键 / 限流分桶 /
+图谱与记忆分区），不是权限功能。
+
+随认证一起下线的能力：
+
+- `require_role`（角色门禁）——管理面端点不再校验角色；
+- `acl_filter_of`（文档级 ACL + 知识库授权兜底闭包）——检索链路不再做文档级可见性判定。
+"""
+
+from fastapi import Request
 
 from app.core.config import Settings
 from app.core.envelope import ApiError, ErrCode
-from app.services.agent.runner import AgentRunner
+from app.core.identity import Principal
 from app.services.agent.sessions import SessionStore
 from app.services.knowledge import KnowledgeService
 from app.services.pipeline import RagPipeline
 from app.services.ratelimit import resolve_bucket_limits
-from app.services.security.auth import Principal
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -32,141 +42,43 @@ def get_knowledge_service(request: Request) -> KnowledgeService:
     return request.app.state.knowledge
 
 
-def get_kb_service(request: Request):
-    """知识库服务。返回 None 表示未装配（kb_enabled=false 或启动早期）。"""
-    return getattr(request.app.state, "kb_service", None)
-
-
-def get_agent_runner(request: Request) -> AgentRunner:
-    return request.app.state.agent_runner
-
-
 def get_session_store(request: Request) -> SessionStore:
     return request.app.state.session_store
 
 
-def acl_filter_of(request: Request, principal: Principal):
-    """构造 ACL + KB 过滤函数（缺文档一律拒绝——默认拒绝原则）。
-
-     收口：原先此逻辑只在 `api/ask.py` 内私有。现提取为共享依赖，
-    所有需要按文档收口权限的检索路径共用同一实现与同一默认拒绝语义。
-
-    **KB 判定必须在本闭包内（检索链路的兜底路径）**，而非只加在下推
-    provider 上——provider 降级（清单过大 / 枚举异常）时后过滤是唯一闸门，
-    而默认语义下文档 ACL 对多数文档恒放行，KB 不在闭包里就会越权。
-    """
-    settings: Settings = request.app.state.settings
-    if not settings.acl_enabled:
-        return None
-    acl = request.app.state.acl_service
-    knowledge = request.app.state.knowledge
-    # KB 闸门：合并进同一闭包。kb_enabled=false 时整段跳过（行为逐位退回现状）。
-    kb = get_kb_service(request) if getattr(settings, "kb_enabled", True) else None
-    # 请求级记忆化（批次 2 / KQ-12）：同一请求内同一文档只查一次——
-    # 候选过滤、被拒候选、证据装配三处都会对同一 doc 判定，未缓存时是 3 次查询
-    memo: dict[str, bool] = {}
-
-    def check(doc_id: str) -> bool:
-        if doc_id.startswith("__"):  # 系统内置块（社区摘要/图像/计算器）租户内可见
-            return True
-        if doc_id.startswith("quick_"):  # F4 快问临时文档：不在知识库里，归属另行校验
-            return True
-        if doc_id in memo:  # 同一请求内同一文档只查一次（批次 2 / KQ-12）
-            return memo[doc_id]
-        try:
-            doc = knowledge.get(doc_id)
-        except Exception:  # noqa: BLE001
-            memo[doc_id] = False  # 无主文档不可见
-            return False
-        ok = acl.check(principal, doc)
-        # KB 判定在后：ACL 先拒的文档不再查 KB（短路，与判定树顺序一致）
-        if ok and kb is not None:
-            ok = kb.check_doc(principal, doc)
-        memo[doc_id] = ok
-        return memo[doc_id]
-
-    return check
-
-
 def get_principal(request: Request) -> Principal:
-    """认证：Bearer Token（启用时）或头部透传（默认兼容模式）。
+    """请求身份（固定值）。
 
-    认证失败抛 1101（前端跳登录并清空本地缓存）。
-
-    认证通过后再与用户目录对一次账：令牌里烧的是签发时的角色与启用状态，
-    若不复核，管理员把某人降权或停用后，对方手上的旧令牌仍能用到过期——
-    令牌越长（默认 15 分钟、运维常调更长），这个窗口越难看。要取消授权时，
-    唯一可靠的做法是不依赖"等令牌过期"。
+    认证已下线：不再读 `Authorization` 头、不再查用户目录、不再复核角色。
+    保留该依赖是为了让 35 个端点的签名与数据隔离口径保持不变——
+    端点里 `principal.tenant_id` / `principal.user_id` 仍在用，
+    但它们的取值恒定。
     """
-    auth = request.app.state.auth_provider
-    authorization = request.headers.get("authorization", "")
-    token = authorization[7:] if authorization.lower().startswith("bearer ") else None
-    principal = auth.authenticate(token, dict(request.headers))
-    _reconcile_with_directory(request, principal)
-    # 限流依赖按认证租户分桶，必须在配额判定之前就把主体挂到 request 上
+    principal = Principal()
+    # 限流依赖按租户分桶，必须在配额判定之前就把主体挂到 request 上
     request.state.principal = principal
     return principal
-
-
-def _reconcile_with_directory(request: Request, principal: Principal) -> None:
-    """以用户目录为准复核启用状态与角色；目录不可用时静默放行。
-
-    只在**令牌认证**下生效：头部透传档（开发/测试）没有"签发"概念，
-    请求方自报的身份本就来自测试用例，此时再去目录里找同名账号会误伤——
-    例如用 `X-User-Id: someone-not-in-directory` 构造越权用例时会变成 401，
-    把"403 还是 200"的断言搅乱。
-    """
-    if request.headers.get("authorization", "").lower().startswith("bearer "):
-        directory = getattr(request.app.state, "user_directory", None)
-        if directory is None or not hasattr(directory, "get"):
-            return
-        record = directory.get(principal.user_id)
-        if record is None:
-            # 令牌有效但账号已从目录中消失：视为不可用，避免"删号"不等于"禁用"
-            raise ApiError(ErrCode.UNAUTHORIZED, "账号不存在或已停用", http_status=401)
-        if not record.get("enabled", True):
-            raise ApiError(ErrCode.UNAUTHORIZED, "账号已停用", http_status=401)
-        principal.roles = list(record.get("roles") or [])
-        principal.groups = list(record.get("groups") or [])
-
-
-def require_role(role: str):
-    """角色门禁：认证主体必须含指定角色，否则 403（统一提示"无权限或不存在"防探测）。
-
-    用于管理面端点（/admin/*、/security/*）。认证本身由内部的 get_principal 完成，
-    因此路由只挂 require_role 即可，无需再单独挂 get_principal。
-    """
-
-    def _dep(principal: Principal = Depends(get_principal)) -> Principal:
-        if role not in principal.roles:
-            raise ApiError(ErrCode.FORBIDDEN, "无权限或不存在", http_status=403)
-        return principal
-
-    return _dep
 
 
 def enforce_rate_limit(request: Request) -> None:
     """突发限流：租户令牌桶。超额 429 + Retry-After。
 
-    租户取**认证结果**而非请求头——按请求头分桶意味着任何人改一个 header
-    就能换一个桶，限流形同虚设。认证关闭时才回落到 header（开发兼容）。
+    租户取固定身份（认证已下线，租户恒为 `default`）。
+    单租户下分桶维度不再区分来源——但**限流本身保留**：它防的是"打爆上游模型
+    配额"，与是否有认证无关。
 
     说明：应用侧配额（分钟/每日/token 三维）与平台侧额度监控已下线，
-    这里只保留令牌桶的突发保护；登录限流是独立实现，不走本依赖。
+    这里只保留令牌桶的突发保护。
     """
     settings: Settings = request.app.state.settings
     limiter = request.app.state.limiter
     config = request.app.state.config_store.get_active()
 
-    # 租户：以认证主体为准；未开启认证时回落到 header / 默认租户。
-    # 注意路由级 dependencies 先于端点形参依赖求值，拿不到 request.state.principal，
-    # 因此这里主动解析一次（认证失败会在这里就抛出，端点不会再被调用）。
     principal = get_principal(request)
-    request.state.principal = principal
-    tenant = principal.tenant_id or request.headers.get("X-Tenant-Id", settings.default_tenant_id)
+    tenant = principal.tenant_id or settings.default_tenant_id
     request.state.tenant_id = tenant
 
-    # 令牌桶（突发控制；**按真实租户**分桶）
+    # 令牌桶（突发控制；**按租户**分桶）
     rate, capacity = resolve_bucket_limits(config, settings)
     allowed, retry_after = limiter.allow(tenant, rate, capacity)
     if not allowed:
@@ -176,3 +88,43 @@ def enforce_rate_limit(request: Request) -> None:
             http_status=429,
             retry_after=retry_after,
         )
+
+
+def reject_background_when_busy(request: Request) -> None:
+    """低优先级端点的负载闸门（`C-11`）。
+
+    ## 流量优先级
+
+    | 优先级 | 端点 | 系统繁忙时的行为 |
+    |---|---|---|
+    | 高（交互） | `/ask`、`/ask/stream` | **继续接纳** |
+    | 低（后台） | `/knowledge/ingest`、`/graph/build`、`/knowledge/rebuild` | **拒绝并返回 503 + `Retry-After`** |
+
+    ## 为什么要有
+
+    「后台工作把交互服务打挂」是最常见的容量事故：一次批量导入就能塞满
+    共享的排队位，于是 `/ask` 全部 503——**用户以为服务坏了，其实只是有人在导数据**。
+    有了优先级，后台任务在系统繁忙时让路，而不是拖着交互流量一起死。
+
+    拒绝时给的是**明确的文案**（不是笼统的「服务繁忙」），运维从响应里就能
+    判断这是背压而不是故障。
+    """
+    settings: Settings = request.app.state.settings
+    ratio = float(getattr(settings, "background_reject_queue_ratio", 0.8))
+    executor = getattr(request.app.state, "pipeline_executor", None)
+    if executor is None:
+        return
+    stats = executor.stats()
+    limit = max(1, int(stats.get("queue_size", 0) * ratio))
+    waiting = int(stats.get("waiting", 0))
+    if waiting < limit:
+        return
+    logger.warning(
+        "后台任务被拒：排队深度 %d ≥ 阈值 %d（低优先级让路）", waiting, limit,
+    )
+    raise ApiError(
+        ErrCode.RATE_LIMITED,
+        "系统繁忙：后台任务队列已接近上限，请稍后重试",
+        http_status=503,
+        retry_after=5,
+    )

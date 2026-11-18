@@ -7,13 +7,13 @@
 - 兜底：拆解为空或全部未知 → 至少包含 vector（不能无源可查）；
 - 拆解失败 → 降级为单跳（48xx 语义，不阻塞主链路）。
 """
-import logging
 
 from app.services.llm import LLM
 from app.services.query.jsonutil import JsonParseError, parse_json
 from app.services.query.schemas import SubQuestion
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DECOMPOSE_PROMPT = """把下面的复合问题拆解为 2~4 个可独立检索的简单子问题。
 每个子问题标注期望数据源：vector（文档知识库）/ sql（数值统计）/ web（时效信息）/ graph（实体关系）。
@@ -32,7 +32,7 @@ ACTIVE_SOURCES = {"vector"}
 class Decomposer:
     name = "decomposer"
 
-    def __init__(self, llm: LLM, max_sub_questions: int = 4):
+    def __init__(self, llm: LLM, max_sub_questions: int = 4) -> None:
         self._llm = llm
         self._max = max_sub_questions
 

@@ -3,17 +3,17 @@
 - POST /feedback/refusal：提交拒答反馈（类型 + 备注 + 追踪号），返回可追踪工单号；
 - GET /feedback/{ticket_id}：查询处理状态。
 """
-import logging
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import get_principal
-from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
+from app.dependencies import enforce_rate_limit, get_principal
+from app.core.tracing import elapsed_ms_since, get_trace_id, now_ms, set_trace_id
 from app.services.validation.feedback import FEEDBACK_TYPES
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/feedback", tags=["feedback"], dependencies=[Depends(get_principal)])
 
@@ -25,13 +25,27 @@ class RefusalFeedbackRequest(BaseModel):
     trace_id: str = Field(min_length=1)  # 必填：复现拒答的唯一桥梁
 
 
-@router.post("/refusal", response_model=Envelope)
-def submit_refusal_feedback(req: RefusalFeedbackRequest, request: Request) -> Envelope:
-    trace_id = new_trace_id()
+@router.post("/refusal", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
+def submit_refusal_feedback(
+    req: RefusalFeedbackRequest,
+    request: Request,
+) -> Envelope:
+    """提交一条拒答反馈（用户点了「答得不对」）。
+
+    反馈进 `data/feedback.json`（进程内追加写），供后续改进采样。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
+    principal = request.state.principal  # 中间件已为每个请求写入固定身份
     store = request.app.state.feedback_store
-    ticket = store.create(req.feedback_type, req.refusal_reason, req.user_note, req.trace_id)
+    ticket = store.create(
+        req.feedback_type,
+        req.refusal_reason,
+        req.user_note,
+        req.trace_id,
+        tenant_id=principal.tenant_id,
+        user_id=principal.user_id,
+    )
     logger.info("拒答反馈已受理: %s（关联 trace=%s）", ticket.ticket_id, req.trace_id)
     return ok_envelope(
         {"ticket_id": ticket.ticket_id, "status": ticket.status},
@@ -41,12 +55,17 @@ def submit_refusal_feedback(req: RefusalFeedbackRequest, request: Request) -> En
 
 
 @router.get("/{ticket_id}", response_model=Envelope)
-def get_feedback(ticket_id: str, request: Request) -> Envelope:
-    trace_id = new_trace_id()
+def get_feedback(
+    ticket_id: str,
+    request: Request,
+) -> Envelope:
+    """查看某个拒答反馈工单（归属不符与不存在同返回 404）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
+    principal = request.state.principal  # 中间件已为每个请求写入固定身份
     store = request.app.state.feedback_store
-    ticket = store.get(ticket_id)
+    ticket = store.get(ticket_id, principal.tenant_id, principal.user_id)
     if ticket is None:
-        raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, f"工单不存在: {ticket_id}", http_status=404)
+        raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, "工单不存在", http_status=404)
     return ok_envelope(ticket.model_dump(), trace_id, elapsed_ms_since(started))

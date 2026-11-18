@@ -1,0 +1,20 @@
+{"query_id": "q01", "question": "BM25 打分用的是哪个公式？IDF 为什么取 ln(1+…)？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q02", "question": "为什么 BM25 要「先过滤再排序」，而不是排完再跳过不合格的块？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q03", "question": "零分文档为什么不进入 RRF 排名？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q04", "question": "Milvus 的全量查询为什么要分页拉取？不分页会怎样？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q05", "question": "FAISS 侧的「迭代扩取」解决什么问题？什么时候会告警？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q06", "question": "RRF 融合为什么只用排名、不用分数？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q07", "question": "索引版本过滤为什么放在融合前，而不是让各后端各自过滤？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q08", "question": "重排用的是哪个模型？是本地部署还是托管服务？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q09", "question": "令牌桶的回填为什么不允许多于容量？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q10", "question": "有界执行器解决了哪三个问题？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q11", "question": "single-flight 的等待上限是多久？超时后怎么办？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q12", "question": "上游隔离仓的熔断参数是什么？半开要连续成功几次？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q13", "question": "按 Little's Law 算，目标 4 QPS、平均耗时 8 秒需要多少在飞请求？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q14", "question": "检索召回池为什么不能复用问答执行器？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q15", "question": "多副本部署下哪些状态仍然不共享？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q16", "question": "Prometheus 指标的 label 为什么用 path 而不是 tenant？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q17", "question": "指标里会不会存用户的查询原文？隐私是怎么处理的？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q18", "question": "成本账本里 priced 与 estimated 两个标记分别表示什么？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q19", "question": "探针分几级？/livez 为什么不查依赖？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q20", "question": "core/ 层允许依赖什么？单向依赖带来什么实际好处？", "doc_id": "02-系统架构与运行时", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}

@@ -1,7 +1,7 @@
 """知识库服务：上传 → 解析（Router）→ 切块（策略工厂）→ Embedding → 索引。
 
  重构：
-- 解析走 ParserRouter（md / pdf 文字+表格 / OCR / 音频）；
+- 解析走 ParserRouter（md / pdf 文字+表格 / OCR / 表格 / 演示文稿 / 纯文本）；
 - 切块走策略工厂（recursive / semantic / parent_child / raptor）；
 - 表格单独成块（modality=table），不被切块器拦腰切断；
 - 父块 / 表格 / 媒体资源入 DocStore，与向量库分开存放；
@@ -12,7 +12,6 @@
 """
 import hashlib
 import json
-import logging
 import re
 import threading
 import uuid
@@ -21,6 +20,7 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.core.envelope import ApiError, ErrCode
+from app.core.errors import StorageCorruptedError
 from app.domain.schemas import (
     DOC_STATUS_FAILED,
     DOC_STATUS_INDEXED,
@@ -37,8 +37,9 @@ from app.services.parsers.base import ParseResult
 from app.services.parsers.router import SUPPORTED_EXTENSIONS, ParserRouter
 from app.services.retrieval.bm25 import BM25Retriever
 from app.services.vectorstore import chunk_version, is_current_version, with_version
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TABLE_SOURCE_MARK = "·表格"
 
@@ -58,7 +59,7 @@ class KnowledgeService:
         bm25: BM25Retriever | None,
         docstore: DocStore,
         parser_router: ParserRouter,
-    ):
+    ) -> None:
         self._settings = settings
         self._post_index = None  # 入库后置钩子（），由 main.py 装配
         self._embeddings = embeddings
@@ -78,7 +79,8 @@ class KnowledgeService:
     def _read_version(self) -> int:
         try:
             return int(self._version_file.read_text().strip())
-        except Exception:
+        except Exception:  # noqa: BLE001 - 元数据版本读取失败：按 0 处理
+            logger.debug("元数据版本读取失败：按 0 处理")
             return 0
 
     def _bump_version(self) -> None:
@@ -113,17 +115,14 @@ class KnowledgeService:
             raw = json.loads(path.read_text(encoding="utf-8"))
             self._docs = {d["doc_id"]: DocumentRecord.model_validate(d) for d in raw}
         except Exception as exc:
-            raise RuntimeError(f"文档元数据文件损坏，拒绝启动: {exc}") from exc
-        # KB 迁移：存量文档无 knowledge_base_id 字段，加载时回填默认 KB。
-        # 默认 KB 由 KBService 首次启动创建（is_public=True），两者以 "default" 为锚。
-        migrated = False
-        for doc in self._docs.values():
-            if not doc.knowledge_base_id:
-                doc.knowledge_base_id = "default"
-                migrated = True
-        if migrated:
-            self._save_metadata()
-
+            # 真相源损坏 → 拒绝启动。与图存储用**同一个错误码**（`A-11`）：
+            # 两处都是「存储文件坏了」，运维看到的必须是同一类信号。
+            logger.exception("文档元数据文件损坏，拒绝启动: %s", path)
+            raise StorageCorruptedError(
+                "文档元数据文件损坏或格式非法",
+                remedy="从备份恢复该元数据文件，或删除该文件后重新上传文档重建元数据",
+                path=path,
+            ) from exc
     def _save_metadata(self) -> None:
         path = self._settings.metadata_file
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,28 +151,13 @@ class KnowledgeService:
             raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, f"文档不存在: {doc_id}", http_status=404)
         return doc
 
-    def move_to_kb(self, doc_id: str, knowledge_base_id: str) -> DocumentRecord:
-        """文档移库：只改归属字段，ACL 挂 doc_id 天然跟随（不重授权、不动索引）。
-
-        KB 存在性与租户匹配的校验在调用方（api/kb.py）完成。
-        """
-        with self._lock:
-            record = self.get(doc_id)
-            record.knowledge_base_id = knowledge_base_id or "default"
-            self._save_metadata()
-            return record
-
-    def count_by_kb(self, kb_id: str) -> int:
-        """该 KB 下的文档数（删除 KB 的非空保护用）。"""
-        with self._lock:
-            return sum(1 for d in self._docs.values() if (d.knowledge_base_id or "default") == kb_id)
-
     def filename_of(self, doc_id: str) -> str:
         doc = self._docs.get(doc_id)
         return doc.filename if doc else doc_id
 
     def outline_of(self, doc_id: str) -> list[dict]:
         """预览页左侧大纲：优先取入库时持久化的大纲；老数据 Markdown 现场重算兜底。"""
+        # 按需载入：仅在特定路径用到
         from app.services.parsers.base import extract_md_outline
 
         record = self.get(doc_id)
@@ -238,7 +222,6 @@ class KnowledgeService:
         source_path: Path | None = None,
         tenant_id: str | None = None,
         relocate: bool = False,
-        knowledge_base_id: str = "default",
     ) -> DocumentRecord:
         """创建文档记录（简单路径与任务路径共用）。
 
@@ -276,7 +259,6 @@ class KnowledgeService:
             status=DOC_STATUS_PARSING,
             size=len(content) if content is not None else Path(source_path).stat().st_size,
             uploaded_at=datetime.now(timezone.utc).isoformat(),
-            knowledge_base_id=knowledge_base_id or "default",
         )
         self._docs[doc_id] = record
         self._save_metadata()
@@ -319,11 +301,23 @@ class KnowledgeService:
         text_segments = [s for s in parsed.segments if TABLE_SOURCE_MARK not in s[0]]
         table_segments = [s for s in parsed.segments if TABLE_SOURCE_MARK in s[0]]
 
+        # `MP-05` 的准备：切块参数来自**生效策略**——
+        # `chunk_policy` 预设（若配置了）覆盖 `chunk_size` / `chunk_overlap`，
+        # 于是「改默认切块策略」= 改一行配置。
+        #
+        # **没配置预设时必须沿用调用方传入的 policy**：调用方可能显式要
+        # raptor / parent_child（`apply_chunking(record, parsed, chunk_policy)`），
+        # 无条件用「默认 recursive」会把那些策略悄悄顶掉。
+        _preset = str(getattr(settings, "chunk_policy", "") or "").strip()
+        _resolved = settings.resolved_chunk_policy
+        _policy = _resolved["policy"] if _preset else policy
+        _size = int(_resolved["chunk_size"]) if _preset else int(settings.chunk_size)
+        _overlap = int(_resolved["overlap"]) if _preset else int(settings.chunk_overlap)
         result = apply_chunk_policy(
-            record.doc_id, text_segments, record.tenant_id, policy,
+            record.doc_id, text_segments, record.tenant_id, _policy,
             self._embeddings, self._llm,
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=_size,
+            chunk_overlap=_overlap,
             min_chars=settings.min_chunk_chars,
         )
         chunks = list(result.chunks)
@@ -345,6 +339,11 @@ class KnowledgeService:
             )
         if not chunks:
             raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, "切块结果为 0 块，请检查文件是否加密或损坏")
+        # `KQ-27` 第二层：入库侧给「疑似指令注入」的块打标。
+        # **打标不删内容**：检索侧据此降权，而不是排除（排除会让攻击者靠触发拦截隐藏内容）。
+        _mark_injection_risk(chunks)
+        # M4 图文绑定：把图像资产绑到同页/同章节的文本块
+        _bind_related_assets(chunks, parsed)
         object.__setattr__(record, "_pending_chunks", chunks)
         object.__setattr__(record, "_pending_parents", result.parents)
         object.__setattr__(record, "_pending_chunker", result.chunker)
@@ -520,7 +519,6 @@ class KnowledgeService:
         chunk_policy: dict | None = None,
         parse_policy: dict | None = None,
         tenant_id: str | None = None,
-        knowledge_base_id: str = "default",
     ) -> DocumentRecord:
         """流式上传路径：文件已在磁盘上（边写边校验过大小），直接建档入库。"""
         ext = Path(filename).suffix.lower()
@@ -528,7 +526,6 @@ class KnowledgeService:
             raise ApiError(ErrCode.UNSUPPORTED_FILE, f"仅支持 {sorted(SUPPORTED_EXTENSIONS)} 文件")
         record = self.create_record(
             filename, source_path=source_path, tenant_id=tenant_id, relocate=True,
-            knowledge_base_id=knowledge_base_id,
         )
         return self._index_record(record, chunk_policy, parse_policy)
 
@@ -571,7 +568,7 @@ class KnowledgeService:
             stats = self._post_index(record, parsed)
             if stats:
                 logger.info("图谱/图像索引联动完成 %s: %s", record.doc_id, stats)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 图谱/图像索引联动失败
             logger.warning("图谱/图像索引联动失败（不影响入库）: %s", exc)
 
     # ---- 高级操作 ----
@@ -600,7 +597,9 @@ class KnowledgeService:
         现在的做法：
         1. 旧块的 chunk_id 加 `@v{旧版本}` 后缀落到"历史版本"区，**不删除**；
         2. 新版本块的 chunk_id 带 `@v{新版本}`，与旧版本天然不冲突；
-        3. 检索侧按 `is_short`/doc_id 过滤，历史块不参与召回，只服务溯源；
+        3. 检索侧按**版本**过滤（`is_current_version`），历史块不参与召回，只服务溯源
+           （此前这里写的是「按 `is_short`/doc_id 过滤」——那是两个不相干的维度，
+           实际生效的是版本判定，`A-22.5`）；
         4. 保留最近 `index_version_keep` 个版本，更早的才真删。
         """
         record = self.get(doc_id)
@@ -645,6 +644,12 @@ class KnowledgeService:
         removed = 0
         if hasattr(self._store, "delete_doc_versions"):
             removed = self._store.delete_doc_versions(doc_id, keep_versions=keep)
+        # BM25 必须与向量库同步：只改向量库的话，关键词路还留着**无版本号**的旧块，
+        # 既和新版块 id 空间重叠，又在预览时查不到（死链）；旧版本块也永不释放，
+        # 内存随 reparse 次数线性增长（X-14）
+        if self._bm25 is not None:
+            self._bm25.rename_doc_version(doc_id, old_version)
+            removed += self._bm25.delete_doc_versions(doc_id, keep_versions=keep)
         self._bump_version()
         logger.info(
             "文档 %s 索引版本 → v%d（历史块改名 %d 条保留供溯源，超保留份数删除 %d 条）",
@@ -665,16 +670,15 @@ class KnowledgeService:
     # ---- 删除编排（对照分析文档 KQ-08：派生副本必须随主数据一并收敛）----
 
     def set_deletion_deps(
-        self, acl=None, graph_store=None, image_index=None, task_manager=None
+        self, graph_store=None, image_index=None, task_manager=None
     ) -> None:
         """装配期注入删除编排的协作者（main.py 在各组件就绪后回填）。"""
-        self._del_acl = acl
         self._del_graph_store = graph_store
         self._del_image_index = image_index
         self._del_task_manager = task_manager
 
     def delete(self, doc_id: str) -> DocumentRecord:
-        """删除文档：索引、派生副本（图谱/图像/资产/ACL/任务文件）与源文件一并删除。
+        """删除文档：索引、派生副本（图谱/图像/资产/任务文件）与源文件一并删除。
 
         派生副本按 best-effort 逐项清理：单项失败不中断整体删除，
         失败的项写进 warning 日志（运维可据此做残留巡检）。
@@ -683,47 +687,54 @@ class KnowledgeService:
         # 先取清理所需的引用（purge 之后就拿不到了）
         try:
             chunk_ids = set(self._store.doc_chunk_ids(doc_id))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - 图谱清理失败：残留写进 residuals，调用方可见
             chunk_ids = set()
         try:
             assets = list(self._docstore.assets_of_doc(doc_id))
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - 资产清理失败：残留写进 residuals，调用方可见
             assets = []
         with self._lock:
             self._purge_chunks(doc_id)
         self._docs.pop(doc_id, None)
 
         residuals: list[str] = []
-        acl = getattr(self, "_del_acl", None)
-        if acl is not None:
-            try:
-                acl.remove(doc_id)
-            except Exception as exc:  # noqa: BLE001
-                residuals.append(f"acl: {exc}")
         graph_store = getattr(self, "_del_graph_store", None)
         if graph_store is not None and chunk_ids:
             try:
                 graph_store.delete_doc_chunks(chunk_ids)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 图谱清理失败：残留写进 residuals，调用方可见
                 residuals.append(f"graph: {exc}")
         image_index = getattr(self, "_del_image_index", None)
         if image_index is not None:
+            # M2：先取图像条目占用的 chunk_id（remove_doc 之后条目就没了）
+            try:
+                image_chunk_ids = image_index.chunk_ids_of(doc_id)
+            except Exception:  # noqa: BLE001 - 图像块清理失败：残留写进 residuals，调用方可见
+                image_chunk_ids = set()
             try:
                 image_index.remove_doc(doc_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 图像清理失败：残留写进 residuals，调用方可见
                 residuals.append(f"images: {exc}")
+            # M2：按 chunk_id 把**图像描述块**也从统一向量库里删掉。
+            # 不删的后果：用户已删除的文档，其图像描述仍可能被通用向量检索召回
+            # （图像描述住在共享 doc_id `__images__` 下，delete_doc 碰不到）。
+            if image_chunk_ids:
+                try:
+                    self._store.delete_chunks(image_chunk_ids)
+                except Exception as exc:  # noqa: BLE001 - 图像块清理失败：残留写进 residuals，调用方可见
+                    residuals.append(f"image_chunks: {exc}")
         for asset in assets:
             try:
                 path = Path(getattr(asset, "path", "") or "")
                 if path.exists():
                     path.unlink()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 资产清理失败：残留写进 residuals，调用方可见
                 residuals.append(f"asset: {exc}")
         task_manager = getattr(self, "_del_task_manager", None)
         if task_manager is not None:
             try:
                 task_manager.remove_files_for_doc(doc_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 任务清理失败：残留写进 residuals，调用方可见
                 residuals.append(f"tasks: {exc}")
 
         source = Path(record.source_path)
@@ -733,3 +744,55 @@ class KnowledgeService:
         if residuals:
             logger.warning("文档 %s 已删除，但存在未清理残留: %s", doc_id, residuals)
         return record
+
+
+def _mark_injection_risk(chunks: list[Chunk]) -> int:
+    """给命中「高风险指令模式」的块打标（`KQ-27`），返回打标条数。
+
+    **为什么在入库时打标而不是检索时检测**：检索时才知道命中的块，
+    但那时已经进了上下文；入库时打标才能让**索引里就带着标记**，
+    检索侧一眼就能降权。旧索引没有这个字段 → 读出来是 False = 正常（回退安全）。
+    """
+    # 按需载入：注入检测只在入库路径用到（检索路径不经过这里）
+    from app.services.injection_guard import detect_injection
+
+    marked = 0
+    for chunk in chunks:
+        hits = detect_injection(chunk.content)
+        if hits:
+            chunk.injection_risk = True
+            chunk.injection_hits = hits
+            marked += 1
+    if marked:
+        logger.warning(
+            "入库打标：%d/%d 个块命中疑似指令注入（已标记，检索时降权）", marked, len(chunks)
+        )
+    return marked
+
+
+def _bind_related_assets(chunks: list, parsed) -> int:
+    """把图像资产绑到邻近文本块（M4 图文绑定），返回绑定数。
+
+    规则（与解析器产出的 `asset_bindings` 一一对应）：
+    - 提示是页码（"第N页"）→ 绑到 source 含该页号的块；
+    - 提示是章节标题（DOCX）→ 绑到 source 等于该标题的块；
+    - 提示为空 → 绑到该文档的**全部**块（兜底：宁可多绑，也不要丢图）。
+
+    绑定的意义：答案引用一段文字时，前端能同时回显**该处的原图**，
+    而不是只给一段 caption 文字。
+    """
+    bindings = list(getattr(parsed, "asset_bindings", None) or [])
+    if not bindings:
+        return 0
+    bound = 0
+    for asset_id, hint in bindings:
+        hint = str(hint or "")
+        targets = [
+            c for c in chunks
+            if (hint and hint in (c.source or "")) or (not hint)
+        ]
+        for chunk in targets:
+            if asset_id not in chunk.related_assets:
+                chunk.related_assets.append(asset_id)
+                bound += 1
+    return bound

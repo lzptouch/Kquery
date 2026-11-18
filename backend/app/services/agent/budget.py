@@ -40,10 +40,6 @@ class AgentBudget:
     # ---- 判定来源，耗尽时写回供前端解释 ----
     exhausted_reason: str = ""
 
-    def reset_clock(self) -> None:
-        """重置计时（用于从 checkpoint 恢复后续跑，见  的 resume 路径）。"""
-        self.started_at = time.monotonic()
-
     # ---- 查询 ----
 
     @property
@@ -65,14 +61,35 @@ class AgentBudget:
             return "cost"
         return ""
 
+    def max_output_tokens(self, reserve: int = 0, fallback: int = 0) -> int:
+        """本次调用允许的**最大输出 token**（`ST-04`）。
+
+        计算：剩余额度 − 已用（已结算）− 预留（答案生成必须留够）。
+
+        - 返回 **0** = 不限（没有 token 预算，或剩余额度为负 → 调用方不该发起调用）；
+        - `fallback`：无预算上下文时的兜底上限（配置项，默认开启）；
+        - `reserve`：生成前还要留给后续步骤的 token。
+
+        **为什么必须有上限**：预算在**生成阶段**就可能被打穿——
+        `settle_tokens` 记的是**事后**估算，事后才知道超了，钱已经花了。
+        """
+        remaining = self.remaining_tokens()
+        if remaining < 0:
+            # 没有 token 预算 → 用配置兜底值
+            return max(0, int(fallback))
+        allowance = remaining - max(0, int(reserve))
+        if allowance <= 0:
+            return 0
+        if fallback:
+            allowance = min(allowance, int(fallback))
+        return allowance
+
     def can_afford(self, tokens: int = 0, cost_yuan: float = 0.0) -> bool:
         """能否承担**下一次**调用的下界开销。
 
         只看剩余额度是否够这一次——不够就应当拒绝，避免"调用完才发现超限"。
         """
-        if not self.exhausted():
-            pass
-        else:
+        if self.exhausted():
             return False
         if self.token_limit and self.tokens_used + tokens > self.token_limit:
             return False

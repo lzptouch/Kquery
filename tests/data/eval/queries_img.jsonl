@@ -1,0 +1,16 @@
+{"query_id": "i01", "question": "照片里那位宇航员身后有什么东西？"}
+{"query_id": "i02", "question": "猫是什么花纹、什么颜色的眼睛？"}
+{"query_id": "i03", "question": "咖啡杯旁边放着什么？咖啡是什么颜色？"}
+{"query_id": "i04", "question": "这张火箭照片是什么时段拍的？画面里有什么灯？"}
+{"query_id": "i05", "question": "这张深空照片里能看到什么天体？"}
+{"query_id": "i06", "question": "月面照片里最大的陨石坑在什么位置？"}
+{"query_id": "i07", "question": "黑白照片里那个人在用什么器材拍摄？"}
+{"query_id": "i08", "question": "眼底照片里血管是从哪里发出的？"}
+{"query_id": "i09", "question": "手写文字照片里写的是什么类型的内容？"}
+{"query_id": "i10", "question": "显微照片里的那个圆形物体是什么形状？"}
+{"query_id": "i11", "question": "砖墙照片里的砖是怎么排列的？"}
+{"query_id": "i12", "question": "草地照片里除了草叶还有什么植物？"}
+{"query_id": "t01", "question": "Pillow 是什么项目？它和 PIL 是什么关系？"}
+{"query_id": "t02", "question": "scikit-image 用什么命令安装？"}
+{"query_id": "t03", "question": "Pillow 的项目主页副标题写的是什么？"}
+{"query_id": "t04", "question": "scikit-image 官方文档网址是什么？"}

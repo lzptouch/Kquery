@@ -3,40 +3,25 @@
  * 路由只做页面组装与布局，不写展示细节；
  * 页面组件从各 feature 的公开出口导入，features 之间禁止互相 import。
  *
- * 除对话页（首屏必经）外全部 `React.lazy`：14 个页面里有 13 个是低频管理页，
- * 全静态 import 会把它们一起打进首屏 bundle，直接违反  的
- * LCP ≤2.0s / TTI ≤3.0s 预算。
+ * 除对话页（首屏必经）外全部 `React.lazy`：页面里绝大多数是低频管理页，
+ * 全静态 import 会把它们一起打进首屏 bundle，直接违反 LCP ≤2.0s / TTI ≤3.0s 预算。
  *
- * ## 为什么是嵌套路由而不是逐页包守卫
+ * ## 认证与授权已下线（2026-11-12）
  *
- * 管理区有 13 条路由。逐条写 `<RequireAdmin><XxxPage/></RequireAdmin>` 既冗长，
- * 又容易在新增页面时漏包一个——漏包的后果是该页面对普通用户可见
- * （后端仍会 403，但界面已经给出了错误的预期）。用一个无路径的布局路由统一收口，
- * 新增管理页只需放进 `RequireAdmin` 那一层，守卫在结构上无法被遗漏。
+ * 原先这里有两层守卫：`RequireAuth`（未登录跳 /login）与 `RequireAdmin`
+ * （非管理员渲染无权页），登录/注册页各自挂在无布局的分支上。现在后端不再校验
+ * 凭证与角色，两层守卫与登录/注册路由一并删除——**所有页面直接可达**。
  *
- * ## 布局为什么也要拆出去
- *
- * 登录/注册页不能有侧边栏。若保留原先"layout 硬编码包在 `<Routes>` 外"的结构，
- * 就无法让个别路由逃出布局——故布局移入 `features/auth/AppLayout`，经 `<Outlet/>` 承载内容。
+ * 访问边界改由部署层承担（反向代理 / 内网 / 网关），应用不再自建身份体系。
  */
 import { lazy } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { ChatPage } from "../features/chat";
-import {
-  AppLayout,
-  LoginPage,
-  NotFoundPage,
-  RedirectIfAuthenticated,
-  RegisterPage,
-  RequireAdmin,
-  RequireAuth,
-} from "../features/auth";
+import { NotFoundPage } from "../features/common";
+import { AppLayout } from "../features/shell";
 
 const MonitorPage = lazy(() => import("../features/admin").then((m) => ({ default: m.MonitorPage })));
 const RetrievalConfigPage = lazy(() => import("../features/admin").then((m) => ({ default: m.RetrievalConfigPage })));
-const UsersPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.UsersPage })));
-const AclPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.AclPage })));
-const KbPage = lazy(() => import("../features/admin/security").then((m) => ({ default: m.KbPage })));
 const KnowledgePage = lazy(() => import("../features/knowledge").then((m) => ({ default: m.KnowledgePage })));
 const PreviewPage = lazy(() => import("../features/knowledge").then((m) => ({ default: m.PreviewPage })));
 const QueryAnalysisPage = lazy(() => import("../features/knowledge").then((m) => ({ default: m.QueryAnalysisPage })));
@@ -49,33 +34,24 @@ export function AppRoutes() {
   const location = useLocation();
   return (
     <Routes location={location}>
-      {/* 免布局、免守卫：登录/注册页不该出现侧边栏，已登录时也不该再看到登录框 */}
-      <Route path="/login" element={<RedirectIfAuthenticated><LoginPage /></RedirectIfAuthenticated>} />
-      <Route path="/register" element={<RedirectIfAuthenticated><RegisterPage /></RedirectIfAuthenticated>} />
+      <Route element={<AppLayout />}>
+        {/* 对话：首屏 */}
+        <Route path="/" element={<ChatPage />} />
 
-      <Route element={<RequireAuth />}>
-        <Route element={<AppLayout />}>
-          {/* 对话：所有登录用户唯一可用的页面 */}
-          <Route path="/" element={<ChatPage />} />
+        {/* 知识库 */}
+        <Route path="/knowledge" element={<KnowledgePage />} />
+        <Route path="/knowledge/upload-advanced" element={<UploadWizardPage />} />
+        <Route path="/knowledge/tasks/:taskId" element={<TaskProgressPage />} />
+        <Route path="/knowledge/preview/:docId" element={<PreviewPage />} />
+        <Route path="/knowledge/query-analysis" element={<QueryAnalysisPage />} />
 
-          {/* 管理区：与后端 require_role("admin") 逐个 router 对应 */}
-          <Route element={<RequireAdmin />}>
-            <Route path="/knowledge" element={<KnowledgePage />} />
-            <Route path="/knowledge/upload-advanced" element={<UploadWizardPage />} />
-            <Route path="/knowledge/tasks/:taskId" element={<TaskProgressPage />} />
-            <Route path="/knowledge/preview/:docId" element={<PreviewPage />} />
-            <Route path="/knowledge/query-analysis" element={<QueryAnalysisPage />} />
-            <Route path="/admin/monitor" element={<MonitorPage />} />
-            <Route path="/admin/retrieval-config" element={<RetrievalConfigPage />} />
-            <Route path="/admin/users" element={<UsersPage />} />
-            <Route path="/admin/acl" element={<AclPage />} />
-            <Route path="/admin/kb" element={<KbPage />} />
-          </Route>
+        {/* 管理区 */}
+        <Route path="/admin/monitor" element={<MonitorPage />} />
+        <Route path="/admin/retrieval-config" element={<RetrievalConfigPage />} />
 
-          {/* 404 兜底：置于已登录层内，输错地址时会带着布局一起提示，
-              而不是暴露一个没有导航的孤立页面 */}
-          <Route path="*" element={<NotFoundPage />} />
-        </Route>
+        {/* 404 兜底：与其它页面共享布局，输错地址时带着导航一起提示，
+            而不是暴露一个没有导航的孤立页面 */}
+        <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
   );

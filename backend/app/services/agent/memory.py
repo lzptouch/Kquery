@@ -33,17 +33,19 @@
 ## 存储
 
 JSONL 追加 + 内存索引（记忆条目少、读取频繁、写入偶发）。
-Redis 后端由 `core/shared_state.py` 提供（多副本场景），未配置时用本地文件。
+**存储是本地 JSONL 文件**（多副本不共享）——此前这里写着「Redis 后端由
+# `core/shared_state.py` 提供」，但实现里根本没有 Redis 分支：构造器只接受路径，
+# 读写的都是本地文件。注释比实现更乐观，会让人以为多副本下记忆是共享的（`A-21.9`）。
 """
 import hashlib
 import json
-import logging
 import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 记忆类别
 KIND_MISSING_DOC = "missing_doc"        # 知识库缺这类内容
@@ -78,7 +80,7 @@ class LongTermMemory:
     条目数有上限，超出时按"命中次数最少且最久未使用"淘汰。
     """
 
-    def __init__(self, path: Path | str | None = None, max_per_tenant: int = MAX_ENTRIES_PER_TENANT):
+    def __init__(self, path: Path | str | None = None, max_per_tenant: int = MAX_ENTRIES_PER_TENANT) -> None:
         self._path = Path(path) if path else None
         self._max = max(10, max_per_tenant)
         self._lock = threading.Lock()
@@ -95,12 +97,13 @@ class LongTermMemory:
                     try:
                         payload = json.loads(line)
                     except Exception:  # noqa: BLE001 - 半行跳过
+                        logger.debug("记忆条目解析失败：跳过该条")
                         continue
                     entry = MemoryEntry(**payload)
                     self._entries.setdefault(entry.tenant_id, []).append(entry)
             total = sum(len(v) for v in self._entries.values())
             logger.info("长期记忆已加载：%d 条", total)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 长期记忆加载失败
             logger.warning("长期记忆加载失败（从空开始）: %s", exc)
 
     def _append(self, entry: MemoryEntry) -> None:

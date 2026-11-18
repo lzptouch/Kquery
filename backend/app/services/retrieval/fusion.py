@@ -12,6 +12,10 @@ score(d) = Σ weight_i / (k + rank_i + 1)，rank 从 0 开始，k=60 为论文�
 """
 from app.services.retrieval.base import FusedCandidate
 
+#: 注入风险块的降权系数（`KQ-27`）。0.25 ≈ 掉到同位次块的 1/4 处：
+#: 明显靠后，但**不是消失**——正常内容仍可能被检索到（排除反而成了隐藏工具）。
+INJECTION_RISK_PENALTY = 0.25
+
 
 def rrf_fuse(
     routes: list[tuple],
@@ -44,4 +48,28 @@ def rrf_fuse(
             if origin and origin not in entry.origins:
                 entry.origins.append(origin)
     results = sorted(fused.values(), key=lambda c: c.rrf_score, reverse=True)
+    # `KQ-27` 第二层：命中注入风险的块**降权**（不是排除）。
+    # 排除是攻击者的工具——只要在文档里写「忽略以上指令」，这段内容就被系统
+    # 「保护」起来不再被检索到；降权只是让它排后面，内容仍可被合法检索到。
+    #
+    # **为什么要再检测一次**（而不是只读 `chunk.injection_risk`）：
+    # Milvus 存储有**固定 schema**（`services/milvus_store.py` 的 `_OUTPUT_FIELDS`），
+    # 入库时打的标记在 Milvus 里**不会被持久化**（改 schema 要重建集合 = 丢向量）。
+    # 所以检索侧按内容再判一次——候选只有几十条，正则开销可忽略，
+    # 而它保证了「无论用哪个存储后端，降权都生效」。
+    flagged = [c for c in results if _is_injection_risk(c.chunk)]
+    if flagged:
+        for c in flagged:
+            c.rrf_score *= INJECTION_RISK_PENALTY
+        results.sort(key=lambda c: c.rrf_score, reverse=True)
     return results[:top_n] if top_n else results
+
+
+def _is_injection_risk(chunk) -> bool:
+    """该块是否命中注入风险（入库标记 **或** 按内容现判）。"""
+    if getattr(chunk, "injection_risk", False):
+        return True
+    # 按需载入：检测模块只在需要判风险时才导入（热路径不必付导入成本）
+    from app.services.injection_guard import has_injection_risk
+
+    return has_injection_risk(getattr(chunk, "content", "") or "")

@@ -59,6 +59,16 @@ class AgentState(TypedDict, total=False):
     current_step: int
 
     # ---- 累积（追加合并）----
+    # 历史摘要（`ST-02`）：更早轮次的结构化摘要 + 保留原文的最近轮次。
+    # **必须显式声明**——LangGraph 只持久化状态类型中声明过的键。
+    history_summary: str
+    history_recent: list[dict]
+    # 压缩结果的可观测快照（方法 / 前后 token / 被摘要轮次）
+    history_compaction: dict
+    # 被丢弃的证据条目（`ST-03`）：组装阶段因预算 / 去重被裁掉的条目 + 原因。
+    # **必须显式声明**——LangGraph 只持久化状态类型中声明过的键，
+    # 未声明的键会被静默丢弃（`state.py` 的合并器语义）。
+    dropped_evidence: Annotated[list[dict], operator.add]
     evidence: Annotated[list[dict], merge_evidence]
     executed_steps: Annotated[list[int], merge_executed]
     tool_calls: Annotated[list[dict], operator.add]  # [{step_index, tool_name, arguments, result_count, elapsed_ms, error}]
@@ -86,6 +96,9 @@ class AgentState(TypedDict, total=False):
     answer_source: str  # 答案来源：evidence（有据）/ parametric（通用知识兜底）/ ""（拒答）
     skip_retrieval: bool  # 闲聊短路
     hitl_resolved: str  # 人工介入结果（""/hint/force_answer/stop），防二次打断
+    # 已获人工批准的写类工具名。**必须声明**：LangGraph 只持久化 TypedDict 里
+    # 声明过的键，未声明的 key 会被静默丢弃（审批在中断点后就丢了）。
+    approved_tools: list[str]
     budget: dict  # 预算快照（跨 HITL 中断点保持计数单调，防 resume 绕过）
     verify_passed: bool  # 答案校验是否通过
     verify_rounds: int  # 已校验轮数（受 max_verify_rounds 约束）
@@ -106,6 +119,10 @@ def initial_state(question: str, tenant_id: str, history: list[dict] | None = No
         "question": question,
         "tenant_id": tenant_id,
         "history": history or [],
+        # `ST-02`：历史摘要（初始为空；压缩后才填）
+        "history_summary": "",
+        "history_recent": [],
+        "history_compaction": {},
         "plan": [],
         "current_step": 0,
         "evidence": [],
@@ -128,6 +145,7 @@ def initial_state(question: str, tenant_id: str, history: list[dict] | None = No
         "answer_source": "",
         "skip_retrieval": False,
         "refusal": False,
+        "approved_tools": [],
     }
 
 

@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: kquery
+
+resources:
+  - backend-deployment.yaml
+  - frontend-deployment.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - configmap.yaml
+  - pvc.yaml
+  - secret.example.yaml
+
+commonLabels:
+  app: kquery

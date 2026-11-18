@@ -23,9 +23,9 @@ OTel 的 trace_id 是 W3C 标准的 128 位标识。两者都需要，因此：
 **把自研 trace_id 作为 span attribute 挂上去**，实现"用户报的号"→"Jaeger 里的链路"的跳转。
 这比强行统一成一个更实际（前端已经在用 16 位短号，改了是破坏性变更）。
 """
-import logging
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 全局状态：None 表示未初始化（或初始化失败），所有 span 调用退化为 no-op
 _TRACER = None
@@ -92,7 +92,7 @@ def _version() -> str:
         from importlib.metadata import version
 
         return version("kquery-backend")
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - 包未安装时版本号取不到：返回 unknown，不影响业务
         return "unknown"
 
 
@@ -134,10 +134,12 @@ def span(name: str, **attributes):
     if not _ENABLED or _TRACER is None:
         return _NoOpSpan()
     try:
+        # 破环：tracing 反向依赖 logging_setup
         from app.core.tracing import get_trace_id
 
         attributes.setdefault("kquery.trace_id", get_trace_id())
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - OTel span 结束失败：不影响业务返回
+        logger.debug("OTel span 结束失败：不影响业务返回")
         pass
     return _TRACER.start_as_current_span(name, attributes=attributes)
 
@@ -153,5 +155,5 @@ def shutdown_otel(timeout_ms: int = 5000) -> None:
         if hasattr(provider, "shutdown"):
             provider.shutdown()
             logger.info("OTel span 已 flush 并关闭")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 - OTel 关闭失败：不影响业务返回
         logger.debug("OTel 关闭失败（忽略）: %s", exc)

@@ -1,0 +1,6 @@
+{"query_id": "a01", "question": "文档里怎么配置限流？", "expected_tools": ["vector_search"]}
+{"query_id": "a02", "question": "A 和 B 是什么关系？", "expected_tools": ["graph_search"], "other_tools": ["vector_search"]}
+{"query_id": "a03", "question": "先查实体关系再查原文出处", "expected_tools": ["graph_search", "vector_search"]}
+{"query_id": "a04", "question": "这张图里画的是什么？", "expected_tools": ["image_search"], "other_tools": ["vector_search"]}
+{"query_id": "a05", "question": "计算 3 的平方", "expected_tools": ["calculator"], "other_tools": ["vector_search"]}
+{"query_id": "a06", "question": "你好", "expected_tools": [], "other_tools": ["vector_search"]}

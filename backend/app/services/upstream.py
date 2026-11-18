@@ -10,18 +10,18 @@
   在 [1, permits] 间伸缩。配置 `upstream_adaptive` 开启。
 - **NullBulkhead**：测试或未配置时为零开销直通，不改变既有行为。
 """
-import logging
 import threading
 import time
 from collections import deque
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CircuitOpenError(Exception):
     """熔断打开：调用方应映射为降级错误，而不是占用线程等超时。"""
 
-    def __init__(self, upstream: str, retry_after_s: float):
+    def __init__(self, upstream: str, retry_after_s: float) -> None:
         super().__init__(f"上游 {upstream} 熔断打开，{retry_after_s:.0f}s 后重试")
         self.upstream = upstream
         self.retry_after_s = retry_after_s
@@ -37,7 +37,7 @@ class Bulkhead:
         open_seconds: float = 30.0,
         half_open: int = 3,
         adaptive: bool = False,
-    ):
+    ) -> None:
         self.name = name
         self._max_permits = max(1, int(permits))
         self._permits = float(self._max_permits)
@@ -55,6 +55,9 @@ class Bulkhead:
         self._opened_at = 0.0
         self._half_open_ok = 0
         self._success_streak = 0
+        # 调用耗时滚动窗口（`C-10`）：降级判据需要「上游最近有多慢」，
+        # 而不是「熔断开没开」——熔断是事后，P95 是事前。
+        self._latencies: deque[float] = deque(maxlen=200)
         # 统计
         self._rejected = 0
         self._circuit_opens = 0
@@ -124,16 +127,18 @@ class Bulkhead:
                     raise CircuitOpenError(self.name, max(1.0, remaining))
                 if self._in_use < int(self._permits):
                     self._in_use += 1
-                    return _Permit(self)
+                    return _Permit(self, started_at=time.monotonic())
                 if deadline is not None and time.monotonic() >= deadline:
                     self._rejected += 1
                     raise CircuitOpenError(self.name, 0.0)
                 self._cond.wait(0.1)
 
-    def _release(self, ok: bool) -> None:
+    def _release(self, ok: bool, elapsed_ms: float | None = None) -> None:
         with self._cond:
             if self._in_use > 0:
                 self._in_use -= 1
+            if elapsed_ms is not None:
+                self._latencies.append(elapsed_ms)
             self._record(ok)
             self._cond.notify()
 
@@ -143,23 +148,42 @@ class Bulkhead:
                 "permits": int(self._permits),
                 "max_permits": self._max_permits,
                 "in_use": self._in_use,
+                # 占用率（0~1）：外部只拿到 in_use 时算不出「是否打满」
+                "utilization": (
+                    round(self._in_use / self._max_permits, 4) if self._max_permits else 0.0
+                ),
                 "state": self._state,
                 "calls": self._calls,
                 "failures": self._failures,
                 "rejected": self._rejected,
                 "circuit_opens": self._circuit_opens,
+                # 上游耗时 P95（毫秒）与样本数（`C-10` 降级判据的数据源）
+                "p95_ms": self._p95_ms(),
+                "latency_samples": len(self._latencies),
             }
+
+    def _p95_ms(self) -> float:
+        """滚动窗口的 P95 耗时（毫秒）。样本不足时返回 0（不据此降级）。"""
+        samples = sorted(self._latencies)
+        if not samples:
+            return 0.0
+        idx = min(len(samples) - 1, int(len(samples) * 0.95))
+        return round(samples[idx], 2)
 
 
 class _Permit:
-    def __init__(self, bulkhead: Bulkhead):
+    def __init__(self, bulkhead: Bulkhead, started_at: float | None = None) -> None:
         self._bulkhead = bulkhead
+        self._started_at = started_at
 
     def __enter__(self):
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        self._bulkhead._release(ok=exc_type is None)
+        elapsed_ms = (
+            (time.monotonic() - self._started_at) * 1000.0 if self._started_at is not None else None
+        )
+        self._bulkhead._release(ok=exc_type is None, elapsed_ms=elapsed_ms)
         return False
 
 
@@ -172,7 +196,10 @@ class NullBulkhead:
         return _NullPermit()
 
     def stats(self) -> dict:
-        return {"permits": 0, "in_use": 0, "state": "null"}
+        return {
+            "permits": 0, "max_permits": 0, "in_use": 0, "utilization": 0.0,
+            "state": "null", "p95_ms": 0.0, "latency_samples": 0,
+        }
 
 
 class _NullPermit:
@@ -204,7 +231,9 @@ def configure_bulkheads(settings) -> None:
                 window=window, fail_ratio=ratio, open_seconds=open_s,
                 adaptive=adaptive,
             )
-            for name in ("llm", "embedding", "rerank", "milvus")
+            # 通道清单：`multimodal` 是图像向量 / VLM 直答那一路
+            # （`C-07`：此前只注册 4 条，多模态打满在指标上完全不可见）
+            for name in ("llm", "embedding", "rerank", "milvus", "multimodal")
             if int(getattr(settings, f"upstream_{name}_permits", 0) or 0) > 0
         }
         if _registry:

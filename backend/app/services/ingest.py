@@ -10,8 +10,6 @@
   不重复执行 OCR（大文件失败重试代价可控的关键）。
 """
 import json
-import logging
-import queue
 import threading
 import time
 import uuid
@@ -19,7 +17,9 @@ from typing import Callable, Protocol
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.core.tasks import BackgroundQueue
 from app.core.envelope import ApiError, ErrCode
+from app.services.external_state import ExternalDocStore
 from app.domain.schemas import (
     CANCELLABLE_STAGES,
     FILE_CHUNKING,
@@ -40,8 +40,9 @@ from app.domain.schemas import (
 )
 from app.services.knowledge import KnowledgeService
 from app.services.parsers.base import ParseResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class _DocRecordLike(Protocol):
@@ -49,6 +50,14 @@ class _DocRecordLike(Protocol):
 
     doc_id: str
     tenant_id: str
+
+
+def _task_score(task: IngestTask) -> float:
+    """外部存储排序分：`IngestTask` 只有 ISO 字符串的 created_at（无 updated_at 数值字段）。"""
+    try:
+        return datetime.fromisoformat(task.created_at).timestamp()
+    except (ValueError, TypeError):
+        return 0.0
 
 
 #: 后置钩子签名：(文档记录, 解析产物) → 统计字典
@@ -63,28 +72,43 @@ class TaskManager:
         ingest_dir: Path,
         post_index: PostIndexHook | None = None,
         workers: int = 2,
-    ):
+        docs: "ExternalDocStore | None" = None,
+        retention_s: int = 1800,
+    ) -> None:
         self._knowledge = knowledge
         self._tasks_file = tasks_file
+        # 任务状态外置（批次 4）：多副本时任务列表/进度要一致
+        self._docs = docs
         self._ingest_dir = ingest_dir  # 文件路径按 data/ingest/<task_id>/<filename> 约定推导
         self._lock = threading.Lock()
         self._tasks: dict[str, IngestTask] = {}
         self._cancel_flags: dict[str, threading.Event] = {}
+        # `A-06`：终态任务在内存里保留一段时间（默认 30 分钟）供前端查看，
+        # 之后淘汰。此前**只增不减**——连续上传 600 个文档后任务表就一直涨。
+        self._retention_s = max(0, int(retention_s))
+        self._terminal_at: dict[str, float] = {}
         self._parse_cache: dict[str, ParseResult] = {}  # file_id → 解析产物（重试复用）
         # 入库后置钩子：图谱构建 + 图像索引（）。不传则退化为纯手动触发。
         self._post_index = post_index
         # 并发提容（批次 3）：有界队列 + 背压。此前是无界队列——批量提交时任务
         # 无限堆积且无法拒绝；满时 submit 返回 False，API 层映射 503。
-        self._queue: queue.Queue[str | None] = queue.Queue(maxsize=200)
-        self._workers_n = max(1, int(workers))
+        #
+        # 2026-11-12（`A-21.1`）：队列实现统一到 `core/tasks.BackgroundQueue`
+        # ——此前这里是**内联复制**的同一套有界队列逻辑，而 `BackgroundQueue`
+        # 自己在生产路径上零调用点（两份实现 = 两份要维护的语义）。
+        # 换过去还顺带补上一件一直缺的事：**worker 继承提交方的上下文**
+        # （trace_id 等 contextvars），否则入库失败日志与「用户提交了入库」
+        # 的日志串不起来（BackgroundQueue 的 `_Job.ctx` 就是干这个的）。
+        self._bg = BackgroundQueue(name="ingest", workers=max(1, int(workers)), queue_size=200)
         self._stopping = threading.Event()
         self._load()
-        self._workers = [
-            threading.Thread(target=self._loop, name=f"ingest-worker-{i}", daemon=True)
-            for i in range(self._workers_n)
-        ]
-        for w in self._workers:
-            w.start()
+        # `A-06`：终态任务淘汰的周期任务（每分钟一次）。
+        # 放在这里而不是 lifespan：任务表的生命周期与 TaskManager 相同，
+        # 放外面反而要再传一遍停止信号。
+        self._evict_thread = threading.Thread(
+            target=self._evict_loop, name="ingest-evict", daemon=True
+        )
+        self._evict_thread.start()
 
     def task_dir(self, task_id: str) -> Path:
         return self._ingest_dir / task_id
@@ -94,7 +118,36 @@ class TaskManager:
 
     # ---- 持久化 ----
 
+    _TASK_INDEX = "tasks"
+
+    def _external(self) -> bool:
+        return self._docs is not None
+
+    def _load_external(self) -> None:
+        assert self._docs is not None
+        for doc in self._docs.list_docs(self._TASK_INDEX, limit=500):
+            try:
+                task = IngestTask.model_validate(doc)
+            except Exception:  # noqa: BLE001 - 入库任务解析失败：跳过该条
+                logger.debug("入库任务解析失败：跳过该条")
+                continue
+            # 服务重启时仍在执行中的任务：标记失败（诚实失败，不留假进度）
+            interrupted = False
+            for f in task.files:
+                if f.status in (FILE_PARSING, FILE_CHUNKING, FILE_INDEXING, FILE_QUEUED) \
+                        and task.status == TASK_RUNNING:
+                    f.status = FILE_FAILED
+                    f.error_stage = f.stage
+                    f.error_reason = "服务重启导致任务中断，可重试"
+                    interrupted = True
+            if interrupted:
+                task.status = TASK_PARTIAL_FAILED
+            self._tasks[task.task_id] = task
+
     def _load(self) -> None:
+        if self._external():
+            self._load_external()
+            return
         if not self._tasks_file.exists():
             return
         try:
@@ -116,6 +169,16 @@ class TaskManager:
             logger.warning("任务文件损坏（忽略并重置）: %s", exc)
 
     def _save(self) -> None:
+        if self._external():
+            assert self._docs is not None
+            for task in self._tasks.values():
+                self._docs.put(
+                    task.task_id,
+                    task.model_dump(),
+                    index=self._TASK_INDEX,
+                    score=_task_score(task),
+                )
+            return
         self._tasks_file.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._tasks_file.with_suffix(".tmp")
         tmp.write_text(
@@ -133,7 +196,6 @@ class TaskManager:
         chunk_policy: dict,
         created_by: str = "system",
         tenant_id: str | None = None,
-        kb_id: str = "default",
     ) -> IngestTask:
         """创建任务（两阶段提交）：先建档，API 保存完文件后调 submit() 入队。"""
         task = IngestTask(
@@ -143,7 +205,6 @@ class TaskManager:
             total_files=len(files),
             created_by=created_by,
             tenant_id=tenant_id or self._knowledge.default_tenant_id,
-            kb_id=kb_id or "default",
             created_at=datetime.now(timezone.utc).isoformat(),
             files=[
                 FileRecord(
@@ -167,12 +228,54 @@ class TaskManager:
     def submit(self, task_id: str) -> bool:
         """文件落盘后提交任务进入执行队列。队列满返回 False（调用方应拒绝并清理）。"""
         self.get(task_id)
-        try:
-            self._queue.put_nowait(task_id)
-            return True
-        except queue.Full:
+        accepted = self._bg.submit(task_id, lambda: self._run_task(task_id))
+        if not accepted:
             logger.warning("入库队列已满（200），任务 %s 被拒", task_id)
-            return False
+        return accepted
+
+    def _evict_loop(self) -> None:
+        """周期淘汰终态任务（`A-06`）。"""
+        while not self._stopping.is_set():
+            # 每分钟一次；保留期由 `retention_s` 控制（默认 30 分钟）
+            if self._stopping.wait(timeout=60.0):
+                return
+            try:
+                self.evict_terminal_tasks()
+            except Exception:  # noqa: BLE001 - 淘汰失败不该杀死线程
+                logger.exception("入库任务淘汰失败（忽略）")
+
+    def evict_terminal_tasks(self, now: float | None = None) -> int:
+        """淘汰超过保留期的终态任务（`A-06`），返回淘汰条数。
+
+        **只淘汰终态任务**：排队中 / 执行中的任务永远不淘汰——
+        淘汰掉等于把用户的任务凭空消失（前端轮询会拿到 404，且无法重试）。
+
+        保留期默认 30 分钟：够前端看完进度，也够运维复盘。
+        """
+        if self._retention_s <= 0:
+            return 0
+        ts = time.time() if now is None else now
+        terminal = {TASK_DONE, TASK_FAILED, TASK_PARTIAL_FAILED, TASK_CANCELLED}
+        evicted = 0
+        with self._lock:
+            for task_id, task in list(self._tasks.items()):
+                if task.status not in terminal:
+                    continue
+                finished = self._terminal_at.get(task_id)
+                if finished is None:
+                    # 终态但没有时间戳（进程重启后从磁盘恢复的）：按「现在」算，
+                    # 避免刚启动就把历史任务全清了。
+                    self._terminal_at[task_id] = ts
+                    continue
+                if ts - finished < self._retention_s:
+                    continue
+                self._tasks.pop(task_id, None)
+                self._cancel_flags.pop(task_id, None)
+                self._terminal_at.pop(task_id, None)
+                evicted += 1
+        if evicted:
+            logger.info("入库任务淘汰：清掉 %d 个超过 %ds 的终态任务", evicted, self._retention_s)
+        return evicted
 
     def discard(self, task_id: str) -> None:
         """废弃尚未入队的任务（上传校验失败时回收任务目录与记录）。"""
@@ -181,6 +284,7 @@ class TaskManager:
         with self._lock:
             self._tasks.pop(task_id, None)
             self._cancel_flags.pop(task_id, None)
+            self._terminal_at.pop(task_id, None)
             self._save()
         shutil.rmtree(self.task_dir(task_id), ignore_errors=True)
 
@@ -229,16 +333,6 @@ class TaskManager:
 
     # ---- 执行 ----
 
-    def _loop(self) -> None:
-        while True:
-            task_id = self._queue.get()
-            if task_id is None:  # 停机哨兵
-                return
-            try:
-                self._run_task(task_id)
-            except Exception:
-                logger.exception("任务执行异常: %s", task_id)
-
     def shutdown(self, timeout_s: float = 30.0) -> None:
         """优雅停机（批次 3）：等在飞任务完成当前文件后退出，不再接受新任务。
 
@@ -247,14 +341,7 @@ class TaskManager:
         if self._stopping.is_set():
             return
         self._stopping.set()
-        for _ in self._workers:
-            try:
-                self._queue.put_nowait(None)
-            except queue.Full:
-                pass
-        deadline = time.time() + timeout_s
-        for w in self._workers:
-            w.join(max(0.1, deadline - time.time()))
+        self._bg.shutdown(wait=True, timeout=timeout_s)
 
     def _run_task(self, task_id: str) -> None:
         with self._lock:
@@ -287,6 +374,8 @@ class TaskManager:
                 task.status = TASK_PARTIAL_FAILED
             else:
                 task.status = TASK_FAILED
+            # 终态时间戳（`A-06`）：从现在起保留一段时间再淘汰
+            self._terminal_at[task_id] = time.time()
             self._save()
             logger.info("任务结束: %s → %s", task_id, task.status)
 
@@ -356,13 +445,12 @@ class TaskManager:
             content = path.read_bytes()
             record = self._knowledge.create_record(
                 filename, content, source_path=path, tenant_id=task.tenant_id,
-                knowledge_base_id=task.kb_id,
             )
             file.doc_id = record.doc_id
             # 上传落盘 → 解析之前也要占一个可见态（否则"上传中"两态在前端永远不出现）
             set_stage(FILE_UPLOADING, 1.0)
 
-            # ① 解析（OCR / 转写可能是分钟级，阶段内进度必需）
+            # ① 解析（OCR 可能是分钟级，阶段内进度必需）
             parsed = self._parse_cache.get(file.file_id)
             if parsed is None:
                 set_stage(FILE_PARSING, 0.05)
@@ -392,7 +480,7 @@ class TaskManager:
             if self._post_index is not None:
                 try:
                     post_stats = self._post_index(record, parsed)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - 图谱/图像索引联动失败
                     logger.warning("图谱/图像索引联动失败（不影响入库）: %s", exc)
                     post_stats = {"error": str(exc)[:200]}
                 else:
@@ -467,7 +555,8 @@ class TaskManager:
                 f.error_reason = ""
             task.status = TASK_QUEUED
             self._save()
-        self._queue.put(task_id)
+        # 重试走同一条队列（背压语义一致：满时返回 False，调用方据此提示稍后重试）
+        self._bg.submit(task_id, lambda: self._run_task(task_id))
         return {
             "retried_files": [f.file_id for f in targets],
             "cleared_products": False,  # 重试不清空已完成产物

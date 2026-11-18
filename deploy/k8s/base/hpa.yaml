@@ -1,0 +1,95 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kquery-backend
+  labels:
+    app: kquery
+    component: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kquery-backend
+  minReplicas: 2
+  # 上限按**上游模型配额**反推：扩容不能突破上游 QPS，
+  # 否则只是"更多请求一起排队"
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    # 自定义指标：kquery_inflight_requests（已在 app/core/metrics.py 暴露，
+    # 需 prometheus-adapter 把 Prom 指标转成 HPA 可用的 external metric）
+    - type: External
+      external:
+        metric:
+          name: kquery_inflight_requests
+        target:
+          type: AverageValue
+          averageValue: "28"
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kquery-backend
+  labels:
+    app: kquery
+    component: backend
+spec:
+  # 节点维护时至少留 1 个：全摘了就没有可接流量的实例
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: kquery
+      component: backend
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kquery-backend
+  labels:
+    app: kquery
+spec:
+  selector:
+    matchLabels:
+      app: kquery
+      component: backend
+  endpoints:
+    - port: http
+      path: /metrics
+      # /metrics 默认需要鉴权（X-Metrics-Token），抓取端点必须带令牌
+      bearerTokenFile: /var/run/secrets/kquery/metrics-token
+      interval: 30s
+      scrapeTimeout: 10s
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kquery-backend
+  labels:
+    app: kquery
+    component: backend
+spec:
+  podSelector:
+    matchLabels:
+      app: kquery
+      component: backend
+  policyTypes: ["Ingress"]
+  ingress:
+    # 只允许前端与 Prometheus 访问后端
+    - from:
+        - podSelector:
+            matchLabels:
+              app: kquery
+              component: frontend
+      ports:
+        - port: 8100
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 8100

@@ -13,6 +13,7 @@ import jieba
 from app.core.rwlock import ReadWriteLock
 from app.domain.schemas import Chunk
 from app.services.retrieval.base import RetrievalCandidate
+from ..vectorstore import chunk_version, with_version
 
 # 分词缓存：chunk 级预分词在索引构建时完成，查询分词量小不缓存
 jieba.setLogLevel(20)
@@ -30,7 +31,7 @@ class _BM25Scorer:
     小语料下会产生负分，会把相关文档误杀）。
     """
 
-    def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75):
+    def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75) -> None:
         self.k1 = k1
         self.b = b
         self.n_docs = len(corpus)
@@ -63,7 +64,7 @@ class _BM25Scorer:
 class BM25Retriever:
     name = "keyword"
 
-    def __init__(self, k1: float = 1.5, b: float = 0.75):
+    def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
         self._k1 = k1
         self._b = b
         # 读共享 / 写独占（此前是普通 Lock，导致所有关键词检索串行）
@@ -107,6 +108,63 @@ class BM25Retriever:
                 self._chunks.pop(cid, None)
             self._order = keep
             self._rebuild_model()
+
+    def rename_doc_version(self, doc_id: str, version: int) -> int:
+        """把该文档**无版本号**的块 id 改写成 `@v{version}`，返回改名条数。
+
+        reparse 时向量库会先把旧块改名成历史版本、再写入新版本。BM25 若不同步
+        改名，两边 chunk_id 就对不上——关键词路命中的 id 在向量库/文档存储里已经
+        不存在，用户点开引用是死链（`X-14`）。
+        """
+        with self._lock.write():
+            chunks: dict[str, Chunk] = {}
+            order: list[str] = []
+            renamed = 0
+            for cid in self._order:
+                chunk = self._chunks[cid]
+                new_id = cid
+                if chunk.doc_id == doc_id and chunk_version(cid) == 0:
+                    new_id = with_version(cid, version)
+                    chunk = chunk.model_copy(update={"chunk_id": new_id})
+                    renamed += 1
+                chunks[new_id] = chunk
+                order.append(new_id)
+            if not renamed:
+                return 0
+            # 与 `add()` 同样的理由：整体重绑而不是原地改，并发读者要么看到旧表、
+            # 要么看到新表，不会看到"改了一半的 id"
+            self._chunks = chunks
+            self._order = order
+            self._rebuild_model()
+            return renamed
+
+    def delete_doc_versions(self, doc_id: str, keep_versions: int = 3) -> int:
+        """只保留该文档最近 `keep_versions` 个版本的块，返回删除条数。
+
+        与向量库 `delete_doc_versions` 同语义。不同步删除的后果有两层：已下线
+        版本的块仍会命中关键词（召回里混入过期内容），且内存随 reparse 次数
+        **线性增长**（每版一份全量块）。
+        """
+        with self._lock.write():
+            versions = sorted({
+                chunk_version(cid)
+                for cid in self._order
+                if self._chunks[cid].doc_id == doc_id and chunk_version(cid)
+            })
+            if len(versions) <= keep_versions:
+                return 0
+            drop = set(versions[: len(versions) - keep_versions])
+            keep_ids = [
+                cid
+                for cid in self._order
+                if not (self._chunks[cid].doc_id == doc_id and chunk_version(cid) in drop)
+            ]
+            removed = len(self._order) - len(keep_ids)
+            for cid in set(self._order) - set(keep_ids):
+                self._chunks.pop(cid, None)
+            self._order = keep_ids
+            self._rebuild_model()
+            return removed
 
     # ---- 检索 ----
 

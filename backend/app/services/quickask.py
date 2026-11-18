@@ -24,7 +24,6 @@
 import asyncio
 import hashlib
 import json
-import logging
 import time
 from pathlib import Path
 from typing import Protocol
@@ -35,8 +34,9 @@ from app.core.envelope import ApiError, ErrCode
 from app.domain.schemas import DOC_STATUS_PARSING, DocumentRecord
 from app.services.knowledge import KnowledgeService
 from app.services.parsers.router import SUPPORTED_EXTENSIONS
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 #: 临时文档 doc_id 前缀（启动清扫据此识别残留）
 QUICK_PREFIX = "quick_"
@@ -91,7 +91,7 @@ class RedisQuickAskStore:
     Fail-Open 是硬约束：Redis 挂了不能变成"快问不可用"。
     """
 
-    def __init__(self, state_store, fallback: InMemoryQuickAskStore | None = None):
+    def __init__(self, state_store, fallback: InMemoryQuickAskStore | None = None) -> None:
         self._state = state_store
         self._fallback = fallback or InMemoryQuickAskStore()
 
@@ -110,14 +110,14 @@ class RedisQuickAskStore:
             raw = self._state.get(self._key(doc_id))
             if raw:
                 return json.loads(raw)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 快问元数据读取 Redis 失败
             logger.warning("快问元数据读取 Redis 失败（降级为进程内）: %s", exc)
         return self._fallback.get(doc_id)
 
     def delete(self, doc_id: str) -> None:
         try:
             self._state.delete(self._key(doc_id))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 快问元数据删除 Redis 失败
             logger.warning("快问元数据删除 Redis 失败: %s", exc)
         self._fallback.delete(doc_id)
 
@@ -134,7 +134,7 @@ class RedisQuickAskStore:
                 prefix = getattr(redis, "_prefix", "")
                 for key in client.scan_iter(match=f"{prefix}{QUICK_KEY_PREFIX}*"):
                     doc_ids.append(str(key).split(QUICK_KEY_PREFIX, 1)[-1])
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 快问元数据扫描失败
                 logger.warning("快问元数据扫描失败: %s", exc)
         doc_ids.extend(self._fallback.list_doc_ids())
         return doc_ids
@@ -148,7 +148,7 @@ class QuickAskService:
         settings: Settings,
         knowledge: KnowledgeService,
         store: QuickAskStore | None = None,
-    ):
+    ) -> None:
         self._settings = settings
         self._knowledge = knowledge
         self._store = store or InMemoryQuickAskStore()
@@ -405,7 +405,7 @@ class QuickAskService:
                     continue  # 仍然有效
                 try:
                     self._knowledge.purge_transient(doc_id)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - 快问残留清理失败 %s
                     logger.warning("快问残留清理失败 %s: %s", doc_id, exc)
                 self._store.delete(doc_id)
                 try:

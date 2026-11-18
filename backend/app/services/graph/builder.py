@@ -5,7 +5,6 @@ chunk → 抽取 → 消歧 → upsert → 社区检测 → 摘要（入向量�
 社区摘要写入统一向量库（doc_id=__communities__），
 与正文共存于同一检索空间——抽象问题命中摘要，具体问题命中实体。
 """
-import logging
 import time
 from pathlib import Path
 
@@ -17,8 +16,9 @@ from app.services.graph.resolver import EntityResolver
 from app.services.graph.store import BaseGraphStore
 from app.services.llm import LLM
 from app.services.vectorstore import VectorStore
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 COMMUNITY_DOC_ID = "__communities__"
 
@@ -38,7 +38,7 @@ class GraphBuilder:
         max_communities: int = 20,
         community_levels: int = 1,
         community_merge_threshold: float = 0.3,
-    ):
+    ) -> None:
         self._extractor = extractor
         self._resolver = resolver
         self._store = store

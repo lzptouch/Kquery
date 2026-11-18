@@ -185,7 +185,7 @@ export function PreviewPage() {
               <div className="nav-section">媒体资源</div>
               {preview.assets.map((a) => (
                 <div key={a.asset_id} className="outline-item" title={a.caption}>
-                  {a.kind === "audio" ? "🎵" : "🖼"} {a.caption.slice(0, 30)}…
+                  🖼 {a.caption.slice(0, 30)}…
                 </div>
               ))}
             </>

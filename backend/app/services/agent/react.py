@@ -44,7 +44,6 @@ think（下一轮）
 | think 超时 | 同解析失败 |
 | think 说 done 但证据为空 | **忽略 done**，强制至少一轮 act（防"幻觉式跳过检索"） |
 """
-import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -53,8 +52,9 @@ from pydantic import BaseModel, Field, ValidationError
 from app.core.otel import span
 from app.services.llm import LLM, LLMError
 from app.services.query.jsonutil import JsonParseError, parse_json_model
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 REACT_MAX_TOOL_CALLS_PER_TURN = 3
 
@@ -140,7 +140,7 @@ def _brief_args(args: dict) -> str:
 class ReActThinker:
     """单步决策器：调 LLM 产出结构化决策 + 解析容错 + 幻觉兜底。"""
 
-    def __init__(self, llm: LLM, max_retries: int = 1):
+    def __init__(self, llm: LLM, max_retries: int = 1) -> None:
         self._llm = llm
         self._max_retries = max(0, max_retries)
 

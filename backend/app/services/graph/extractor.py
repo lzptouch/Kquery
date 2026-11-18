@@ -7,14 +7,15 @@
 - 测试：ScriptedExtractor 返回固定结构。
 """
 import json
-import logging
 import re
 from typing import Protocol
 
 from app.domain.schemas import ENTITY_TYPES
 from app.services.llm import LLM
+from app.core.errors import ModelOutputError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 EXTRACT_PROMPT = """你是知识图谱抽取器。从下面文本中抽取实体与关系。
 
@@ -45,7 +46,7 @@ def parse_extraction(raw: str) -> dict:
     """结构校验解析：坏 JSON / 缺字段 / 非法类型 → 抛错由上层重试。"""
     m = re.search(r"\{[\s\S]*\}", raw)
     if not m:
-        raise ValueError("抽取结果中未找到 JSON")
+        raise ModelOutputError("抽取结果中未找到 JSON")
     payload = json.loads(m.group(0))
     entities = []
     for e in payload.get("entities") or []:
@@ -83,7 +84,7 @@ class LLMExtractor:
     排查"为什么这个实体没进图谱"时毫无线索。
     """
 
-    def __init__(self, llm: LLM, max_retries: int = 1, max_chars: int = 2000):
+    def __init__(self, llm: LLM, max_retries: int = 1, max_chars: int = 2000) -> None:
         self._llm = llm
         self._max_retries = max_retries
         self._max_chars = max(200, int(max_chars))
@@ -102,7 +103,7 @@ class LLMExtractor:
         for _ in range(self._max_retries + 1):
             try:
                 return parse_extraction(self._llm.generate(prompt))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 实体抽取解析失败，重试
                 last_error = exc
                 logger.warning("实体抽取解析失败，重试: %s", exc)
         logger.warning("实体抽取最终失败（按空结果降级）: %s", last_error)
@@ -112,7 +113,7 @@ class LLMExtractor:
 class ScriptedExtractor:
     """测试用：按关键字返回固定实体/关系。"""
 
-    def __init__(self, table: dict[str, dict] | None = None, default: dict | None = None):
+    def __init__(self, table: dict[str, dict] | None = None, default: dict | None = None) -> None:
         self._table = table or {}
         self._default = default or {"entities": [], "relations": []}
         self.calls = 0

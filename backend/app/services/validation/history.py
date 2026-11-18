@@ -9,13 +9,13 @@ CRAG 轮次与自检明细此前只随响应返回，事后无法复盘"这次�
 保留策略：按文件滚动（默认 20MB 一份），读侧只看最近若干份。
 """
 import json
-import logging
 import threading
 import time
 from pathlib import Path
 from typing import Any
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CRAG_KIND = "crag_round"
 SELFCHECK_KIND = "self_check"
@@ -29,7 +29,7 @@ class ValidationHistoryStore:
         directory: Path,
         keep_files: int = 20,
         max_bytes: int = 20 * 1024 * 1024,
-    ):
+    ) -> None:
         self._dir = Path(directory)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._keep = max(1, keep_files)

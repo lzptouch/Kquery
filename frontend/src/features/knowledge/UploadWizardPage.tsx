@@ -8,7 +8,6 @@ import { useNavigate } from "react-router-dom";
 import { ingestTask } from "../../lib/api-client";
 import {
   ACCEPT_ATTRIBUTE,
-  AUDIO_EXTENSIONS,
   IMAGE_EXTENSIONS,
   extOf,
   validateExtension,
@@ -19,7 +18,6 @@ const MAX_SIZE_MB = 50;
 const MAX_FILES = 20;
 
 const IMAGE_EXT = IMAGE_EXTENSIONS;
-const AUDIO_EXT = AUDIO_EXTENSIONS;
 const PDF_EXT = [".pdf"];
 
 interface FileEntry {
@@ -38,7 +36,6 @@ export function UploadWizardPage() {
   // 解析策略
   const [pdfTables, setPdfTables] = useState(true);
   const [ocrEnabled, setOcrEnabled] = useState(true);
-  const [transcribeEnabled, setTranscribeEnabled] = useState(true);
 
   // 切块策略
   const [policy, setPolicy] = useState<ChunkPolicy>({ strategy: "recursive", params: {} });
@@ -51,7 +48,6 @@ export function UploadWizardPage() {
     return {
       pdf: [...exts].some((e) => PDF_EXT.includes(e)),
       image: [...exts].some((e) => IMAGE_EXT.includes(e)),
-      audio: [...exts].some((e) => AUDIO_EXT.includes(e)),
     };
   }, [validFiles]);
 
@@ -102,7 +98,7 @@ export function UploadWizardPage() {
       const envelope = await ingestTask(
         validFiles.map((e) => e.file),
         policy,
-        { pdf_tables: pdfTables, ocr_enabled: ocrEnabled, transcribe_enabled: transcribeEnabled },
+        { pdf_tables: pdfTables, ocr_enabled: ocrEnabled },
       );
       if (envelope.data) {
         navigate(`/knowledge/tasks/${envelope.data.task_id}`);
@@ -117,17 +113,16 @@ export function UploadWizardPage() {
   };
 
   const estimatedSeconds = useMemo(() => {
-    // 粗估：文本秒级；OCR 每图约 3s；音频约 10s
+    // 粗估：文本秒级；OCR 每图约 3s
     let s = 0;
     for (const e of validFiles) {
       const ext = extOf(e.file.name);
       if (IMAGE_EXT.includes(ext)) s += ocrEnabled ? 3 : 0;
-      else if (AUDIO_EXT.includes(ext)) s += transcribeEnabled ? 10 : 0;
       else s += 1;
     }
     if (policy.strategy === "raptor") s += validFiles.length * 10;
     return s;
-  }, [validFiles, policy, ocrEnabled, transcribeEnabled]);
+  }, [validFiles, policy, ocrEnabled]);
 
   return (
     <div className="page">
@@ -155,7 +150,7 @@ export function UploadWizardPage() {
               >
                 <div style={{ fontSize: 28 }} aria-hidden>⬆</div>
                 <div>拖拽文件到这里，或点击选择</div>
-                <div className="trace-id">支持 PDF / Markdown / Word / Excel / PPT / 纯文本 / 代码 / 图片 / 音频，单文件 ≤ {MAX_SIZE_MB}MB，最多 {MAX_FILES} 个</div>
+                <div className="trace-id">支持 PDF / Markdown / Word / Excel / PPT / 纯文本 / 代码 / 图片，单文件 ≤ {MAX_SIZE_MB}MB，最多 {MAX_FILES} 个</div>
                 <input ref={inputRef} type="file" accept={ACCEPT_ATTRIBUTE} multiple hidden onChange={(e) => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
               </div>
               {entries.length > 0 && (
@@ -200,15 +195,7 @@ export function UploadWizardPage() {
                   </label>
                 </>
               )}
-              {typeSet.audio && (
-                <>
-                  <h4>音频文件</h4>
-                  <label className="config-row">
-                    <input type="checkbox" checked={transcribeEnabled} onChange={(e) => setTranscribeEnabled(e.target.checked)} /> 语音转文字（千问 paraformer-v2，带时间戳）
-                  </label>
-                </>
-              )}
-              {!typeSet.pdf && !typeSet.image && !typeSet.audio && <p className="trace-id">本批全部为 Markdown 文档，无需额外解析配置。</p>}
+              {!typeSet.pdf && !typeSet.image && <p className="trace-id">本批全部为文本类文档，无需额外解析配置。</p>}
               <div className="wizard-nav">
                 <button type="button" className="btn" onClick={() => setStep(1)}>← 返回</button>
                 <button type="button" className="btn btn-primary" onClick={() => setStep(3)}>继续 →</button>
@@ -272,10 +259,10 @@ export function UploadWizardPage() {
             <>
               <h4>配置摘要</h4>
               <ul className="trace-id" style={{ lineHeight: 2 }}>
-                <li>文件数：{validFiles.length} 个（{typeSet.pdf && "PDF "}{typeSet.image && "图片 "}{typeSet.audio && "音频"}）</li>
-                <li>解析策略：{typeSet.pdf && `表格识别 ${pdfTables ? "开" : "关"}；`}{typeSet.image && `OCR ${ocrEnabled ? "开（qwen-vl-ocr）" : "关"}；`}{typeSet.audio && `转写 ${transcribeEnabled ? "开（paraformer-v2）" : "关"}`}{!typeSet.pdf && !typeSet.image && !typeSet.audio && "默认"}</li>
+                <li>文件数：{validFiles.length} 个（{typeSet.pdf && "PDF "}{typeSet.image && "图片 "}）</li>
+                <li>解析策略：{typeSet.pdf && `表格识别 ${pdfTables ? "开" : "关"}；`}{typeSet.image && `OCR ${ocrEnabled ? "开（qwen-vl-ocr）" : "关"}；`}{!typeSet.pdf && !typeSet.image && "默认"}</li>
                 <li>切块策略：{policy.strategy}（{JSON.stringify(policy.params)}）</li>
-                <li>预估耗时：约 {estimatedSeconds} 秒（OCR / 转写为平台调用，按量计费）</li>
+                <li>预估耗时：约 {estimatedSeconds} 秒（OCR 为平台调用，按量计费）</li>
               </ul>
               {submitError && <div className="error-inline" role="alert"><span aria-hidden>⚠</span>{submitError}</div>}
               <div className="wizard-nav">

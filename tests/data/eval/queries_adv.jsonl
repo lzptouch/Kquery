@@ -1,0 +1,11 @@
+{"query_id": "v01", "question": "这位宇航员手臂上的臂章是什么颜色的？", "requires_vision": true, "answer_key": "蓝白色"}
+{"query_id": "v02", "question": "这张砖墙照片里，砖块是横着铺的还是竖着铺的？", "requires_vision": true, "answer_key": "竖"}
+{"query_id": "v03", "question": "黑白照片的背景里，右侧远处那座建筑是什么颜色、什么样？", "requires_vision": true, "answer_key": "白色的多层建筑"}
+{"query_id": "v04", "question": "这只猫的胡须是什么颜色的？", "requires_vision": true, "answer_key": "白色"}
+{"query_id": "v05", "question": "显微照片里那个圆形物体大约占画面宽度的多少？", "requires_vision": true, "answer_key": "四分之一"}
+{"query_id": "v06", "question": "这杯咖啡的把手在哪个方向？", "requires_vision": true, "answer_key": "左下方"}
+{"query_id": "v07", "question": "这张深空照片里，中央偏下那颗很亮的星系是什么颜色？", "requires_vision": true, "answer_key": "橙黄色"}
+{"query_id": "v08", "question": "月面照片里除了右上角的大陨石坑，左上方还有什么？", "requires_vision": true, "answer_key": "更小的圆形亮斑"}
+{"query_id": "v09", "question": "眼底照片里血管汇聚的那个亮斑是什么颜色？", "requires_vision": true, "answer_key": "黄白色"}
+{"query_id": "v10", "question": "这张火箭照片里一共有几座发射塔架？", "requires_vision": true, "answer_key": "四座"}
+{"query_id": "v11", "question": "这张手写文字照片的纸面上，除了字还画了什么？", "requires_vision": true, "answer_key": "格线"}

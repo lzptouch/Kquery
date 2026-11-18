@@ -14,12 +14,15 @@ import {
   renameSession,
 } from "../../lib/api-client";
 import { askStream } from "../../lib/sse-client";
+import { approveRun, resumeRun } from "../../lib/api-client";
+import type { AwaitingHumanPayload } from "../../lib/hitl";
+import { ToolApprovalCard } from "./components/ToolApprovalCard";
 import { ChatInput, type ChatInputHandle } from "./components/ChatInput";
 import { Markdown } from "./components/Markdown";
 import { MessageBubble } from "./components/MessageBubble";
 import { QuickAttachPanel, type QuickDoc } from "./components/QuickAttachPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
-import { VoiceRecorder } from "./components/VoiceRecorder";
+import { dropFailedTurn, turnsToMessages } from "./message-ops";
 import type {
   ChatMessage,
   CragRound,
@@ -40,21 +43,32 @@ interface RateLimitState {
   question: string;
 }
 
+/** 首次渲染的消息条数：更早的折叠起来，长会话不必一次挂几百个气泡 */
+const MESSAGE_PAGE_SIZE = 30;
+/** 距底部多少像素内仍算"贴底"（约一个气泡的高度） */
+const STICK_THRESHOLD_PX = 80;
+
 export function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [highlight, setHighlight] = useState<{ messageId: string; rank: number } | null>(null);
   const [preview, setPreview] = useState<Evidence | null>(null);
   const [rateLimit, setRateLimit] = useState<RateLimitState | null>(null);
+  // 人在环：待人工决策的挂起点（写类工具待批 / 补充线索）
+  const [pendingApproval, setPendingApproval] = useState<AwaitingHumanPayload | null>(null);
   // ---- 会话状态 ----
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSession, setActiveSession] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // 是否"跟随最新"：用户上滑读历史时置假，新 token 到达就不再把人拽回底部（X-22）
+  const stickToBottomRef = useRef(true);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  /** 当前渲染的消息条数（从末尾往前数）；「显示更早」按页递增 */
+  const [visibleCount, setVisibleCount] = useState(MESSAGE_PAGE_SIZE);
   // ---- F4 快问：当前临时文档（提问时随请求带上 doc_id）----
   const [quickDoc, setQuickDoc] = useState<QuickDoc | null>(null);
   const [attachOpen, setAttachOpen] = useState(false);
-  // ---- F2 语音：转写文本回填输入框 ----
   const inputRef = useRef<ChatInputHandle>(null);
 
   const patchMessage = useCallback((id: string, patch: Partial<ChatMessage>) => {
@@ -70,10 +84,30 @@ export function ChatPage() {
     void refreshSessions();
   }, [refreshSessions]);
 
+  // 只在"用户本来就在底部"时贴底：否则每个 token 都会把正在读历史的人拽回去，
+  // 长答案流式输出时根本没法往回翻
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distanceToBottom < STICK_THRESHOLD_PX;
+    stickToBottomRef.current = atBottom;
+    setShowJumpToBottom(!atBottom);
+  }, []);
+
+  const jumpToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickToBottomRef.current = true;
+    setShowJumpToBottom(false);
+  }, []);
 
   // 限流倒计时：1s 刷新，归零自动重试一次
   useEffect(() => {
@@ -105,6 +139,8 @@ export function ChatPage() {
   const send = useCallback(
     async (question: string) => {
       if (streaming) return;
+      // 主动提问必须回到最新：用户刚按下回车，却因为"上滑过"而看不到自己的问题很奇怪
+      stickToBottomRef.current = true;
       const sessionId = await ensureSession();
       const userId = nextId();
       const assistantId = nextId();
@@ -232,10 +268,21 @@ export function ChatPage() {
           patchMessage(assistantId, {
             verdict: "refused", refusalReason: reason, confidence: 0,
           }),
+        // 人在环：后端在**执行写类工具之前**挂起 → 这里渲染审批卡片。
+        // 副作用此刻还没发生，用户点"允许"才会真的执行。
+        onAwaitingHuman: (payload) => {
+          setPendingApproval(payload);
+          patchMessage(assistantId, { streaming: false, incomplete: true });
+          pushNode({
+            kind: "reflect",
+            title: "⏸ 等待人工决策",
+            detail: payload.tool ? `待批准工具：${payload.tool}` : (payload.reason ?? ""),
+          });
+        },
         // F5：推荐追问（后端在 done 之前发出）
         onFollowups: ({ items }) =>
           patchMessage(assistantId, { followups: items ?? [] }),
-        onDone: ({ trace_id, agent, incomplete, fuse_reason, session_id, evidence, verdict, confidence, acl_filtered, retrieval, crag, from_cache, refusal_reason, regenerated, unsupported_claims_count, answer_source }) => {
+        onDone: ({ trace_id, agent, incomplete, fuse_reason, session_id, evidence, verdict, confidence, retrieval, crag, from_cache, refusal_reason, regenerated, unsupported_claims_count, answer_source }) => {
           patchMessage(assistantId, {
             streaming: false, traceId: trace_id,
             ...(answer_source ? { answerSource: answer_source } : {}),
@@ -243,7 +290,6 @@ export function ChatPage() {
             // 最终编号后的证据替换临时累积（rank 从 1 连续，与答案引用对位）
             ...(evidence ? { evidence } : {}),
             ...(verdict ? { verdict: verdict as ChatMessage["verdict"], confidence } : {}),
-            ...(acl_filtered ? { aclFiltered: acl_filtered } : {}),
             // 缓存命中徽章：此前 Agent 路径硬编码 false，徽章永不出现
             fromCache: from_cache === true,
             retrieval: retrieval ?? undefined,
@@ -283,13 +329,12 @@ export function ChatPage() {
 
   const retry = useCallback(
     (failedId: string) => {
-      const idx = messages.findIndex((m) => m.id === failedId);
-      for (let i = idx - 1; i >= 0; i--) {
-        if (messages[i].role === "user") {
-          send(messages[i].content);
-          return;
-        }
-      }
+      // 连同**失败气泡与那条提问一起移除**再重发：此前只重发不删除，
+      // `send()` 会再 push 一条同样的提问 → 重试一次就多一组重复问答（`X-22` 残余）
+      const dropped = dropFailedTurn(messages, failedId);
+      if (!dropped) return;
+      setMessages(dropped.messages);
+      send(dropped.question);
     },
     [messages, send],
   );
@@ -301,22 +346,20 @@ export function ChatPage() {
     const envelope = await getSession(id);
     if (!envelope.data) return;
     setActiveSession(id);
-    // 从会话存档恢复消息（证据可溯恢复快照，此处恢复问答对）
-    const restored: ChatMessage[] = [];
-    for (const turn of envelope.data.turns) {
-      restored.push({ id: nextId(), role: "user", content: turn.question, evidence: [] });
-      restored.push({
-        id: nextId(), role: "assistant", content: turn.answer, evidence: [],
-        verdict: turn.verdict as ChatMessage["verdict"],
-        answerSource: turn.answer_source as ChatMessage["answerSource"],
-      });
-    }
+    // 从会话存档恢复消息（证据可溯恢复快照，此处恢复问答对 + 该轮 trace_id）
+    const restored = turnsToMessages(envelope.data.turns, nextId);
     setMessages(restored);
+    // 切换会话是"跳到一个新上下文"：分页重置到最近一页，并且回到最新一条
+    setVisibleCount(MESSAGE_PAGE_SIZE);
+    stickToBottomRef.current = true;
   }, [streaming]);
 
   const handleCreateSession = useCallback(() => {
     setActiveSession(null);
     setMessages([]);
+    setVisibleCount(MESSAGE_PAGE_SIZE);
+    stickToBottomRef.current = true;
+    setShowJumpToBottom(false);
   }, []);
 
   const handleRenameSession = useCallback(async (id: string, title: string) => {
@@ -338,6 +381,16 @@ export function ChatPage() {
     setTimeout(() => setHighlight(null), 2100);
   }, []);
 
+  /** 推荐追问 / 再问一句共用：**必须**是稳定引用，
+   * 否则每次 token 更新都会让所有历史 `MessageBubble` 的 props 变化，
+   * `memo` 完全失效（等于没做优化）。 */
+  const handleReask = useCallback((question: string) => void send(question), [send]);
+
+  // 只渲染最近 `visibleCount` 条：长会话的 DOM 数量与重排成本都降到常数级
+  // （配合 CSS `content-visibility`，屏外气泡连布局与绘制都跳过）
+  const hiddenCount = Math.max(0, messages.length - visibleCount);
+  const visibleMessages = hiddenCount > 0 ? messages.slice(hiddenCount) : messages;
+
   return (
     <div className="chat-with-sessions">
       <SessionSidebar
@@ -356,7 +409,7 @@ export function ChatPage() {
             <strong className="mono">{rateLimit.secondsLeft}</strong> 秒后自动重试
           </div>
         )}
-        <div className="chat-scroll" ref={scrollRef}>
+        <div className="chat-scroll" ref={scrollRef} onScroll={handleScroll}>
           <div className="chat-inner">
             {messages.length === 0 ? (
               <div className="empty-state">
@@ -371,22 +424,64 @@ export function ChatPage() {
                 </div>
               </div>
             ) : (
-              messages.map((m, idx) => (
-                <MessageBubble
-                  key={m.id}
-                  message={m}
-                  originalQuestion={idx > 0 ? messages[idx - 1]?.content : undefined}
-                  highlightRank={highlight?.messageId === m.id ? highlight.rank : null}
-                  onCitationClick={handleCitationClick}
-                  onViewOriginal={setPreview}
-                  onRetry={m.error ? () => retry(m.id) : undefined}
-                  onReask={(q) => void send(q)}
-                  onFollowup={(q) => void send(q)}
-                />
-              ))
+              <>
+                {hiddenCount > 0 && (
+                  <button
+                    type="button"
+                    className="btn-text chat-load-earlier"
+                    onClick={() => setVisibleCount((n) => n + MESSAGE_PAGE_SIZE)}
+                  >
+                    显示更早的 {Math.min(hiddenCount, MESSAGE_PAGE_SIZE)} 条（共 {hiddenCount} 条未显示）
+                  </button>
+                )}
+                {visibleMessages.map((m, idx) => {
+                  // 全局下标：`originalQuestion` 取的是**整个会话**的上一条，
+                  // 不能因为裁掉了前面几条就错位
+                  const globalIdx = hiddenCount + idx;
+                  return (
+                    <div className="chat-msg-slot" key={m.id}>
+                      <MessageBubble
+                        message={m}
+                        originalQuestion={globalIdx > 0 ? messages[globalIdx - 1]?.content : undefined}
+                        highlightRank={highlight?.messageId === m.id ? highlight.rank : null}
+                        onCitationClick={handleCitationClick}
+                        onViewOriginal={setPreview}
+                        onRetry={m.error ? retry : undefined}
+                        onReask={handleReask}
+                        onFollowup={handleReask}
+                      />
+                    </div>
+                  );
+                })}
+              </>
             )}
           </div>
         </div>
+
+        {showJumpToBottom && (
+          <button type="button" className="chat-jump-bottom" onClick={jumpToBottom}>
+            ↓ 回到最新
+          </button>
+        )}
+
+        {pendingApproval ? (
+          <div className="chat-approval-slot">
+            <ToolApprovalCard
+              payload={pendingApproval}
+              onDecide={async (action, value) => {
+                const runId = pendingApproval.run_id;
+                if (!runId) throw new Error("缺少 run_id，无法恢复");
+                await resumeRun(runId, action, value);
+                setPendingApproval(null);
+              }}
+              onApproveAll={async (tool) => {
+                const runId = pendingApproval.run_id;
+                if (!runId) throw new Error("缺少 run_id，无法授权");
+                await approveRun(runId, [tool], true);
+              }}
+            />
+          </div>
+        ) : null}
 
         <div className="chat-input-area">
           {attachOpen && (
@@ -408,7 +503,6 @@ export function ChatPage() {
             onSend={(q) => void send(q)}
             onStop={stop}
             onAttach={() => setAttachOpen((v) => !v)}
-            voice={<VoiceRecorder onTranscript={(text) => inputRef.current?.append(text)} />}
           />
           {quickDoc && !attachOpen && (
             <div className="quick-attach-bar trace-id">

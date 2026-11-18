@@ -5,31 +5,30 @@
 - POST /knowledge/rebuild/{doc_id}：重新构建索引；
 - DELETE /knowledge/files/{doc_id}：删除文档及其块。
 """
-import logging
 import uuid
 
-from fastapi import APIRouter, Depends, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, Request, UploadFile
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from app.api.upload_util import sanitize_filename, stream_to_disk
-from app.api.kb import resolve_kb_for_write as _resolve_upload_kb
 from app.core.envelope import Envelope, ok_envelope
-from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
+from app.core.tracing import elapsed_ms_since, get_trace_id, now_ms, set_trace_id
 from app.core.envelope import ApiError, ErrCode
 from app.dependencies import (
+    reject_background_when_busy,
     enforce_rate_limit,
     get_knowledge_service,
     get_principal,
-    require_role,
 )
 from app.domain.schemas import DOC_STATUS_INDEXED
 from app.services.knowledge import KnowledgeService
-from app.services.security.auth import Principal
+from app.core.identity import Principal
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-router = APIRouter(prefix="/knowledge", tags=["knowledge"], dependencies=[Depends(require_role("admin"))])
+router = APIRouter(prefix="/knowledge", tags=["knowledge"])
 
 
 def _assert_doc_tenant(principal: Principal, record) -> None:
@@ -48,18 +47,13 @@ def _file_view(record) -> dict:
         "chunks": record.chunk_count,
         "status": record.status,
         "error": record.error,
-        "knowledge_base_id": record.knowledge_base_id or "default",
     }
-
-
-# KB 写路径校验复用 api/kb.py 的公共实现（与 ingest 端点同源，避免两处口径分叉）
 
 
 @router.post("/upload", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 async def upload(
     file: UploadFile,
     request: Request,
-    kb_id: str | None = Form(None),
     service: KnowledgeService = Depends(get_knowledge_service),
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
@@ -68,7 +62,7 @@ async def upload(
     流式纪律（KQ-05）：边写边计数、超限即中断，不把整文件读进内存；
     分钟级的解析/索引放到线程池，不阻塞事件循环。
     """
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     settings = request.app.state.settings
@@ -76,9 +70,8 @@ async def upload(
     tmp_path = settings.upload_dir / f".uploading-{uuid.uuid4().hex[:12]}.tmp"
     tmp_path.parent.mkdir(parents=True, exist_ok=True)
     await stream_to_disk(file, tmp_path, settings.max_upload_mb)
-    target_kb = _resolve_upload_kb(request, kb_id, principal.tenant_id)
     record = await run_in_threadpool(
-        service.ingest_path, filename, tmp_path, None, None, principal.tenant_id, target_kb
+        service.ingest_path, filename, tmp_path, None, None, principal.tenant_id
     )
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
@@ -89,7 +82,8 @@ def list_files(
     service: KnowledgeService = Depends(get_knowledge_service),
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
-    trace_id = new_trace_id()
+    """已入库文档列表（状态、版本、块数、更新时间）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     # KQ-02：管理面列表也必须按主体租户过滤（admin ≠ 跨租户超级用户）
@@ -97,14 +91,21 @@ def list_files(
     return ok_envelope([_file_view(r) for r in files], trace_id, elapsed_ms_since(started))
 
 
-@router.post("/rebuild/{doc_id}", response_model=Envelope)
+@router.post(
+    "/rebuild/{doc_id}",
+    response_model=Envelope,
+    dependencies=[Depends(enforce_rate_limit), Depends(reject_background_when_busy)],
+)
 def rebuild(
     doc_id: str,
     request: Request,
     service: KnowledgeService = Depends(get_knowledge_service),
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
-    trace_id = new_trace_id()
+    """重建某个文档的索引（按当前切块/解析策略重新生成块集合）。
+
+    旧块不删除而是落到历史版本区（溯源链不断裂），见 `services/knowledge.py` 的 `reparse`。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     _assert_doc_tenant(principal, service.get(doc_id))
@@ -112,14 +113,15 @@ def rebuild(
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
 
-@router.delete("/files/{doc_id}", response_model=Envelope)
+@router.delete("/files/{doc_id}", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def delete_file(
     doc_id: str,
     request: Request,
     service: KnowledgeService = Depends(get_knowledge_service),
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
-    trace_id = new_trace_id()
+    """删除文档：连带清理块、图谱实体、图像资产与入库任务原件。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     _assert_doc_tenant(principal, service.get(doc_id))
@@ -136,7 +138,7 @@ def preview_document(
     doc_id: str, request: Request, principal: Principal = Depends(get_principal)
 ) -> Envelope:
     """文档解析预览：大纲 + 块列表 + 表格 + 资源 + RAPTOR 树。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     service: KnowledgeService = request.app.state.knowledge
@@ -205,7 +207,7 @@ def preview_chunk(
     doc_id: str, chunk_id: str, request: Request, principal: Principal = Depends(get_principal)
 ) -> Envelope:
     """单块详情：内容 + 位置 + 切块器 + 父块 + 子块。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     service: KnowledgeService = request.app.state.knowledge
@@ -266,15 +268,17 @@ class ReparseRequest(BaseModel):
     parse_policy: dict = Field(default_factory=dict)
 
 
-@router.post("/{doc_id}/reparse", response_model=Envelope)
+@router.post("/{doc_id}/reparse", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def reparse_document(
     doc_id: str, req: ReparseRequest, request: Request, principal: Principal = Depends(get_principal)
 ) -> Envelope:
     """重新解析（新策略生成新版本块集合）。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
+    # 按需载入：策略校验仅在写路径用
     from app.services.chunkers.factory import validate_chunk_policy
+    # 按需载入：策略校验仅在写路径用
     from app.services.parsers.router import validate_parse_policy
 
     if error := validate_chunk_policy(req.chunk_policy):
@@ -288,12 +292,12 @@ def reparse_document(
     return ok_envelope(_file_view(record), trace_id, elapsed_ms_since(started))
 
 
-@router.post("/{doc_id}/offline", response_model=Envelope)
+@router.post("/{doc_id}/offline", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def offline_document(
     doc_id: str, request: Request, principal: Principal = Depends(get_principal)
 ) -> Envelope:
     """删除索引（临时下架）：保留源文件与记录，文档从检索中消失。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     service: KnowledgeService = request.app.state.knowledge
@@ -308,7 +312,7 @@ class RetrievalProbeRequest(BaseModel):
     top_k: int = Field(default=4, ge=1, le=10)
 
 
-@router.post("/retrieval-probe", response_model=Envelope)
+@router.post("/retrieval-probe", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def retrieval_probe(
     req: RetrievalProbeRequest, request: Request, principal: Principal = Depends(get_principal)
 ) -> Envelope:
@@ -323,7 +327,7 @@ def knowledge_stats(
     request: Request, principal: Principal = Depends(get_principal)
 ) -> Envelope:
     """知识库 KPI 看板。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     service: KnowledgeService = request.app.state.knowledge
@@ -345,12 +349,12 @@ class ProbeRequest(BaseModel):
     top_k: int = Field(default=4, ge=1, le=10)
 
 
-@router.post("/{doc_id}/probe", response_model=Envelope)
+@router.post("/{doc_id}/probe", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def probe_document(
     doc_id: str, req: ProbeRequest, request: Request, principal: Principal = Depends(get_principal)
 ) -> Envelope:
     """单文档检索诊断：返回该文档被命中的块列表。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     service: KnowledgeService = request.app.state.knowledge

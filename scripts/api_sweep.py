@@ -32,12 +32,17 @@ import urllib.parse
 import urllib.request
 import uuid
 
+# 共享 HTTP 客户端（此前本文件与 api_sweep.py 各写一份，参数还不一致）
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from http_client import call, data_of, upload_multipart  # noqa: E402
+
 PASSED: list[str] = []
 FAILED: list[tuple[str, str]] = []
 REJECTED: list[tuple[str, str]] = []
 TIMEOUTS: list[tuple[str, str]] = []
 
-TOKEN = ""
+# 令牌统一由 http_client 持有（call() 从那里读）
 
 SAMPLE_MD = """# 扫描用文档
 
@@ -52,67 +57,6 @@ SAMPLE_XLSX_NAME = "扫描表.xlsx"
 
 
 # ---------------------------------------------------------------- 基础设施
-
-
-def call(base: str, method: str, path: str, body=None, raw=False, timeout=120,
-         content_type: str | None = None, headers: dict | None = None):
-    """返回 (status, body)。不抛异常——失败也要继续跑后面的端点。"""
-    url = base.rstrip("/") + path
-    data = None
-    hdrs = dict(headers or {})
-    if TOKEN:
-        hdrs["Authorization"] = f"Bearer {TOKEN}"
-    if body is not None:
-        if isinstance(body, bytes):
-            data = body
-            hdrs["Content-Type"] = content_type or "application/octet-stream"
-        else:
-            data = json.dumps(body).encode()
-            hdrs["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = resp.read()
-            if raw:
-                return resp.status, payload.decode(errors="replace")
-            try:
-                return resp.status, json.loads(payload)
-            except json.JSONDecodeError:
-                return resp.status, payload.decode(errors="replace")
-    except urllib.error.HTTPError as exc:
-        payload = exc.read()
-        if raw:
-            return exc.code, payload.decode(errors="replace")
-        try:
-            return exc.code, json.loads(payload)
-        except json.JSONDecodeError:
-            return exc.code, payload.decode(errors="replace")
-    except Exception as exc:  # noqa: BLE001
-        return 0, str(exc)
-
-
-def upload_multipart(base: str, path: str, filename: str, content: bytes,
-                     content_type: str = "text/markdown", field: str = "file"):
-    boundary = "----KquerySweepBoundary"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
-        f"Content-Type: {content_type}\r\n\r\n"
-    ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
-    return call(base, "POST", path, body=body,
-                content_type=f"multipart/form-data; boundary={boundary}")
-
-
-def data_of(body):
-    if not isinstance(body, dict):
-        return {}
-    value = body.get("data")
-    return value if isinstance(value, dict) else {}
-
-
-# ---------------------------------------------------------------- 资源工厂
-
-
 class Fixtures:
     """为每个端点现场造一份**专属**资源。
 
@@ -216,12 +160,12 @@ class Fixtures:
         return data_of(body).get("ticket_id", "")
 
     def user(self) -> str:
-        status, body = call(self.base, "POST", "/auth/register", body={
-            "username": self._name("sweep_u"), "password": "Sweep@12345",
-        })
-        if status not in (200, 201):
-            return ""
-        return data_of(body).get("user_id", "")
+        """用户夹具。
+
+        认证已下线（2026-11-12）：没有账号可注册，返回固定标识即可——
+        需要"用户"参数的端点现在一律按固定身份处理。
+        """
+        return self._name("sweep_u")
 
 
 # ---------------------------------------------------------------- 请求构造
@@ -248,7 +192,6 @@ BODY_OVERRIDES: dict[tuple[str, str], dict | object] = {
                                        "doc_id": fx.get("quick_doc_id", "")},
     ("POST", "/sessions"): {"title": "扫描会话"},
     ("PATCH", "/sessions/{session_id}"): {"title": "扫描会话（改名）"},
-    ("POST", "/graph/build"): {},
     ("PUT", "/admin/users/{user_id}"): {"roles": ["sales"]},
     ("PUT", "/admin/users/{user_id}/password"): {"password": "Sweep@12345"},
     ("POST", "/knowledge/retrieval-probe"): lambda fx: {"query": "计费规则",
@@ -264,9 +207,6 @@ BODY_OVERRIDES: dict[tuple[str, str], dict | object] = {
     # 扫描只验证端点活着，不需要等社区摘要
     ("POST", "/graph/build"): lambda fx: {"doc_id": fx.get("doc_id", ""),
                                       "rebuild_communities": False},
-    ("PUT", "/admin/documents/{doc_id}/acl"): {"allow": [], "deny": [], "is_public": False},
-    ("POST", "/auth/register"): lambda fx: {"username": fx.get("username", "sweep_user"),
-                                        "password": "Sweep@12345"},
 }
 
 
@@ -413,7 +353,6 @@ def make_xlsx() -> bytes:
 
 
 def main() -> int:
-    global TOKEN
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://localhost:8100")
     parser.add_argument("--user", default="admin")
@@ -422,18 +361,7 @@ def main() -> int:
     args = parser.parse_args()
     base = args.base
 
-    if args.token:
-        TOKEN = args.token
-    else:
-        status, body = call(base, "POST", "/auth/login",
-                            body={"username": args.user, "password": args.password})
-        if status != 200:
-            print(f"登录失败：{status} {str(body)[:200]}")
-            return 2
-        TOKEN = data_of(body).get("token", "")
-    if not TOKEN:
-        print("未取得令牌")
-        return 2
+    # 认证已下线（2026-11-12）：无需登录，扫描直接开始。
 
     fx_pool = Fixtures(base)
     status, body = call(base, "GET", "/openapi.json", headers={"Authorization": ""})
@@ -481,8 +409,6 @@ def main() -> int:
             fx.setdefault("doc_id", fx_pool.doc())
         if (method, path) == ("POST", "/media/index"):
             fx.setdefault("doc_id", fx_pool.doc())
-        if (method, path) == ("POST", "/auth/register"):
-            fx["username"] = f"sweep_{uuid.uuid4().hex[:8]}"
         if (method, path) == ("POST", "/feedback/refusal"):
             fx.setdefault("trace_id", fx_pool.trace())
 

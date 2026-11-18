@@ -17,60 +17,24 @@
     python3 scripts/e2e_new_features.py --base http://localhost:8090 --user admin --password xxx
 """
 import argparse
-import json
 import sys
 import time
 
 from playwright.sync_api import sync_playwright
 
-PASSED: list[str] = []
-FAILED: list[tuple[str, str]] = []
+# 共享浏览器辅助（此前 4 个脚本各写一份，`check` 的返回类型还不一致）
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_helpers import (  # noqa: E402
+    FAILED,
+    PASSED,
+    check,
+    login,
+    page_text,
+    section,
+)
+
 CONSOLE_ERRORS: list[str] = []
-
-
-def login(page, base: str, user: str, password: str) -> tuple[bool, bool]:
-    """真实走登录表单（不偷塞 localStorage）——登录本身就是一条被测路径。
-
-    没有登录这一步的话，本脚本只能打免鉴权的开发形态（vite dev server +
-    AUTH_ENABLED=false）。部署形态（AUTH_ENABLED=true）首屏是登录页，
-    页面上根本没有对话输入框，第一个断言就会以"元素找不到"超时收场。
-
-    返回 (是否登录成功, 是否口令档)。
-    """
-    page.goto(base, wait_until="networkidle", timeout=45000)
-    if page.locator('input[name="username"]').count() == 0:
-        return True, False  # 免鉴权模式
-    page.locator('input[name="username"]').fill(user)
-    page.locator('input[name="password"]').fill(password)
-    page.locator('button[type="submit"]').click()
-    try:
-        page.wait_for_url(lambda url: "/login" not in url, timeout=20000)
-    except Exception:  # noqa: BLE001
-        pass
-    return page.locator('input[name="username"]').count() == 0, True
-
-
-def check(name: str, condition: bool, detail: str = "") -> bool:
-    if condition:
-        PASSED.append(name)
-        print(f"  \033[32m✓\033[0m {name}")
-        return True
-    FAILED.append((name, detail))
-    print(f"  \033[31m✗\033[0m {name} — {detail}")
-    return False
-
-
-def section(title: str) -> None:
-    print(f"\n\033[1m{title}\033[0m")
-
-
-def page_text(page) -> str:
-    try:
-        return page.inner_text("body")
-    except Exception:
-        return ""
-
-
 def api(page, path: str, method: str = "GET", body=None, timeout_ms: int = 30000) -> dict:
     """在浏览器上下文内发起同源请求。
 
@@ -82,14 +46,8 @@ def api(page, path: str, method: str = "GET", body=None, timeout_ms: int = 30000
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
+        // 认证已下线（2026-11-12）：不再从 localStorage 取身份，也不发身份头。
         const headers = { "Content-Type": "application/json" };
-        const tok = localStorage.getItem("kquery.token");
-        if (tok) headers["Authorization"] = "Bearer " + tok;
-        else {
-          headers["X-User-Id"] = localStorage.getItem("kquery.user_id") || "admin";
-          headers["X-Tenant-Id"] = localStorage.getItem("kquery.tenant_id") || "default";
-          headers["X-Roles"] = localStorage.getItem("kquery.roles") ?? "admin";
-        }
         const resp = await fetch(path, {
           method, headers, signal: ctrl.signal,
           ...(body ? { body: JSON.stringify(body) } : {}),

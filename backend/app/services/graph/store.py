@@ -10,15 +10,16 @@
 `BaseGraphStore` 抽象，只要新引擎满足该协议，这三处无需改动。
 """
 import json
-import logging
-import threading
 from collections import deque
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from app.core.errors import StorageCorruptedError
+from app.services.graph.sqlite_store import _TimedLock
 from app.domain.schemas import Community, EntityNode, RelationEdge
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 MAX_BFS_EDGES = 50  # 子图爆炸护栏：单次遍历最多返回的关系数
 
@@ -70,12 +71,13 @@ def _k(tenant_id: str | None, name: str) -> str:
 class InMemoryGraphStore:
     """邻接表内存图。出边/入边分索引，BFS 按强度剪枝。"""
 
-    def __init__(self, path: Path | None = None):
+    def __init__(self, path: Path | None = None, on_lock_timing=None) -> None:
         self._entities: dict[str, EntityNode] = {}
         self._out: dict[str, list[RelationEdge]] = {}  # source → edges
         self._in: dict[str, list[RelationEdge]] = {}  # target → edges
         self._communities: dict[str, Community] = {}
-        self._lock = threading.Lock()
+        # 锁等待 / 持有计时（`C-08`）：与 SQLite 实现同一套判据，两种后端可比。
+        self._lock = _TimedLock("memory", on_lock_timing)
         self._path = path
         if path and path.exists():
             self._load(path)
@@ -249,6 +251,12 @@ class InMemoryGraphStore:
             self._path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def _load(self, path: Path) -> None:
+        """从 JSON 快照恢复图谱。
+
+        **加载失败即拒绝启动**（`A-11`）：此前这里是 `except Exception: logger.exception(...)`
+        然后「从空图启动」——损坏的图谱被静默清空，用户以为图谱还在、实际已被清空，
+        而且没有任何错误提示。真相源损坏时必须**显式失败**，并给出修复指引。
+        """
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             for e in payload.get("entities", []):
@@ -261,5 +269,12 @@ class InMemoryGraphStore:
             for c in payload.get("communities", []):
                 self._communities[c["community_id"]] = Community(**c)
             logger.info("图存储已加载: %d 实体 / %d 关系", len(self._entities), len(self.all_relations()))
-        except Exception:
-            logger.exception("图存储加载失败，从空图启动")
+        except StorageCorruptedError:
+            raise
+        except Exception as exc:
+            logger.exception("图存储加载失败，拒绝启动: %s", path)
+            raise StorageCorruptedError(
+                "图存储快照损坏或格式非法",
+                remedy="从备份恢复该图谱文件，或删除该文件后重建图谱（POST /graph/build）",
+                path=path,
+            ) from exc

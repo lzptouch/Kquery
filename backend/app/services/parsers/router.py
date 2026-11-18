@@ -3,11 +3,9 @@
 不支持的扩展名 → 明确报错（上传前前端已拦截，此处为兜底）。
 """
 import inspect
-import logging
 from pathlib import Path
 
 from app.core.envelope import ApiError, ErrCode
-from app.services.parsers.audio import AudioParser
 from app.services.parsers.base import ParseResult
 from app.services.parsers.docx import DocxParser
 from app.services.parsers.markdown import MarkdownParser
@@ -16,8 +14,9 @@ from app.services.parsers.pdf import PdfParser
 from app.services.parsers.plaintext import CODE_EXTENSIONS, HTML_EXTENSIONS, TEXT_EXTENSIONS, PlainTextParser
 from app.services.parsers.presentation import PresentationParser
 from app.services.parsers.spreadsheet import SpreadsheetParser
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 #: 纯文本类扩展名（txt/csv/json/yaml/日志/配置）
 PLAIN_EXTENSIONS = set(TEXT_EXTENSIONS) | set(HTML_EXTENSIONS)
@@ -26,7 +25,7 @@ CODE_EXTS = set(CODE_EXTENSIONS)
 
 SUPPORTED_EXTENSIONS = {
     ".md", ".markdown", ".pdf", ".docx", ".doc",
-    ".png", ".jpg", ".jpeg", ".mp3", ".wav",
+    ".png", ".jpg", ".jpeg",
     # F3 新增
     ".xlsx",
     # F9：PPT/PPTX（补齐 doc-qa 的演示文稿能力）
@@ -39,6 +38,10 @@ SUPPORTED_EXTENSIONS = {
 UNSUPPORTED_HINTS = {
     ".xls": "不支持旧版 Excel 格式（.xls），请另存为 .xlsx 后重试",
     ".ppt": "不支持旧版 PowerPoint（.ppt），请另存为 .pptx 后重试",
+    # 语音能力已下线：给明确提示，而不是让用户对着"不支持的文件类型"猜
+    ".mp3": "本项目不含语音转写，音频请先转成文字（.txt/.md）后上传",
+    ".wav": "本项目不含语音转写，音频请先转成文字（.txt/.md）后上传",
+    ".m4a": "本项目不含语音转写，音频请先转成文字（.txt/.md）后上传",
 }
 
 #: 解析策略字段真源：键 → (允许的类型, 含义)
@@ -55,12 +58,6 @@ PARSE_POLICY_SCHEMA: dict[str, tuple[tuple[type, ...], str]] = {
     "pdf_tables": ((bool,), "是否识别 PDF 几何表格"),
     "pdf_ocr": ((bool,), "是否对扫描页做 OCR"),
     "ocr_enabled": ((bool,), "是否启用图片 OCR 解析"),
-    "transcribe_enabled": ((bool,), "是否启用语音转写"),
-    "transcribe_model": ((str,), "语音转写模型名"),
-    "audio_max_chunk_s": ((int, float), "单次转写分片时长上限（秒）"),
-    "audio_min_sample_rate": ((int,), "转写最低采样率（Hz）"),
-    "audio_split_on_silence": ((bool,), "是否按静音切分音频"),
-    "audio_max_workers": ((int,), "转写并发分块数"),
 }
 
 
@@ -93,7 +90,6 @@ TYPE_GROUPS = {
     },
     "code": set(CODE_EXTS),
     "image": {".png", ".jpg", ".jpeg"},
-    "audio": {".mp3", ".wav"},
 }
 
 
@@ -101,13 +97,12 @@ class ParserRouter:
     def __init__(
         self,
         ocr_parser: OcrParser,
-        audio_parser: AudioParser,
         docx_parser: DocxParser,
         pdf_parser: PdfParser | None = None,
         spreadsheet_parser: SpreadsheetParser | None = None,
         plaintext_parser: PlainTextParser | None = None,
         presentation_parser: PresentationParser | None = None,
-    ):
+    ) -> None:
         self._parsers = {
             ".md": MarkdownParser(),
             ".markdown": MarkdownParser(),
@@ -122,7 +117,6 @@ class ParserRouter:
         for ext in PLAIN_EXTENSIONS | CODE_EXTS:
             self._parsers[ext] = text_parser
         self._ocr = ocr_parser
-        self._audio = audio_parser
 
     def supported_extensions(self) -> set[str]:
         """已注册且可路由的扩展名集合（健康检查探针用）。"""
@@ -134,8 +128,6 @@ class ParserRouter:
             return self._parsers[ext].name
         if ext in TYPE_GROUPS["image"]:
             return "ocr"
-        if ext in TYPE_GROUPS["audio"]:
-            return "audio"
         raise ApiError(ErrCode.UNSUPPORTED_FILE_TYPE, self._unsupported_message(ext))
 
     @staticmethod
@@ -157,8 +149,6 @@ class ParserRouter:
             parser = self._parsers[ext]
         elif ext in TYPE_GROUPS["image"]:
             parser = self._ocr
-        elif ext in TYPE_GROUPS["audio"]:
-            parser = self._audio
         else:
             raise ApiError(ErrCode.UNSUPPORTED_FILE_TYPE, self._unsupported_message(ext))
         result = self._invoke(parser, path, doc_id, tenant_id, policy, progress)

@@ -5,20 +5,20 @@
 - 记录带策略版本：换策略后回放旧记录需注明口径。
 """
 import json
-import logging
 import threading
 import time
 from pathlib import Path
 
 from app.services.query.schemas import QueryAnalysis
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 MAX_RECORDS = 1000  # 滚动保留上限（最小化原则）
 
 
 class AnalysisStore:
-    def __init__(self, path: Path, flush_interval_s: float = 2.0):
+    def __init__(self, path: Path, flush_interval_s: float = 2.0) -> None:
         self._path = path
         self._lock = threading.Lock()
         self._records: list[QueryAnalysis] = []
@@ -79,10 +79,18 @@ class AnalysisStore:
         self._stopping.set()
         self.flush()
 
-    def get(self, analysis_id: str) -> QueryAnalysis | None:
+    def get(self, analysis_id: str, tenant_id: str | None = None) -> QueryAnalysis | None:
+        """按 id 取记录；`tenant_id` 给定时归属不符与不存在同返回 None。
+
+        分析记录含**用户原话**，跨租户按 id 直取等于读别人的提问历史
+        （对照 `doc/analysis` KQ-02：按 id 取资源必须先断言租户）。
+        """
         for r in self._records:
-            if r.analysis_id == analysis_id:
-                return r
+            if r.analysis_id != analysis_id:
+                continue
+            if tenant_id and r.tenant_id != tenant_id:
+                return None
+            return r
         return None
 
     def list_records(
@@ -91,10 +99,13 @@ class AnalysisStore:
         needs_retrieval: bool | None = None,
         range_s: int | None = None,
         limit: int = 50,
+        tenant_id: str | None = None,
     ) -> list[QueryAnalysis]:
         cutoff = time.time() - range_s if range_s else None
         rows = []
         for r in reversed(self._records):  # 最新在前
+            if tenant_id and r.tenant_id != tenant_id:
+                continue
             if intent and r.intent != intent:
                 continue
             if needs_retrieval is not None and r.needs_retrieval != needs_retrieval:
@@ -102,7 +113,8 @@ class AnalysisStore:
             if cutoff:
                 try:
                     ts = time.mktime(time.strptime(r.created_at[:19], "%Y-%m-%dT%H:%M:%S"))
-                except Exception:
+                except Exception:  # noqa: BLE001 - 时间戳解析失败：按当前时间处理
+                    logger.debug("时间戳解析失败：按当前时间处理")
                     ts = time.time()
                 if ts < cutoff:
                     continue
@@ -111,9 +123,9 @@ class AnalysisStore:
                 break
         return rows
 
-    def patterns(self, range_s: int | None = None) -> list[dict]:
+    def patterns(self, range_s: int | None = None, tenant_id: str | None = None) -> list[dict]:
         """意图分布统计（Query 模式分析卡片）：intent / count / ratio / avg_elapsed_ms。"""
-        records = self.list_records(range_s=range_s, limit=MAX_RECORDS)
+        records = self.list_records(range_s=range_s, limit=MAX_RECORDS, tenant_id=tenant_id)
         if not records:
             return []
         buckets: dict[str, list[int]] = {}

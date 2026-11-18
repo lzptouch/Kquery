@@ -10,13 +10,13 @@
 - 循环上限必需：第二次仍不达标意味着问题在知识库本身而非检索措辞；
 - 每一轮都在改变提问角度（精炼），而不是重复提问。
 """
-import logging
 
-from pydantic import BaseModel
 
 from app.services.llm import LLM
+from app.core.errors import ConfigError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 BRANCH_CORRECT = "correct"
 BRANCH_AMBIGUOUS = "ambiguous"
@@ -28,14 +28,6 @@ REFINE_PROMPT = """基于原始问题与当前检索到的片段，生成一个�
 
 原始问题：{question}
 当前命中片段摘要：{evidence_hints}"""
-
-
-class CragRound(BaseModel):
-    round: int
-    branch: str
-    avg_score: float
-    evidence_count: int
-    refined_query: str = ""
 
 
 class CragRouter:
@@ -53,9 +45,9 @@ class CragRouter:
         correct_th: float,
         incorrect_th: float,
         max_iterations: int = 2,
-    ):
+    ) -> None:
         if correct_th <= incorrect_th:
-            raise ValueError(
+            raise ConfigError(
                 f"CRAG 阈值必须 correct_th > incorrect_th（得 {correct_th} / {incorrect_th}）"
             )
         self._correct_th = correct_th

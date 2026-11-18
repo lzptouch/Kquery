@@ -1,0 +1,120 @@
+{"query_id": "q01", "question": "BM25 打分用的是哪个公式？IDF 为什么取 ln(1+…)？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q02", "question": "为什么 BM25 要「先过滤再排序」，而不是排完再跳过不合格的块？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q03", "question": "零分文档为什么不进入 RRF 排名？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q04", "question": "Milvus 的全量查询为什么要分页拉取？不分页会怎样？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q05", "question": "FAISS 侧的「迭代扩取」解决什么问题？什么时候会告警？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q06", "question": "RRF 融合为什么只用排名、不用分数？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q07", "question": "索引版本过滤为什么放在融合前，而不是让各后端各自过滤？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q08", "question": "重排用的是哪个模型？是本地部署还是托管服务？", "doc_id": "05-检索链路", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q09", "question": "令牌桶的回填为什么不允许多于容量？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q10", "question": "有界执行器解决了哪三个问题？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q11", "question": "single-flight 的等待上限是多久？超时后怎么办？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q12", "question": "上游隔离仓的熔断参数是什么？半开要连续成功几次？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q13", "question": "按 Little's Law 算，目标 4 QPS、平均耗时 8 秒需要多少在飞请求？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q14", "question": "检索召回池为什么不能复用问答执行器？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q15", "question": "多副本部署下哪些状态仍然不共享？", "doc_id": "11-并发与容量", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q16", "question": "Prometheus 指标的 label 为什么用 path 而不是 tenant？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q17", "question": "指标里会不会存用户的查询原文？隐私是怎么处理的？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q18", "question": "成本账本里 priced 与 estimated 两个标记分别表示什么？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q19", "question": "探针分几级？/livez 为什么不查依赖？", "doc_id": "10-可观测性与成本", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "q20", "question": "core/ 层允许依赖什么？单向依赖带来什么实际好处？", "doc_id": "02-系统架构与运行时", "question_type": "fact", "difficulty": "medium", "requires_vision": false, "tags": ["fact", "project-doc"]}
+{"query_id": "e001", "question": "单笔报销上限是多少？", "doc_id": "12-报销制度", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e002", "question": "单笔报销超过 5000 元有什么要求？", "doc_id": "12-报销制度", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e003", "question": "年假满 10 年不满 20 年的是多少？", "doc_id": "13-请假与休假", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e004", "question": "婚假是多少？", "doc_id": "13-请假与休假", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e005", "question": "关于「保密协议签署后长期有…」的规定是什么？", "doc_id": "14-合同与法务", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e006", "question": "所有线上服务必有什么要求？", "doc_id": "15-信息安全规范", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e007", "question": "关于「技术岗位面试至少安排…」的规定是什么？", "doc_id": "16-招聘与面试", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e008", "question": "试用期长度根据岗位级别确定，标准是多少？", "doc_id": "16-招聘与面试", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e009", "question": "一般咨询工单的服务时限是多少？", "doc_id": "17-客户支持SLA", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e010", "question": "回滚方案必有什么要求？", "doc_id": "18-产品发布流程", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e011", "question": "日活口径是多少？", "doc_id": "19-数据平台与指标口径", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e012", "question": "关于「离线任务产出时间不晚…」的规定是什么？", "doc_id": "19-数据平台与指标口径", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e013", "question": "关于「差旅费用属于市场与销…」的规定是什么？", "doc_id": "20-财务与预算", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e014", "question": "P2 故障的响应时限是多少？", "doc_id": "21-运维值班与故障分级", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e015", "question": "关于「每位员工每年享有 5…」的规定是什么？", "doc_id": "22-培训与学习", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e016", "question": "必修培训未完成算不算在范围内？", "doc_id": "22-培训与学习", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e017", "question": "供应商年度考核分是多少？", "doc_id": "23-供应商管理", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e018", "question": "关于「办公区域的门禁权限按…」的规定是什么？", "doc_id": "24-办公与行政", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e019", "question": "引入开源组件前必有什么要求？", "doc_id": "25-知识产权与开源", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e020", "question": "第三方素材用于对外宣传前有什么要求？", "doc_id": "25-知识产权与开源", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e021", "question": "报价单有效期是多少？", "doc_id": "26-销售与报价", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e022", "question": "单元测试覆盖率门槛是多少？", "doc_id": "27-质量与测试规范", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e023", "question": "离职有什么要求？", "doc_id": "28-离职与交接", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e024", "question": "关于「账号权限在离职当日全…」的规定是什么？", "doc_id": "28-离职与交接", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e025", "question": "关键系统的恢复点目标是多少？", "doc_id": "29-灾难恢复与备份", "question_type": "fact", "difficulty": "easy", "requires_vision": false, "tags": ["fact"]}
+{"query_id": "e026", "question": "关于「单笔报销上限为 5000 元」与「报销需在每月 25 日前提交，逾期只能顺延到下月」的规定分别是什么？", "doc_id": "12-报销制度", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e027", "question": "关于「差旅住宿标准为每晚 600 元，超出部分需部门负责人审批」与「单笔报销超过 5000 元需要部门负责人与财务双签」的规定分别是什么？", "doc_id": "12-报销制度", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e028", "question": "关于「交通费凭票据实报销，市内打车单次不超过 100 元」与「本制度自 2024 年 1 月 1 日起执行」的规定分别是什么？", "doc_id": "12-报销制度", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e029", "question": "关于「年假按工龄计算，满 1 年不满 10 年的为 5 天」与「年假满 10 年不满 20 年的为 10 天」的规定分别是什么？", "doc_id": "13-请假与休假", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e030", "question": "关于「事假按日计薪，不超过连续 3 天」与「病假需提供二级及以上医院证明」的规定分别是什么？", "doc_id": "13-请假与休假", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e031", "question": "关于「婚假为 13 天（含国家规定与公司补充部分）」与「本制度自 2023 年 7 月 1 日起执行」的规定分别是什么？", "doc_id": "13-请假与休假", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e032", "question": "关于「单份合同金额超过 50 万元的必须由法务部审核」与「合同签署须使用公司统一的电子签平台」的规定分别是什么？", "doc_id": "14-合同与法务", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e033", "question": "关于「保密协议签署后长期有效，不设期限」与「合同争议优先选择公司所在地人民法院管辖」的规定分别是什么？", "doc_id": "14-合同与法务", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e034", "question": "关于「生产数据库禁止直接导出明文数据到本地」与「所有线上服务必须启用访问日志且保留不少于 180 天」的规定分别是什么？", "doc_id": "15-信息安全规范", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e035", "question": "关于「密钥统一存放在密钥管理服务，禁止写入代码仓库」与「外部人员临时访问需走审批并限定有效期」的规定分别是什么？", "doc_id": "15-信息安全规范", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e036", "question": "关于「技术岗位面试至少安排两轮技术面」与「录用审批需要用人部门负责人与 HRBP 双签」的规定分别是什么？", "doc_id": "16-招聘与面试", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e037", "question": "关于「候选人背景调查需在发出录用通知前完成」与「试用期长度根据岗位级别确定，标准为 3 至 6 个月」的规定分别是什么？", "doc_id": "16-招聘与面试", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e038", "question": "关于「P0 故障的首次响应时限为 30 分钟」与「P1 故障的首次响应时限为 2 小时」的规定分别是什么？", "doc_id": "17-客户支持SLA", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e039", "question": "关于「一般咨询工单的服务时限为 1 个工作日」与「客户满意度低于 90% 的月份需提交专项改进报告」的规定分别是什么？", "doc_id": "17-客户支持SLA", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e040", "question": "关于「所有发布必须经过灰度验证，灰度时长不少于 24 小时」与「回滚方案必须在发布前完成演练并记录」的规定分别是什么？", "doc_id": "18-产品发布流程", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e041", "question": "关于「发布日期避开法定节假日的前后三天」与「重大版本发布需发布说明文档与影响范围评估」的规定分别是什么？", "doc_id": "18-产品发布流程", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e042", "question": "关于「日活口径为自然日内有去重访问的账号数」与「留存率采用次日留存口径」的规定分别是什么？", "doc_id": "19-数据平台与指标口径", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e043", "question": "关于「指标口径变更必须提前公告 5 个工作日」与「离线任务产出时间不晚于每天早上 7 点」的规定分别是什么？", "doc_id": "19-数据平台与指标口径", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e044", "question": "关于「报销申请需在次月 5 日前提交以便当月入账」与「部门年度预算超支 5% 以内需部门负责人审批」的规定分别是什么？", "doc_id": "20-财务与预算", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e045", "question": "关于「差旅费用属于市场与销售费用科目」与「预算调整在每季度末统一受理」的规定分别是什么？", "doc_id": "20-财务与预算", "question_type": "multi_hop", "difficulty": "medium", "requires_vision": false, "tags": ["multi_hop"]}
+{"query_id": "e046", "question": "「单笔报销上限为 5000 元」与「年假按工龄计算，满 1 年不满 10 年的为 5 天」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "13-请假与休假"]}
+{"query_id": "e047", "question": "「单笔报销上限为 5000 元」与「单份合同金额超过 50 万元的必须由法务部审核」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "14-合同与法务"]}
+{"query_id": "e048", "question": "「单笔报销上限为 5000 元」与「生产数据库禁止直接导出明文数据到本地」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "15-信息安全规范"]}
+{"query_id": "e049", "question": "「单笔报销上限为 5000 元」与「技术岗位面试至少安排两轮技术面」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "16-招聘与面试"]}
+{"query_id": "e050", "question": "「单笔报销上限为 5000 元」与「P0 故障的首次响应时限为 30 分钟」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "17-客户支持SLA"]}
+{"query_id": "e051", "question": "「单笔报销上限为 5000 元」与「所有发布必须经过灰度验证，灰度时长不少于 24 小时」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "18-产品发布流程"]}
+{"query_id": "e052", "question": "「单笔报销上限为 5000 元」与「日活口径为自然日内有去重访问的账号数」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "19-数据平台与指标口径"]}
+{"query_id": "e053", "question": "「单笔报销上限为 5000 元」与「报销申请需在次月 5 日前提交以便当月入账」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "20-财务与预算"]}
+{"query_id": "e054", "question": "「单笔报销上限为 5000 元」与「P1 故障的响应时限为 1 小时」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "21-运维值班与故障分级"]}
+{"query_id": "e055", "question": "「单笔报销上限为 5000 元」与「每位员工每年享有 5 天带薪培训假」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "22-培训与学习"]}
+{"query_id": "e056", "question": "「单笔报销上限为 5000 元」与「新供应商准入需完成资质与安全评估两项审查」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "23-供应商管理"]}
+{"query_id": "e057", "question": "「单笔报销上限为 5000 元」与「员工每年享有 15 天带薪年假」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "24-办公与行政"]}
+{"query_id": "e058", "question": "「单笔报销上限为 5000 元」与「引入开源组件前必须确认许可证与业务用途兼容」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "25-知识产权与开源"]}
+{"query_id": "e059", "question": "「单笔报销上限为 5000 元」与「标准产品报价以官方价目表为准」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "26-销售与报价"]}
+{"query_id": "e060", "question": "「单笔报销上限为 5000 元」与「核心链路变更必须有自动化回归用例覆盖」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "27-质量与测试规范"]}
+{"query_id": "e061", "question": "「单笔报销上限为 5000 元」与「离职需提前 30 天提交书面申请」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "28-离职与交接"]}
+{"query_id": "e062", "question": "「单笔报销上限为 5000 元」与「核心数据每日备份一次并保留 30 天」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "29-灾难恢复与备份"]}
+{"query_id": "e063", "question": "「单笔报销上限为 5000 元」与「单笔折扣超过 10% 需要销售总监审批」分别是怎么规定的？", "doc_id": "12-报销制度", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "30-政策补充通知"]}
+{"query_id": "e064", "question": "「年假按工龄计算，满 1 年不满 10 年的为 5 天」与「单份合同金额超过 50 万元的必须由法务部审核」分别是怎么规定的？", "doc_id": "13-请假与休假", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "14-合同与法务"]}
+{"query_id": "e065", "question": "「年假按工龄计算，满 1 年不满 10 年的为 5 天」与「生产数据库禁止直接导出明文数据到本地」分别是怎么规定的？", "doc_id": "13-请假与休假", "question_type": "cross_doc", "difficulty": "medium", "requires_vision": false, "tags": ["cross_doc", "15-信息安全规范"]}
+{"query_id": "e066", "question": "本制度什么时候开始执行？", "doc_id": "12-报销制度", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e067", "question": "本制度什么时候开始执行？", "doc_id": "13-请假与休假", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e068", "question": "本规范什么时候开始执行？", "doc_id": "14-合同与法务", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e069", "question": "本规范什么时候开始执行？", "doc_id": "15-信息安全规范", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e070", "question": "本规范什么时候开始执行？", "doc_id": "16-招聘与面试", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e071", "question": "本协议什么时候开始执行？", "doc_id": "17-客户支持SLA", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e072", "question": "本流程什么时候开始执行？", "doc_id": "18-产品发布流程", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e073", "question": "本口径什么时候开始执行？", "doc_id": "19-数据平台与指标口径", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e074", "question": "本制度什么时候开始执行？", "doc_id": "20-财务与预算", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e075", "question": "本规范什么时候开始执行？", "doc_id": "21-运维值班与故障分级", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e076", "question": "本制度什么时候开始执行？", "doc_id": "22-培训与学习", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e077", "question": "本制度什么时候开始执行？", "doc_id": "23-供应商管理", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e078", "question": "本手册什么时候开始执行？", "doc_id": "24-办公与行政", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e079", "question": "本规范什么时候开始执行？", "doc_id": "25-知识产权与开源", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e080", "question": "本规则什么时候开始执行？", "doc_id": "26-销售与报价", "question_type": "temporal", "difficulty": "easy", "requires_vision": false, "tags": ["temporal"]}
+{"query_id": "e081", "question": "公司食堂的营业时间是什么？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e082", "question": "实习生每天的工时是多少？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e083", "question": "公司有哪些内部技术论坛？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e084", "question": "财务部用的 ERP 系统是哪家的？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e085", "question": "停车位怎么申请？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e086", "question": "公司年会在哪里举办？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e087", "question": "代码仓库用的是什么 Git 托管平台？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e088", "question": "客户投诉由谁负责升级？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e089", "question": "公司的股票期权怎么行权？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e090", "question": "机房位于哪个城市？", "doc_id": "", "question_type": "negative", "difficulty": "hard", "requires_vision": false, "tags": ["negative"]}
+{"query_id": "e091", "question": "年假天数的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "13-请假与休假", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "24-办公与行政"]}
+{"query_id": "e092", "question": "报销提交时限的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "12-报销制度", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "20-财务与预算"]}
+{"query_id": "e093", "question": "P1 故障响应时限的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "17-客户支持SLA", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "21-运维值班与故障分级"]}
+{"query_id": "e094", "question": "折扣审批门槛的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "26-销售与报价", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "30-政策补充通知"]}
+{"query_id": "e095", "question": "合同法务审核门槛的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "14-合同与法务", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "30-政策补充通知"]}
+{"query_id": "e096", "question": "访问日志保留天数的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "15-信息安全规范", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "30-政策补充通知"]}
+{"query_id": "e097", "question": "单元测试覆盖率门槛的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "27-质量与测试规范", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "30-政策补充通知"]}
+{"query_id": "e098", "question": "备份保留天数的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "29-灾难恢复与备份", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "30-政策补充通知"]}
+{"query_id": "e099", "question": "会议室预订单次上限的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "24-办公与行政", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "30-政策补充通知"]}
+{"query_id": "e100", "question": "复盘适用范围的规定是多少？两份文件似乎不一致，到底按哪个？", "doc_id": "21-运维值班与故障分级", "question_type": "contradictory", "difficulty": "hard", "requires_vision": false, "tags": ["contradictory", "30-政策补充通知"]}

@@ -5,17 +5,18 @@
 当前为 JSON 文件持久化 + 内存索引；生产可换 Redis / 关系库，接口不变。
 """
 import json
-import logging
 import threading
 from pathlib import Path
 
 from app.domain.schemas import Chunk, MediaAsset, TableRecord
+from app.core.errors import StorageCorruptedError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DocStore:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path) -> None:
         self._path = path
         self._lock = threading.Lock()
         self._parents: dict[str, Chunk] = {}  # parent_id → 父块
@@ -32,7 +33,7 @@ class DocStore:
             self._tables = {k: TableRecord.model_validate(v) for k, v in raw.get("tables", {}).items()}
             self._assets = {k: MediaAsset.model_validate(v) for k, v in raw.get("assets", {}).items()}
         except Exception as exc:
-            raise RuntimeError(f"DocStore 数据损坏，拒绝启动: {exc}") from exc
+            raise StorageCorruptedError("DocStore 数据损坏，拒绝启动", path=self._path) from exc
 
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

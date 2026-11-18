@@ -35,8 +35,8 @@ def apply_chunk_policy(
     policy: dict,
     embeddings: Embeddings,
     llm: LLM,
-    chunk_size: int = 300,
-    chunk_overlap: int = 50,
+    chunk_size: int = 800,
+    chunk_overlap: int = 100,
     min_chars: int = 20,
 ) -> ChunkResult:
     strategy = policy.get("strategy", "recursive")

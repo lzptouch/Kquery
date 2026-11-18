@@ -32,7 +32,6 @@ export default defineConfig({
     // 看起来"通了"，实际拿不到任何探针数据（dev/prod 行为不一致很难察觉）。
     proxy: {
       "/ask": apiProxy,
-      "/auth": apiProxy,
       "/knowledge": apiProxy,
       "/admin": apiProxy,
       "/feedback": apiProxy,
@@ -46,9 +45,8 @@ export default defineConfig({
       "/healthz": apiProxy,
       "/livez": apiProxy,
       "/readyz": apiProxy,
-      // F2 语音 / F4 快问：必须与 frontend/nginx.conf 的前缀正则保持一致，
+      // F4 快问：必须与 frontend/nginx.conf 的前缀正则保持一致，
       // 否则 dev 能用、prod 404（曾漏过 /readyz，坑写在上面的注释里）。
-      "/speech": apiProxy,
       "/quickask": apiProxy,
     },
   },

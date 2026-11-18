@@ -9,13 +9,14 @@
 - 测试/mock：HeuristicReflector（按重排分与证据条数判定，确定性）。
 """
 import json
-import logging
 import re
 from typing import Protocol
 
 from app.services.llm import LLM
+from app.core.errors import ModelOutputError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 ANSWER_THRESHOLD = 0.6  # 证据充分度阈值（低于此分不允许作答）
 
@@ -54,7 +55,7 @@ class Reflector(Protocol):
 def _parse_reflect(text: str) -> dict:
     m = re.search(r"\{[\s\S]*\}", text)
     if not m:
-        raise ValueError("反思结果中未找到 JSON")
+        raise ModelOutputError("反思结果中未找到 JSON")
     payload = json.loads(m.group(0))
     score = float(payload.get("score", 0.0))
     score = max(0.0, min(1.0, score))
@@ -65,7 +66,7 @@ def _parse_reflect(text: str) -> dict:
 
 
 class LLMReflector:
-    def __init__(self, llm: LLM, max_retries: int = 1):
+    def __init__(self, llm: LLM, max_retries: int = 1) -> None:
         self._llm = llm
         self._max_retries = max_retries
 
@@ -83,7 +84,7 @@ class LLMReflector:
             try:
                 verdict = _parse_reflect(self._llm.generate(prompt))
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 反思解析失败，重试
                 logger.warning("反思解析失败，重试: %s", exc)
         if verdict is None:
             # 兜底：有证据就作答（保守但可用）
@@ -106,7 +107,7 @@ class LLMReflector:
 class HeuristicReflector:
     """确定性反思：按证据条数与最高重排分判定。"""
 
-    def __init__(self, correct_th: float = 0.14):
+    def __init__(self, correct_th: float = 0.14) -> None:
         self._correct_th = correct_th
 
     def reflect(self, question: str, evidence: list[dict], remaining_steps: int) -> dict:

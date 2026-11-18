@@ -24,15 +24,11 @@ export const CODE_EXTENSIONS = [
 /** 图片类（走 OCR） */
 export const IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg"];
 
-/** 音频类（走转写） */
-export const AUDIO_EXTENSIONS = [".mp3", ".wav"];
-
 /** 全部支持的扩展名 */
 export const ALLOWED_EXTENSIONS = [
   ...DOC_EXTENSIONS,
   ...CODE_EXTENSIONS,
   ...IMAGE_EXTENSIONS,
-  ...AUDIO_EXTENSIONS,
 ];
 
 /** HTML `accept` 属性值 */
@@ -42,6 +38,10 @@ export const ACCEPT_ATTRIBUTE = ALLOWED_EXTENSIONS.join(",");
 export const UNSUPPORTED_HINTS: Record<string, string> = {
   ".xls": "不支持旧版 Excel 格式（.xls），请另存为 .xlsx 后重试",
   ".ppt": "不支持旧版 PowerPoint（.ppt），请另存为 .pptx 后重试",
+  // 语音能力已下线（与后端 `UNSUPPORTED_HINTS` 对齐）
+  ".mp3": "本项目不含语音转写，音频请先转成文字（.txt/.md）后上传",
+  ".wav": "本项目不含语音转写，音频请先转成文字（.txt/.md）后上传",
+  ".m4a": "本项目不含语音转写，音频请先转成文字（.txt/.md）后上传",
 };
 
 /** 取文件扩展名（小写，含点；无扩展名返回空串） */

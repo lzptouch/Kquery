@@ -1,0 +1,130 @@
+# canary 后端（`OP-03`）：与 base **同镜像、同配置**，副本数 1。
+#
+# ## 为什么标签要多一个 track
+#
+# base 的 Deployment selector 是 `app=kquery, component=backend`——
+# canary 如果用同样的标签，会被 base 的 Service 选中，
+# 于是 canary 与稳定版**共享流量**，canary 就失去意义。
+# 因此 canary 用 `track: canary` 区分，由**独立的 Service** 选中。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kquery-backend-canary
+  labels:
+    app: kquery
+    component: backend
+    track: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kquery
+      component: backend
+      track: canary
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: kquery
+        component: backend
+        track: canary
+      annotations:
+        pre-stop: "sleep 10"
+    spec:
+      terminationGracePeriodSeconds: 70
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: backend
+          image: kquery/backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8100
+          env:
+            - name: DATA_DIR
+              value: /data
+            - name: MODEL_PROVIDER
+              value: dashscope
+            - name: VECTOR_STORE
+              value: milvus
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: kquery-secrets
+                  key: redis-url
+                  optional: true
+            - name: METRICS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kquery-secrets
+                  key: metrics-token
+                  optional: true
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          # 探针与 base 完全一致（同一套语义，不给 canary 开小灶）
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: kquery-data
+        - name: tmp
+          emptyDir: {}
+---
+# canary 专属 Service：只选中 `track: canary` 的 Pod
+apiVersion: v1
+kind: Service
+metadata:
+  name: kquery-backend-canary
+  labels:
+    app: kquery
+    component: backend
+    track: canary
+spec:
+  selector:
+    app: kquery
+    component: backend
+    track: canary
+  ports:
+    - name: http
+      port: 8100
+      targetPort: http

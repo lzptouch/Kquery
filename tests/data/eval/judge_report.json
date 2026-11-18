@@ -1,0 +1,14 @@
+{
+  "rubric_version": "v1",
+  "judge_kind": "none",
+  "skipped": true,
+  "reason": "未启用 judge（--judge none）：生成侧未判定。注意这不是「生成质量为 0」，而是「没量」",
+  "queries": 0,
+  "judged": 0,
+  "low_confidence": 0,
+  "failed": 0,
+  "passed": 0,
+  "avg_weighted": null,
+  "items": [],
+  "attribution": {}
+}

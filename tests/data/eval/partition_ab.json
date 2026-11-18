@@ -1,0 +1,1842 @@
+{
+  "rubric_version": "v1",
+  "judge_kind": "heuristic",
+  "llm": "deepseek:deepseek-chat",
+  "offline": false,
+  "top_k": 5,
+  "max_drop": 0.02,
+  "summaries": {
+    "legacy": {
+      "mode": "legacy",
+      "queries": 60,
+      "judged": 60,
+      "failed": 0,
+      "passed": 57,
+      "avg_weighted": 0.9428,
+      "dims": {
+        "answer_correctness": 0.9583,
+        "citation_faithfulness": 1.0,
+        "completeness": 0.9583,
+        "conciseness": 0.6571,
+        "refusal_correctness": 1.0
+      }
+    },
+    "structured": {
+      "mode": "structured",
+      "queries": 60,
+      "judged": 60,
+      "failed": 0,
+      "passed": 58,
+      "avg_weighted": 0.9449,
+      "dims": {
+        "answer_correctness": 0.9667,
+        "citation_faithfulness": 1.0,
+        "completeness": 0.9667,
+        "conciseness": 0.6327,
+        "refusal_correctness": 1.0
+      }
+    }
+  },
+  "items": {
+    "legacy": {
+      "e001": {
+        "answer": "单笔报销上限为 5000 元。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.975,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.75,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e002": {
+        "answer": "单笔报销超过 5000 元需要部门负责人与财务双签[#1]。\n\n引用片段：[#1]",
+        "weighted": 0.99512,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9512,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e003": {
+        "answer": "年假满 10 年不满 20 年的为 10 天。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99079,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9079,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e004": {
+        "answer": "婚假为 13 天（含国家规定与公司补充部分）。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99079,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9079,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e005": {
+        "answer": "保密协议签署后长期有效，不设期限。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97969,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7969,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e006": {
+        "answer": "所有线上服务必须启用访问日志，且保留期限存在两处规定：一处要求不少于 180 天[#1]，另一处要求不少于 365 天[#2]。两份文档均说明与其它制度冲突时以生效日期更晚者为准[#1][#2]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.38491,
+        "passed": false,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 0.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 0.0,
+          "conciseness": 0.3491,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e007": {
+        "answer": "技术岗位面试至少安排两轮技术面。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.97273,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7273,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e008": {
+        "answer": "试用期长度根据岗位级别确定，标准为 3 至 6 个月。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99643,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9643,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e009": {
+        "answer": "一般咨询工单的服务时限为 1 个工作日。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98571,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8571,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e010": {
+        "answer": "回滚方案必须在发布前完成演练并记录。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98182,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8182,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e011": {
+        "answer": "日活口径为自然日内有去重访问的账号数。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98382,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8382,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e012": {
+        "answer": "离线任务产出时间不晚于每天早上 7 点。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98571,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8571,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e013": {
+        "answer": "差旅费用属于市场与销售费用科目。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97742,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7742,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e014": {
+        "answer": "P2 故障的响应时限为 4 小时。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97969,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7969,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e015": {
+        "answer": "每位员工每年享有 5 天带薪培训假。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98182,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8182,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e016": {
+        "answer": "根据证据 #1《培训与学习制度》规定明细第 4 条：“必修培训未完成不计入绩效加分项。”[#1] 该条明确说明必修培训未完成不计入绩效加分项，但证据中未直接使用“算不算在范围内”的表述，也未进一步界定“范围”的具体含义。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.9189,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.189,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e017": {
+        "answer": "供应商年度考核分为合格、基本合格与不合格三档。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99079,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9079,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e018": {
+        "answer": "办公区域的门禁权限按季度复核一次。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97969,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7969,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e019": {
+        "answer": "引入开源组件前必须确认许可证与业务用途兼容。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98919,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8919,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e020": {
+        "answer": "第三方素材用于对外宣传前需完成授权确认。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.98108,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8108,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e021": {
+        "answer": "报价单有效期为 30 天。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.96964,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.6964,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e022": {
+        "answer": "单元测试覆盖率门槛存在两处不同规定：一处为 80%[#1]，另一处为 90%[#2]。两份文档均注明与其它制度冲突时以生效日期更晚者为准[#1][#2]，但证据中未给出两份文档各自的生效日期，因此无法据此判定以哪一条为准。\n\n引用片段编号：[#1][#2]",
+        "weighted": 0.36758,
+        "passed": false,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 0.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 0.0,
+          "conciseness": 0.1758,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e023": {
+        "answer": "根据《离职与交接制度》，离职要求如下：\n\n1. 离职需提前 30 天提交书面申请。[#1]\n2. 工作交接清单须包含在办事项、文档位置与关键联系人。[#1]\n3. 离职面谈由 HRBP 与直属主管共同进行。[#1]\n4. 账号权限在离职当日全部回收。[#1]\n5. 该制度自 2025 年 1 月 1 日起执行。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.91474,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.1474,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e024": {
+        "answer": "「账号权限在离职当日全部回收」是离职与交接制度中的规定：离职当日全部回收账号权限[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.93621,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3621,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e025": {
+        "answer": "关键系统的恢复点目标为 15 分钟。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98182,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8182,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e026": {
+        "answer": "单笔报销上限为 5000 元[#1]。报销需在每月 25 日前提交，逾期只能顺延到下月[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e027": {
+        "answer": "关于差旅住宿标准的规定是：差旅住宿标准为每晚 600 元，超出部分需部门负责人审批[#1]。关于单笔报销审批的规定是：单笔报销超过 5000 元需要部门负责人与财务双签[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.98235,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8235,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e028": {
+        "answer": "关于「交通费凭票据实报销，市内打车单次不超过 100 元」的规定是：交通费凭票据实报销，市内打车单次不超过 100 元[#1]。关于「本制度自 2024 年 1 月 1 日起执行」的规定是：本制度自 2024 年 1 月 1 日起执行[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.95556,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5556,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e029": {
+        "answer": "关于年假按工龄计算的规定：\n\n1. 年假按工龄计算，满 1 年不满 10 年的为 5 天。[#1]\n2. 年假满 10 年不满 20 年的为 10 天。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.98226,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8226,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e030": {
+        "answer": "事假按日计薪，不超过连续 3 天[#1]。病假需提供二级及以上医院证明[#1]。\n\n引用片段：[#1]",
+        "weighted": 0.99706,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9706,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e031": {
+        "answer": "婚假为 13 天（含国家规定与公司补充部分）[#1]；本制度自 2023 年 7 月 1 日起执行[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e032": {
+        "answer": "单份合同金额超过 50 万元的必须由法务部审核。[#1] 合同签署须使用公司统一的电子签平台。[#1]\n\n引用片段：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e033": {
+        "answer": "保密协议签署后长期有效，不设期限[#1]；合同争议优先选择公司所在地人民法院管辖[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.99828,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9828,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e034": {
+        "answer": "关于「生产数据库禁止直接导出明文数据到本地」的规定是：生产数据库禁止直接导出明文数据到本地。[#1]\n\n关于「所有线上服务必须启用访问日志且保留不少于 180 天」的规定是：所有线上服务必须启用访问日志且保留不少于 180 天。[#1]\n\n（注：另一文档中另有“所有线上服务必须启用访问日志且保留不少于 365 天”的规定[#2]，与上述 180 天条款属不同文档，二者存在冲突，按各文档“以生效日期更晚者为准”的规则处理。）\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93052,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3052,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e035": {
+        "answer": "这两条规定均出自《信息安全规范》：\n\n1. 密钥统一存放在密钥管理服务，禁止写入代码仓库。[#1]\n2. 外部人员临时访问需走审批并限定有效期。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.97247,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7247,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e036": {
+        "answer": "技术岗位面试至少安排两轮技术面[#1]；录用审批需要用人部门负责人与 HRBP 双签[#1]。\n\n引用片段：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e037": {
+        "answer": "关于「候选人背景调查需在发出录用通知前完成」的规定是：候选人背景调查需在发出录用通知前完成[#1]。关于「试用期长度根据岗位级别确定，标准为 3 至 6 个月」的规定是：试用期长度根据岗位级别确定，标准为 3 至 6 个月[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.95465,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5465,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e038": {
+        "answer": "P0 故障的首次响应时限为 30 分钟[#1]；P1 故障的首次响应时限为 2 小时[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e039": {
+        "answer": "一般咨询工单的服务时限为 1 个工作日[#1]；客户满意度低于 90% 的月份需提交专项改进报告[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e040": {
+        "answer": "关于「所有发布必须经过灰度验证，灰度时长不少于 24 小时」的规定是：所有发布必须经过灰度验证，灰度时长不少于 24 小时[#1]。关于「回滚方案必须在发布前完成演练并记录」的规定是：回滚方案必须在发布前完成演练并记录[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.95433,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5433,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e041": {
+        "answer": "关于「发布日期避开法定节假日的前后三天」的规定是：发布日期避开法定节假日的前后三天[#1]。关于「重大版本发布需发布说明文档与影响范围评估」的规定是：重大版本发布需发布说明文档与影响范围评估[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.95177,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5177,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e042": {
+        "answer": "日活口径为自然日内有去重访问的账号数[#1]；留存率采用次日留存口径[#1]。\n\n引用片段：[#1]",
+        "weighted": 0.996,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.96,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e043": {
+        "answer": "根据证据片段 [#1]：\n\n1. 指标口径变更必须提前公告 5 个工作日。[#1]\n2. 离线任务产出时间不晚于每天早上 7 点。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.975,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.75,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e044": {
+        "answer": "两条规定均出自《财务与预算制度》：\n\n1. 报销申请需在次月 5 日前提交，以便当月入账。[#1]\n2. 部门年度预算超支 5% 以内时，需由部门负责人审批。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.69688,
+        "passed": false,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 0.5,
+          "citation_faithfulness": 1.0,
+          "completeness": 0.5,
+          "conciseness": 0.7188,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e045": {
+        "answer": "差旅费用属于市场与销售费用科目[#1]。预算调整在每季度末统一受理[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.99118,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9118,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e046": {
+        "answer": "单笔报销上限为 5000 元[#2]。年假按工龄计算，满 1 年不满 10 年的为 5 天[#1]。\n\n引用片段编号：[#2]、[#1]",
+        "weighted": 0.93309,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3309,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e047": {
+        "answer": "单笔报销上限为 5000 元[#3]。单份合同金额超过 50 万元的必须由法务部审核[#1]。\n\n引用片段编号：[#1]、[#3]",
+        "weighted": 0.93462,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3462,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e048": {
+        "answer": "单笔报销上限为 5000 元[#2]。生产数据库禁止直接导出明文数据到本地[#1]。\n\n引用片段编号：[#1][#2]",
+        "weighted": 0.93814,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3814,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e049": {
+        "answer": "单笔报销上限为 5000 元[#2]；技术岗位面试至少安排两轮技术面[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93947,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3947,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e050": {
+        "answer": "单笔报销上限为 5000 元[#2]。P0 故障的首次响应时限为 30 分钟[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93689,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3689,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e051": {
+        "answer": "单笔报销上限为 5000 元[#3]。所有发布必须经过灰度验证，灰度时长不少于 24 小时[#1]。\n\n引用片段编号：[#1]、[#3]",
+        "weighted": 0.93309,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3309,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e052": {
+        "answer": "单笔报销上限为 5000 元[#2]。日活口径为自然日内有去重访问的账号数[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.9375,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.375,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e053": {
+        "answer": "“单笔报销上限为 5000 元”规定于《报销制度》：单笔报销上限为 5000 元[#2]。“报销申请需在次月 5 日前提交以便当月入账”规定于《财务与预算制度》：报销申请需在次月 5 日前提交以便当月入账[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.918,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.18,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e054": {
+        "answer": "单笔报销上限为 5000 元[#3]。P1 故障的响应时限为 1 小时[#1]。\n\n引用片段编号：[#3]、[#1]",
+        "weighted": 0.93879,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3879,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e055": {
+        "answer": "单笔报销上限为 5000 元[#2]。每位员工每年享有 5 天带薪培训假[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93814,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3814,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e056": {
+        "answer": "单笔报销上限为 5000 元[#2]。新供应商准入需完成资质与安全评估两项审查[#1]。\n\n引用片段：[#1]、[#2]",
+        "weighted": 0.9375,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.375,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e057": {
+        "answer": "单笔报销上限为 5000 元[#3]。员工每年享有 15 天带薪年假[#2]。\n\n引用片段编号：[#3]、[#2]",
+        "weighted": 0.93947,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3947,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e058": {
+        "answer": "单笔报销上限为 5000 元[#2]。引入开源组件前必须确认许可证与业务用途兼容[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93571,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3571,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e059": {
+        "answer": "单笔报销上限为 5000 元[#1]。标准产品报价以官方价目表为准[#2]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.94018,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.4018,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e060": {
+        "answer": "单笔报销上限为 5000 元[#2]。核心链路变更必须有自动化回归用例覆盖[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.9375,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.375,
+          "refusal_correctness": 1.0
+        }
+      }
+    },
+    "structured": {
+      "e001": {
+        "answer": "单笔报销上限为 5000 元。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.975,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.75,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e002": {
+        "answer": "单笔报销超过 5000 元需要部门负责人与财务双签。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99512,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9512,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e003": {
+        "answer": "年假满 10 年不满 20 年的为 10 天。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99079,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9079,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e004": {
+        "answer": "婚假为 13 天（含国家规定与公司补充部分）。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99079,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9079,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e005": {
+        "answer": "保密协议签署后长期有效，不设期限。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97969,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7969,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e006": {
+        "answer": "所有线上服务必须启用访问日志，且保留不少于 180 天[#1]；另一份文档规定保留不少于 365 天[#2]。两份文档对保留期限规定不一致，且均说明与其它制度冲突时以生效日期更晚者为准[#1][#2]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93403,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3403,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e007": {
+        "answer": "技术岗位面试至少安排两轮技术面。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97742,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7742,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e008": {
+        "answer": "试用期长度根据岗位级别确定，标准为 3 至 6 个月。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99643,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9643,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e009": {
+        "answer": "一般咨询工单的服务时限为 1 个工作日。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.98108,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8108,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e010": {
+        "answer": "回滚方案必须在发布前完成演练并记录。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98182,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8182,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e011": {
+        "answer": "日活口径为自然日内有去重访问的账号数。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98382,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8382,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e012": {
+        "answer": "离线任务产出时间不晚于每天早上 7 点。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98571,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8571,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e013": {
+        "answer": "差旅费用属于市场与销售费用科目。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97742,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7742,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e014": {
+        "answer": "P2 故障的响应时限为 4 小时。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97969,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7969,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e015": {
+        "answer": "每位员工每年享有 5 天带薪培训假[#1]。该制度自 2024 年 4 月 1 日起执行[#1]。\n\n引用片段：[#1]",
+        "weighted": 0.945,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.45,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e016": {
+        "answer": "根据证据 #1《培训与学习制度》规定明细第 4 条：“必修培训未完成不计入绩效加分项。”[#1] 该条明确了必修培训未完成在绩效加分方面的处理方式，但证据中未直接使用“算不算在范围内”的表述，也未说明“范围”具体所指。若“范围”指绩效加分项，则必修培训未完成不计入绩效加分项[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.91548,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.1548,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e017": {
+        "answer": "供应商年度考核分为合格、基本合格与不合格三档。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.99079,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.9079,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e018": {
+        "answer": "办公区域的门禁权限按季度复核一次。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.97969,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7969,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e019": {
+        "answer": "引入开源组件前必须确认许可证与业务用途兼容。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98919,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8919,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e020": {
+        "answer": "第三方素材用于对外宣传前需完成授权确认。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.98108,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8108,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e021": {
+        "answer": "报价单有效期为 30 天。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.96964,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.6964,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e022": {
+        "answer": "单元测试覆盖率门槛存在两处不同规定：一处为 80%[#1]，另一处为 90%[#2]。两份文档均注明与其它制度冲突时以生效日期更晚者为准[#1][#2]，但证据中未给出两份文档的生效日期，无法据此判断以哪一条为准。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.368,
+        "passed": false,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 0.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 0.0,
+          "conciseness": 0.18,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e023": {
+        "answer": "根据《离职与交接制度》，离职要求包括：需提前 30 天提交书面申请[#1]；工作交接清单须包含在办事项、文档位置与关键联系人[#1]；离职面谈由 HRBP 与直属主管共同进行[#1]；账号权限在离职当日全部回收[#1]。该制度自 2025 年 1 月 1 日起执行[#1]。\n\n引用片段：[#1]",
+        "weighted": 0.36723,
+        "passed": false,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 0.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 0.0,
+          "conciseness": 0.1723,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e024": {
+        "answer": "「账号权限在离职当日全部回收」是离职与交接制度中的规定：离职需提前 30 天提交书面申请；工作交接清单须包含在办事项、文档位置与关键联系人；离职面谈由 HRBP 与直属主管共同进行；账号权限在离职当日全部回收；该制度自 2025 年 1 月 1 日起执行。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.91448,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.1448,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e025": {
+        "answer": "关键系统的恢复点目标为 15 分钟。[#1]\n\n引用片段：[#1]",
+        "weighted": 0.98182,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8182,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e026": {
+        "answer": "单笔报销上限为 5000 元[#1]。报销需在每月 25 日前提交，逾期只能顺延到下月[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e027": {
+        "answer": "关于差旅住宿标准的规定是：差旅住宿标准为每晚 600 元，超出部分需部门负责人审批[#1]。关于单笔报销审批的规定是：单笔报销超过 5000 元需要部门负责人与财务双签[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.98235,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8235,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e028": {
+        "answer": "「交通费凭票据实报销，市内打车单次不超过 100 元」的规定是：交通费凭票据实报销，市内打车单次不超过 100 元[#1]。\n\n「本制度自 2024 年 1 月 1 日起执行」的规定是：本制度自 2024 年 1 月 1 日起执行[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.95639,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5639,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e029": {
+        "answer": "关于年假按工龄计算的规定：\n\n1. 年假按工龄计算，满 1 年不满 10 年的为 5 天。[#1]\n2. 年假满 10 年不满 20 年的为 10 天。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.98226,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.8226,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e030": {
+        "answer": "关于事假：事假按日计薪，不超过连续 3 天[#1]。关于病假：病假需提供二级及以上医院证明[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.97857,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7857,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e031": {
+        "answer": "「婚假为 13 天（含国家规定与公司补充部分）」的规定出自请假与休假制度[#1]；「本制度自 2023 年 7 月 1 日起执行」是该制度的时效条款[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.97663,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7663,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e032": {
+        "answer": "单份合同金额超过 50 万元的必须由法务部审核[#1]。合同签署须使用公司统一的电子签平台[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e033": {
+        "answer": "保密协议签署后长期有效，不设期限[#1]；合同争议优先选择公司所在地人民法院管辖[#1]。\n\n引用片段：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e034": {
+        "answer": "关于「生产数据库禁止直接导出明文数据到本地」的规定：生产数据库禁止直接导出明文数据到本地[#1]。\n\n关于「所有线上服务必须启用访问日志且保留不少于 180 天」的规定：所有线上服务必须启用访问日志且保留不少于 180 天[#1]。另需注意，另一份文档规定所有线上服务必须启用访问日志且保留不少于 365 天[#2]，两份文档在保留期限上存在冲突，且均说明与其它制度冲突时以生效日期更晚者为准[#1][#2]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93161,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3161,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e035": {
+        "answer": "这两条规定均出自《信息安全规范》：\n\n1. 密钥统一存放在密钥管理服务，禁止写入代码仓库。[#1]\n2. 外部人员临时访问需走审批并限定有效期。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.97247,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7247,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e036": {
+        "answer": "技术岗位面试至少安排两轮技术面[#1]；录用审批需要用人部门负责人与 HRBP 双签[#1]。\n\n引用片段：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e037": {
+        "answer": "候选人背景调查需在发出录用通知前完成[#1]；试用期长度根据岗位级别确定，标准为 3 至 6 个月[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e038": {
+        "answer": "P0 故障的首次响应时限为 30 分钟[#1]；P1 故障的首次响应时限为 2 小时[#1]。\n\n引用片段：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e039": {
+        "answer": "一般咨询工单的服务时限为 1 个工作日[#1]；客户满意度低于 90% 的月份需提交专项改进报告[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 1.0,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 1.0,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e040": {
+        "answer": "关于「所有发布必须经过灰度验证，灰度时长不少于 24 小时」的规定是：所有发布必须经过灰度验证，灰度时长不少于 24 小时[#1]。关于「回滚方案必须在发布前完成演练并记录」的规定是：回滚方案必须在发布前完成演练并记录[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.95433,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5433,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e041": {
+        "answer": "关于「发布日期避开法定节假日的前后三天」的规定是：发布日期避开法定节假日的前后三天。[#1]\n\n关于「重大版本发布需发布说明文档与影响范围评估」的规定是：重大版本发布需发布说明文档与影响范围评估。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.95087,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5087,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e042": {
+        "answer": "根据证据片段 [#1]：\n\n- 日活口径为自然日内有去重访问的账号数。[#1]\n- 留存率采用次日留存口径。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.96761,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.6761,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e043": {
+        "answer": "「指标口径变更必须提前公告 5 个工作日」的规定是：指标口径变更必须提前公告 5 个工作日[#1]。「离线任务产出时间不晚于每天早上 7 点」的规定是：离线任务产出时间不晚于每天早上 7 点[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.95442,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.5442,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e044": {
+        "answer": "两条规定均出自《财务与预算制度》：\n\n1. 报销申请需在次月 5 日前提交，以便当月入账。[#1]\n2. 部门年度预算超支 5% 以内需部门负责人审批。[#1]\n\n引用片段编号：[#1]",
+        "weighted": 0.97419,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.7419,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e045": {
+        "answer": "关于「差旅费用属于市场与销售费用科目」的规定是：差旅费用属于市场与销售费用科目[#1]。关于「预算调整在每季度末统一受理」的规定是：预算调整在每季度末统一受理[#1]。\n\n引用片段编号：[#1]",
+        "weighted": 0.94794,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.4794,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e046": {
+        "answer": "单笔报销上限为 5000 元[#2]。年假按工龄计算，满 1 年不满 10 年的为 5 天[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93309,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3309,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e047": {
+        "answer": "单笔报销上限为 5000 元[#3]。单份合同金额超过 50 万元的必须由法务部审核[#1]。\n\n引用片段编号：[#1]、[#3]",
+        "weighted": 0.93462,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3462,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e048": {
+        "answer": "单笔报销上限为 5000 元[#2]。生产数据库禁止直接导出明文数据到本地[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.9375,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.375,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e049": {
+        "answer": "单笔报销上限为 5000 元[#2]。技术岗位面试至少安排两轮技术面[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93947,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3947,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e050": {
+        "answer": "单笔报销上限为 5000 元[#2]。P0 故障的首次响应时限为 30 分钟[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93689,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3689,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e051": {
+        "answer": "单笔报销上限为 5000 元[#3]。所有发布必须经过灰度验证，灰度时长不少于 24 小时[#1]。\n\n引用片段编号：[#1]、[#3]",
+        "weighted": 0.93309,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3309,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e052": {
+        "answer": "单笔报销上限为 5000 元[#2]。日活口径为自然日内有去重访问的账号数[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.9375,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.375,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e053": {
+        "answer": "“单笔报销上限为 5000 元”规定：单笔报销上限为 5000 元[#2]；单笔报销超过 5000 元需要部门负责人与财务双签[#2]。\n\n“报销申请需在次月 5 日前提交以便当月入账”规定：报销申请需在次月 5 日前提交以便当月入账[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.91607,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.1607,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e054": {
+        "answer": "单笔报销上限为 5000 元[#3]。P1 故障的响应时限为 1 小时[#1]。\n\n引用片段编号：[#3]、[#1]",
+        "weighted": 0.93879,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3879,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e055": {
+        "answer": "单笔报销上限为 5000 元[#2]。每位员工每年享有 5 天带薪培训假[#1]。\n\n引用片段：[#1]、[#2]",
+        "weighted": 0.93947,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3947,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e056": {
+        "answer": "单笔报销上限为 5000 元[#2]。新供应商准入需完成资质与安全评估两项审查[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93629,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3629,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e057": {
+        "answer": "单笔报销上限为 5000 元[#3]。员工每年享有 15 天带薪年假[#2]。\n\n引用片段编号：[#2]、[#3]",
+        "weighted": 0.93947,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3947,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e058": {
+        "answer": "单笔报销上限为 5000 元[#2]；引入开源组件前必须确认许可证与业务用途兼容[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.93571,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.3571,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e059": {
+        "answer": "单笔报销上限为 5000 元[#1]。标准产品报价以官方价目表为准[#2]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.94018,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.4018,
+          "refusal_correctness": 1.0
+        }
+      },
+      "e060": {
+        "answer": "单笔报销上限为 5000 元[#2]。核心链路变更必须有自动化回归用例覆盖[#1]。\n\n引用片段编号：[#1]、[#2]",
+        "weighted": 0.9375,
+        "passed": true,
+        "low_confidence": false,
+        "error": "",
+        "dim_scores": {
+          "answer_correctness": 1.0,
+          "citation_faithfulness": 1.0,
+          "completeness": 1.0,
+          "conciseness": 0.375,
+          "refusal_correctness": 1.0
+        }
+      }
+    }
+  },
+  "comparison": {
+    "dims": {
+      "answer_correctness": {
+        "legacy": 0.9583,
+        "structured": 0.9667,
+        "delta": 0.0083,
+        "n": 60,
+        "significance": {
+          "mean_diff": 0.008333,
+          "ci_low": -0.041667,
+          "ci_high": 0.058333,
+          "p_value": 0.898,
+          "significant": false,
+          "sample_size": 60,
+          "insufficient": false,
+          "resamples": 1000,
+          "confidence": 0.95,
+          "note": "置信区间包含 0：差异与噪声无法区分"
+        }
+      },
+      "citation_faithfulness": {
+        "legacy": 1.0,
+        "structured": 1.0,
+        "delta": 0.0,
+        "n": 60,
+        "significance": {
+          "mean_diff": 0.0,
+          "ci_low": 0.0,
+          "ci_high": 0.0,
+          "p_value": 1.0,
+          "significant": false,
+          "sample_size": 60,
+          "insufficient": false,
+          "resamples": 1000,
+          "confidence": 0.95,
+          "note": "置信区间包含 0：差异与噪声无法区分"
+        }
+      },
+      "completeness": {
+        "legacy": 0.9583,
+        "structured": 0.9667,
+        "delta": 0.0083,
+        "n": 60,
+        "significance": {
+          "mean_diff": 0.008333,
+          "ci_low": -0.041667,
+          "ci_high": 0.058333,
+          "p_value": 0.898,
+          "significant": false,
+          "sample_size": 60,
+          "insufficient": false,
+          "resamples": 1000,
+          "confidence": 0.95,
+          "note": "置信区间包含 0：差异与噪声无法区分"
+        }
+      },
+      "conciseness": {
+        "legacy": 0.6571,
+        "structured": 0.6327,
+        "delta": -0.0243,
+        "n": 60,
+        "significance": {
+          "mean_diff": -0.024333,
+          "ci_low": -0.052725,
+          "ci_high": 0.005167,
+          "p_value": 0.09,
+          "significant": false,
+          "sample_size": 60,
+          "insufficient": false,
+          "resamples": 1000,
+          "confidence": 0.95,
+          "note": "置信区间包含 0：差异与噪声无法区分"
+        }
+      },
+      "refusal_correctness": {
+        "legacy": 1.0,
+        "structured": 1.0,
+        "delta": 0.0,
+        "n": 60,
+        "significance": {
+          "mean_diff": 0.0,
+          "ci_low": 0.0,
+          "ci_high": 0.0,
+          "p_value": 1.0,
+          "significant": false,
+          "sample_size": 60,
+          "insufficient": false,
+          "resamples": 1000,
+          "confidence": 0.95,
+          "note": "置信区间包含 0：差异与噪声无法区分"
+        }
+      }
+    },
+    "regressions": [],
+    "warnings": [
+      "conciseness 回退 -0.0243（0.657 → 0.633，阈值 0.02，p=0.09，n=60）　不显著，仅留痕"
+    ],
+    "passed": true,
+    "weighted": {
+      "legacy": 0.9428,
+      "structured": 0.9449,
+      "delta": 0.0021,
+      "significance": {
+        "mean_diff": 0.00215,
+        "ci_low": -0.024007,
+        "ci_high": 0.02815,
+        "p_value": 0.906,
+        "significant": false,
+        "sample_size": 60,
+        "insufficient": false,
+        "resamples": 1000,
+        "confidence": 0.95,
+        "note": "置信区间包含 0：差异与噪声无法区分"
+      }
+    }
+  }
+}

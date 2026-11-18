@@ -30,14 +30,11 @@
 `add()` 用**容量翻倍**的预分配矩阵（amortized O(1)），避免每个实体一次 `vstack` 拷贝。
 `suspend()/resume()` 供批量写入使用（批量时直接一次性扩矩阵）。
 """
-import logging
 
 import numpy as np
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
-
-# 小于该规模直接线性扫（省掉矩阵维护开销）
-LINEAR_THRESHOLD = 32
+logger = get_logger(__name__)
 
 
 class EntityVectorIndex:
@@ -47,7 +44,7 @@ class EntityVectorIndex:
     因此本类只做"给定向量，找出最相似的前 k 个实体"。
     """
 
-    def __init__(self, dim: int = 0):
+    def __init__(self, dim: int = 0) -> None:
         self._names: list[str] = []
         self._rows: dict[str, int] = {}      # name → 行号
         self._matrix: np.ndarray | None = None

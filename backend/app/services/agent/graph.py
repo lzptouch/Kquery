@@ -9,26 +9,30 @@
 3. 单步超时（工具层 30s）→ 标记该步失败，流程继续。
 熔断不是错误：强制作答并标记 incomplete，前端黄色提示。
 """
-import logging
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
+from app.core.envelope import ErrCode
 from app.services.agent.planner import Planner
 from app.services.agent.react import observations_from_tool_results
 from app.services.agent.tool_spec import arguments_from_step
 from app.services.agent.reflector import ANSWER_THRESHOLD, Reflector
 from app.services.agent.state import AgentState
-from app.services.agent.tools import ToolRegistry
+from app.services.agent.tools import DANGER_WRITE, ToolRegistry
 from app.services.llm import LLM
 from app.services.pipeline import GENERAL_KNOWLEDGE_PROMPT, NO_INFO_ANSWER
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 NO_PROGRESS_LIMIT = 3  # 第二层熔断窗口：连续"继续"但证据未增加的轮数
 MAX_REPLANS = 2  # 重规划余量（计入动态上限）
+# 一次答案生成的 token 预留（闸门口径）：上下文 + 输出的保守上界。
+# 与 verify_node 的 600 校验预留区分开——生成比校验贵一个量级。
+ANSWER_TOKEN_RESERVE = 2000
 REPLAN_HINT = "此前检索不充分，请换个角度"
 
 
@@ -36,6 +40,30 @@ def _emit(config: RunnableConfig, event: str, payload: dict) -> None:
     emit = (config.get("configurable") or {}).get("emit")
     if emit:
         emit(event, payload)
+
+
+def _emit_usage(config: RunnableConfig, phase: str, owner) -> None:
+    """上报一次 LLM 调用的**真实** token 用量。
+
+    此前规划/反思阶段的 token 一律按常量估算（"每工具调用约 N token"），
+    与真实用量脱钩 → `agent_token_budget` 只对最后一段（answer）真实生效。
+    这里把 `llm.last_usage`（供应商返回值，读不到才按字符估算）透给 runner 记账。
+
+    `owner` 是持有 llm 的对象（planner / reflector）。拿不到就静默跳过——
+    启发式规划器本就不调用 LLM，凭空记账反而是错的。
+    """
+    llm = getattr(owner, "_llm", None)
+    usage = getattr(llm, "last_usage", None)
+    if usage is None:
+        return
+    tokens = int(getattr(usage, "total", 0) or 0)
+    if tokens <= 0:
+        return
+    _emit(config, "usage", {
+        "phase": phase,
+        "tokens": tokens,
+        "estimated": bool(getattr(usage, "estimated", True)),
+    })
 
 
 def hitl_trigger(state: AgentState, cfg) -> str:
@@ -116,8 +144,12 @@ def build_agent_graph(
     # 通用知识兜底（doc/analysis/通用知识兜底回答.md §6.4）：闭包注入，测试可独立覆盖
     parametric_fallback_enabled: bool = True,
     parametric_fallback_score_threshold: float = ANSWER_THRESHOLD,
+    vlm_answerer=None,  # M5：VLM 直答器（None = 不启用）
 ) -> CompiledStateGraph:
     deps = {"registry": registry, "planner": planner, "reflector": reflector, "llm": answer_llm}
+    # VLM 直答（M5）：注入即启用；不注入 = 只有 caption 文本路（默认行为不变）
+    if vlm_answerer is not None:
+        deps["vlm"] = vlm_answerer
 
     # ---------- 节点 ----------
 
@@ -128,6 +160,8 @@ def build_agent_graph(
         memory_hint = str((config.get("configurable") or {}).get("memory_hint") or "")
         combined_hint = "\n".join(x for x in (replan_hint, memory_hint) if x)
         steps = planner.plan(state["question"], combined_hint)
+        # 规划阶段的真实 token 用量（此前只有常量估算口径）
+        _emit_usage(config, "think", planner)
         if is_replan:
             # 重规划：新 plan 接到原 plan 尾部（不清空历史），步骤号顺延
             base = len(state.get("plan", []))
@@ -232,20 +266,101 @@ def build_agent_graph(
         })
         # ACL 在 ToolRegistry 层对**所有工具**统一执行（原先只有
         # vector_search 走 ACL，graph_search / image_search 证据可绕过）。
-        acl_filter = (config.get("configurable") or {}).get("acl_filter")
+        # ---- 写类工具的人工审批（副作用之前）----
+        # 位置纪律与 answer_node 的 HITL 一致：**必须**在任何副作用之前挂起。
+        # LangGraph 恢复时会从头重跑本节点，若挂起前已执行过工具，恢复后会重复执行。
+        approved_map = dict((config.get("configurable") or {}).get("approved_tools") or {})
+        approved_names = list(state.get("approved_tools") or [])
+        approved_names += [n for n, ok in approved_map.items() if ok]
+        tool_name = step["tool_name"]
+        needs_approval = (
+            registry.danger_of_name(tool_name) == DANGER_WRITE
+            and tool_name not in approved_names
+        )
+        if needs_approval:
+            decision = interrupt({
+                "run_id": (config.get("configurable") or {}).get("thread_id", ""),
+                "reason": "tool_approval_required",
+                "tool": tool_name,
+                "description": step["description"],
+                "step_index": step["step_index"],
+                "actions": ["approve", "reject"],
+            })
+            action = ""
+            if isinstance(decision, dict):
+                action = str(decision.get("action") or "")
+            elif isinstance(decision, str):
+                action = decision.strip()
+            if action != "approve":
+                # 人工拒绝：不执行工具，把该步标记失败并继续（不中断整条链）
+                _emit(config, "hitl_resolved", {
+                    "action": "reject", "tool": tool_name, "step_index": step["step_index"],
+                })
+                step["status"] = "failed"
+                step["result_count"] = 0
+                step["error"] = f"工具 {tool_name} 未获人工批准，已跳过"
+                return {
+                    "plan": [
+                        step if s["step_index"] == step["step_index"] else s for s in plan
+                    ],
+                    "executed_steps": [step["step_index"]],
+                    "tool_errors": [{
+                        "step_index": step["step_index"],
+                        "tool": tool_name,
+                        "error": step["error"],
+                        "error_class": "approval_rejected",
+                    }],
+                    "iteration": state.get("iteration", 0) + 1,
+                    "hitl_resolved": "reject",
+                }
+            approved_names.append(tool_name)
+            approved_map[tool_name] = True
+            _emit(config, "hitl_resolved", {
+                "action": "approve", "tool": tool_name, "step_index": step["step_index"],
+            })
         result, hallucinated, actual_tool = registry.run_with_timeout(
-            step["tool_name"], step["description"], state["tenant_id"],
-            acl_filter=acl_filter,
+            tool_name, step["description"], state["tenant_id"],
             # 取消标志 / 写类工具审批结果
             run_id=str((config.get("configurable") or {}).get("thread_id") or ""),
-            approved=(config.get("configurable") or {}).get("approved_tools"),
+            approved={**approved_map, **{n: True for n in approved_names}},
             # 结构化入参（计划里显式写了 arguments 就用它，
             # 否则退回 description 作为 query —— 老计划仍可用）
             arguments=arguments_from_step(step),
         )
-        acl_filtered = result.acl_filtered
         # 工具返回的三种情况：有结果 / 0 条视为失败不重试 / 异常标记失败不中断
         failed = bool(result.error) or not result.items
+        # ---- 空结果的降级链 ----
+        # 0 条 ≠ 工具坏了：图谱库里没有这个实体是**正常业务结果**，
+        # 直接判失败会让 Agent 白丢一次机会（下一步只能重规划或拒答）。
+        # 降级到语义检索（可配置的映射），命中即算这一步成功。
+        fallbacks = dict((config.get("configurable") or {}).get("tool_fallbacks") or {})
+        fallback_tool = fallbacks.get(step["tool_name"], "")
+        degraded_from = ""
+        if failed and not result.error and fallback_tool and fallback_tool != actual_tool:
+            _emit(config, "tool_start", {
+                "step_index": step["step_index"], "tool": fallback_tool,
+                "input": step["description"], "fallback_from": actual_tool,
+            })
+            fb_result, _fb_hallucinated, fb_actual = registry.run_with_timeout(
+                fallback_tool, step["description"], state["tenant_id"],
+                run_id=str((config.get("configurable") or {}).get("thread_id") or ""),
+                approved={**approved_map, **{n: True for n in approved_names}},
+                arguments=arguments_from_step(step),
+            )
+            _emit(config, "tool_end", {
+                "step_index": step["step_index"], "tool": fb_actual,
+                "elapsed_ms": fb_result.elapsed_ms, "hit_count": len(fb_result.items),
+                "error": fb_result.error, "error_class": fb_result.error_class,
+                "truncated_from": fb_result.truncated_from,
+                "tool_hallucinated": False,
+                "evidence": [{**item, "step_index": step["step_index"]} for item in fb_result.items],
+                "fallback_from": actual_tool,
+            })
+            if fb_result.items:
+                degraded_from = actual_tool
+                result = fb_result
+                actual_tool = fb_actual
+                failed = False
         step["status"] = "failed" if failed else "done"
         step["result_count"] = len(result.items)
         step["tool_name"] = actual_tool
@@ -256,16 +371,6 @@ def build_agent_graph(
         evidence_patch = [
             {**item, "step_index": step["step_index"]} for item in result.items
         ]
-        if acl_filtered:
-            evidence_patch.append({
-                "chunk_id": f"acl-filtered#{step['step_index']}",
-                "content": f"另有 {acl_filtered} 条结果因权限未展示",
-                "score": 0.0, "source": "权限过滤", "doc_id": "__acl__",
-                "source_route": "acl", "modality": "acl_notice",
-                "acl_notice": True,  # 前端只展示数量，绝不展示被过滤文档的元信息
-                "acl_filtered_count": acl_filtered,
-                "step_index": step["step_index"],
-            })
         call_record = {
             "step_index": step["step_index"],
             "tool_name": actual_tool,
@@ -273,7 +378,12 @@ def build_agent_graph(
             "result_count": len(result.items),
             "elapsed_ms": result.elapsed_ms,
             "error": result.error,
+            "error_class": result.error_class,
+            # 工具失败的统一错误码（`A-10` 接线 4201）：此前只有自由文本 error，
+            # 前端与排障都得靠字符串匹配——「这次是工具失败」还是「超时」分不清。
+            "error_code": int(ErrCode.TOOL_EXECUTION_FAILED) if result.error else 0,
             "truncated_from": result.truncated_from,
+            **({"fallback_from": degraded_from} if degraded_from else {}),
         }
         error_patch = []
         if result.error:
@@ -284,10 +394,11 @@ def build_agent_graph(
         _emit(config, "tool_end", {
             "step_index": step["step_index"], "tool": actual_tool,
             "elapsed_ms": result.elapsed_ms, "hit_count": len(result.items),
-            "error": result.error, "truncated_from": result.truncated_from,
+            "error": result.error, "error_class": result.error_class,
+            "error_code": int(ErrCode.TOOL_EXECUTION_FAILED) if result.error else 0,
+            "truncated_from": result.truncated_from,
             "tool_hallucinated": hallucinated,
             "evidence": evidence_patch,  # 契约：tool_end 携带该步证据（轨迹↔证据双向定位）
-            "acl_filtered": acl_filtered,
         })
         return {
             "plan": new_plan,
@@ -355,6 +466,8 @@ def build_agent_graph(
         remaining = sum(1 for s in state.get("plan", []) if s["status"] == "pending"
                         and s["step_index"] not in set(state.get("executed_steps", [])))
         verdict = reflector.reflect(state["question"], evidence, remaining)
+        # 反思阶段的真实 token 用量
+        _emit_usage(config, "think", reflector)
         next_action = verdict["next_action"]
         score = verdict["score"]
 
@@ -543,10 +656,12 @@ def build_agent_graph(
         return {"needs_replan": True}  # plan 节点消费此标记生成新计划
 
     def answer_node(state: AgentState, config: RunnableConfig) -> dict:
-        emit = (config.get("configurable") or {}).get("emit")
-        # ACL 提示条目只是 UI 提示，不进判据与证据编号（与 runner._build_result 同口径）
-        evidence = [e for e in state.get("evidence", []) if e.get("modality") != "acl_notice"]
+        cfg = config.get("configurable") or {}
+        emit = cfg.get("emit")
+        evidence = list(state.get("evidence", []))
         evidence_score = float(state.get("evidence_score", 0.0) or 0.0)
+        # `ST-03`：组装阶段被丢弃的条目（→ 状态 `dropped_evidence`）
+        dropped: list[dict] = []
 
         # 通用知识兜底（doc/analysis/通用知识兜底回答.md §6.4）与 HITL 的边界：
         # - 零证据：直接兜底——没有可审的证据，挂起等人工也等不到更多信息；
@@ -611,7 +726,22 @@ def build_agent_graph(
                 prompt = GENERAL_KNOWLEDGE_PROMPT.format(question=state["question"])
                 answer_source = "parametric"
             else:
-                prompt = prompt_builder(state["question"], state.get("evidence", []))
+                # `ST-03`：Agent 证据接入**统一上下文组装**——
+                # 预算取「上下文预算」，父块查找用可注入的 docstore；
+                # 被裁掉的条目回传状态（→ `context_breakdown.dropped`）。
+                prompt = prompt_builder(
+                    state["question"],
+                    state.get("evidence", []),
+                    token_budget=int(cfg.get("context_token_budget") or 0),
+                    parent_lookup=cfg.get("parent_lookup"),
+                    dropped_out=dropped,
+                    # `ST-01` 阶段 B：记忆 / 历史进答案提示词（仅 structured 模式消费；
+                    # legacy 模式下这些参数完全不被读取，行为逐字不变）。
+                    memory=str(cfg.get("memory_hint") or ""),
+                    history_summary=str(state.get("history_summary") or ""),
+                    history_recent=list(state.get("history_recent") or []),
+                    structured=bool(cfg.get("context_partition_render") == "structured"),
+                )
                 answer_source = "evidence"
                 if state.get("incomplete"):
                     prompt += "\n\n（注意：检索已达执行上限，请基于现有证据尽力回答，并在开头说明答案可能不完整。）"
@@ -623,11 +753,80 @@ def build_agent_graph(
                         "并在开头明确说明答案可能不完整。）"
                     )
 
+        # 生成前的预算闸门：剩余额度不够"一次完整生成"的最坏开销时就不开始生成。
+        # 生成完才发现超限 = 钱已经花了，闸门形同虚设（与 tool_node 的闸门同一原则）。
+        # 额度不足时**降级作答**而不是拒绝服务（预算模块的设计：不烧钱，但给用户交代）。
+        budget = (config.get("configurable") or {}).get("budget")
+        if budget is not None and not budget.can_afford(tokens=ANSWER_TOKEN_RESERVE):
+            reason = budget.exhausted() or "token"
+            logger.info("预算不足（%s），跳过答案生成并降级作答", reason)
+            _emit(config, "fuse", {"reason": f"budget_{reason}", "iteration": state.get("iteration", 0)})
+            return {
+                "final_answer": "本次预算不足，未生成答案。可缩小问题范围或稍后重试。",
+                "refusal": True,
+                "incomplete": True,
+                "status": "budget_exhausted",
+                "fuse_reason": f"budget_{reason}",
+                "answer_source": "",
+                **({"budget": budget.snapshot()} if budget is not None else {}),
+            }
+
+        # ---- VLM 直答（图文，M5）：证据里有原图且问题在问图时，直接看图作答 ----
+        # 位置在**生成之前**：直答失败就回落下面的常规文本路径（caption 证据），
+        # 与重排降级同一纪律——任何一步都不能让整个回答失败。
+        vlm = deps.get("vlm")
+        if vlm is not None and not state.get("skip_retrieval"):
+            try:
+                # 破环：multimodal 依赖 agent 侧工具
+                # 破环：multimodal 依赖 agent 侧工具
+                from app.services.multimodal import image_path_of, is_visual_question
+
+                assets_dir = (config.get("configurable") or {}).get("assets_dir")
+                if is_visual_question(state["question"], evidence):
+                    img = image_path_of(evidence, assets_dir)
+                    if img is not None:
+                        context = "\n".join(str(e.get("content") or "") for e in evidence[:3])
+                        direct = vlm.answer(img, state["question"], context)
+                        if direct and direct.strip():
+                            if emit:
+                                emit("token", {"content": direct})
+                            return {
+                                "final_answer": direct,
+                                "status": _final_status(state),
+                                "answer_source": "vlm",
+                            }
+            except Exception as exc:  # noqa: BLE001 - 直答失败必须回落，不能让回答挂掉
+                logger.warning("VLM 直答失败，回落 caption 文本路: %s", exc)
+
+        # `ST-04`：输出侧 token 上限——由「剩余预算 − 预留」反推。
+        # 预留 `ANSWER_TOKEN_RESERVE` 是给后续步骤留的；本次生成只能用它剩下的部分。
+        budget = (config.get("configurable") or {}).get("budget")
+        max_output: int | None = None
+        if budget is not None:
+            max_output = budget.max_output_tokens(reserve=ANSWER_TOKEN_RESERVE)
+            if not max_output:
+                # 预算不允许生成（额度耗尽 / 预留吃掉剩余）→ 不发起调用
+                _emit(config, "fuse", {"reason": "budget_output_exhausted", "incomplete": True})
+                return {
+                    "final_answer": "",
+                    "status": "incomplete",
+                    "fuse_reason": "budget_output_exhausted",
+                    "answer_source": "",
+                }
+
         chunks: list[str] = []
-        for piece in deps["llm"].stream(prompt):
-            chunks.append(piece)
-            if emit:
-                emit("token", {"content": piece})
+        try:
+            for piece in deps["llm"].stream(prompt, max_tokens=max_output):
+                chunks.append(piece)
+                if emit:
+                    emit("token", {"content": piece})
+        except TypeError:
+            # 适配器不支持 `max_tokens`（第三方实现 / 测试替身）→ 退回旧调用面
+            chunks = []
+            for piece in deps["llm"].stream(prompt):
+                chunks.append(piece)
+                if emit:
+                    emit("token", {"content": piece})
         answer = "".join(chunks)
 
         # 兜底重生成（仅一次）：证据路径下模型仍输出拒答话术 → 切换为通用知识。
@@ -636,7 +835,13 @@ def build_agent_graph(
         if answer.strip().startswith(NO_INFO_ANSWER) and parametric_fallback_enabled:
             answer = deps["llm"].generate(GENERAL_KNOWLEDGE_PROMPT.format(question=state["question"]))
             answer_source = "parametric"
-        return {"final_answer": answer, "status": _final_status(state), "answer_source": answer_source}
+        return {
+            "final_answer": answer,
+            "status": _final_status(state),
+            "answer_source": answer_source,
+            # `ST-03`：被裁 / 被去重的证据条目（前端据此解释「为什么没进上下文」）
+            "dropped_evidence": dropped,
+        }
 
     # ---------- 路由 ----------
 

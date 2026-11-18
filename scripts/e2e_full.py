@@ -23,8 +23,18 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-PASSED: list[str] = []
-FAILED: list[tuple[str, str]] = []
+# 共享浏览器辅助（此前 4 个脚本各写一份，`check` 的返回类型还不一致）
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_helpers import (  # noqa: E402
+    FAILED,
+    PASSED,
+    check,
+    login,
+    page_text,
+    section,
+)
+
 CONSOLE_ERRORS: list[str] = []
 
 #: 页面会恢复上一次会话的历史消息，页面上可能同时存在**多条**回答。
@@ -38,22 +48,6 @@ Kquery 按问答次数计费，每问消耗一个额度。
 ## 支持格式
 支持 **PDF**、Markdown、Excel、纯文本与代码文件。
 """
-
-
-def check(name: str, condition: bool, detail: str = "") -> bool:
-    if condition:
-        PASSED.append(name)
-        print(f"  \033[32m✓\033[0m {name}")
-    else:
-        FAILED.append((name, detail))
-        print(f"  \033[31m✗\033[0m {name} — {detail}")
-    return bool(condition)
-
-
-def section(title: str) -> None:
-    print(f"\n\033[1m{title}\033[0m")
-
-
 def _make_pptx(path: str) -> str:
     """造一个最小 pptx（浏览器端到端用）。"""
     from pptx import Presentation
@@ -67,30 +61,6 @@ def _make_pptx(path: str) -> str:
     body.text_frame.text = "这一页用于验证 PPTX 解析与入库"
     prs.save(path)
     return path
-
-
-def page_text(page) -> str:
-    try:
-        return page.inner_text("body")
-    except Exception:
-        return ""
-
-
-def login(page, base: str, user: str, password: str) -> bool:
-    """真实走登录表单（不偷塞 localStorage）——登录本身就是一条被测路径。"""
-    page.goto(base, wait_until="networkidle", timeout=45000)
-    if page.locator('input[name="username"]').count() == 0:
-        return True  # 免鉴权模式
-    page.locator('input[name="username"]').fill(user)
-    page.locator('input[name="password"]').fill(password)
-    page.locator('button[type="submit"]').click()
-    try:
-        page.wait_for_url(lambda url: "/login" not in url, timeout=20000)
-    except Exception:
-        pass
-    return page.locator('input[name="username"]').count() == 0
-
-
 def launch_browser(p, headed: bool):
     """启动 Chromium。
 
@@ -364,9 +334,7 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
         # 前端到后端的同源链路（走 nginx 反代）
         probe = page.evaluate("""
           async () => {
-            const tok = localStorage.getItem("kquery.token");
-            const h = {"Content-Type": "application/json"};
-            if (tok) h["Authorization"] = "Bearer " + tok;
+            // 认证已下线（2026-11-12）：不再从 localStorage 取令牌。
             const r = await fetch("/healthz");
             return { status: r.status, ok: r.ok };
           }
@@ -374,9 +342,7 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
         check("前端同源访问 /healthz 成功", probe.get("status") == 200, str(probe))
         probe2 = page.evaluate("""
           async () => {
-            const tok = localStorage.getItem("kquery.token");
-            const h = {"Content-Type": "application/json"};
-            if (tok) h["Authorization"] = "Bearer " + tok;
+            // 认证已下线（2026-11-12）：不再从 localStorage 取令牌。
             const r = await fetch("/speech/status");
             return { status: r.status, body: await r.text() };
           }

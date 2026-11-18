@@ -1,0 +1,47 @@
+{
+  "version": "v1",
+  "description": "生成质量评分标准（五维，权重按「事实性优先」分配）。改维度或阈值 = 改版本号：旧版本的结论不能与新版本混用。",
+  "dims": [
+    {
+      "id": "answer_correctness",
+      "name": "答案正确性",
+      "weight": 0.4,
+      "scale": [0, 1],
+      "criteria": "结论与金标一致；数值、实体、时间不得偏差。"
+    },
+    {
+      "id": "citation_faithfulness",
+      "name": "引用忠实性",
+      "weight": 0.25,
+      "scale": [0, 1],
+      "criteria": "每条引用都能在证据中找到支撑；无编造引用。",
+      "critical": true
+    },
+    {
+      "id": "completeness",
+      "name": "完整性",
+      "weight": 0.15,
+      "scale": [0, 1],
+      "criteria": "覆盖金标全部要点；无关键遗漏。"
+    },
+    {
+      "id": "conciseness",
+      "name": "简洁性",
+      "weight": 0.1,
+      "scale": [0, 1],
+      "criteria": "无冗余复述；篇幅与问题复杂度相称。"
+    },
+    {
+      "id": "refusal_correctness",
+      "name": "拒答正确性",
+      "weight": 0.1,
+      "scale": [0, 1],
+      "criteria": "证据不足时明确拒答；可答时不拒答。"
+    }
+  ],
+  "pass": {
+    "weighted_score_min": 0.75,
+    "critical_dims": ["citation_faithfulness"],
+    "critical_dim_min": 0.8
+  }
+}

@@ -30,12 +30,12 @@
 Redis 挂了必须**降级而不是报错**：限流/配额退化为单副本语义（比 500 好），
 缓存退化为进程内（比不缓存好）。这与项目其它护栏一致。
 """
-import logging
 import threading
 import time
 from typing import Protocol, runtime_checkable
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @runtime_checkable
@@ -50,6 +50,8 @@ class StateStore(Protocol):
     def zadd(self, key: str, member: str, score: float) -> None: ...
     def zcount(self, key: str, min_score: float, max_score: float) -> int: ...
     def zremrangebyscore(self, key: str, min_score: float, max_score: float) -> int: ...
+    def zrange(self, key: str, min_score: float, max_score: float) -> list[str]: ...
+    def zrem(self, key: str, member: str) -> int: ...
     def healthy(self) -> bool: ...
     def backend_name(self) -> str: ...
 
@@ -70,7 +72,7 @@ class LocalStore:
     刻意实现与 Redis 相同的接口语义，使上层切换零感知。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._lock = threading.Lock()
         self._values: dict[str, tuple[str, float]] = {}   # key → (value, expire_at)
         self._zsets: dict[str, dict[str, float]] = {}
@@ -140,6 +142,25 @@ class LocalStore:
                 z.pop(m, None)
             return len(victims)
 
+    def zrem(self, key: str, member: str) -> int:
+        with self._lock:
+            z = self._zsets.get(key) or {}
+            if member in z:
+                z.pop(member, None)
+                return 1
+            return 0
+
+    def zrange(self, key: str, min_score: float, max_score: float) -> list[str]:
+        """按分数区间取成员（按分数升序）。"""
+        with self._lock:
+            picked = [
+                (score, member)
+                for member, score in (self._zsets.get(key) or {}).items()
+                if min_score <= score <= max_score
+            ]
+        picked.sort(key=lambda x: (x[0], x[1]))
+        return [member for _score, member in picked]
+
     def healthy(self) -> bool:
         return not self._dead
 
@@ -157,7 +178,7 @@ class RedisStore:
     #: 重连冷却（秒）：失败后多久才再 ping 一次，避免每次操作都去撞墙
     _RECONNECT_COOLDOWN_S = 5.0
 
-    def __init__(self, url: str, prefix: str = "kquery:", timeout_s: float = 1.0):
+    def __init__(self, url: str, prefix: str = "kquery:", timeout_s: float = 1.0) -> None:
         self._prefix = prefix
         self._healthy = False
         self._client = None
@@ -203,7 +224,7 @@ class RedisStore:
                 self._healthy = True
                 logger.info("共享状态后端已恢复：Redis")
                 return True
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - Redis ping 失败：准备重建连接（继续降级）
                 logger.debug("Redis ping 失败，准备重建连接: %s", exc)
         # ② 连接也坏了 → 重建
         try:
@@ -218,7 +239,7 @@ class RedisStore:
             self._healthy = True
             logger.info("共享状态后端已恢复：Redis（重建连接）")
             return True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis 重连失败：标记不健康并继续降级
             self._healthy = False
             logger.debug("Redis 重连失败（继续降级）: %s", exc)
             return False
@@ -238,7 +259,7 @@ class RedisStore:
             value = pipe.execute()[0]
             self._healthy = True
             return int(value)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis incr 失败
             self._healthy = False
             logger.warning("Redis incr 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -250,7 +271,7 @@ class RedisStore:
             value = self._client.get(self._k(key))
             self._healthy = True
             return value
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis get 失败
             self._healthy = False
             logger.warning("Redis get 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -261,7 +282,7 @@ class RedisStore:
         try:
             self._client.set(self._k(key), value, ex=ttl_s or None)
             self._healthy = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis set 失败
             self._healthy = False
             logger.warning("Redis set 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -272,7 +293,7 @@ class RedisStore:
         try:
             self._client.delete(self._k(key))
             self._healthy = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis delete 失败
             self._healthy = False
             logger.warning("Redis delete 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -284,7 +305,7 @@ class RedisStore:
             count = int(self._client.exists(self._k(key)))
             self._healthy = True
             return count > 0
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis exists 失败
             self._healthy = False
             logger.warning("Redis exists 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -295,7 +316,7 @@ class RedisStore:
         try:
             self._client.zadd(self._k(key), {member: float(score)})
             self._healthy = True
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis zadd 失败
             self._healthy = False
             logger.warning("Redis zadd 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -307,7 +328,7 @@ class RedisStore:
             count = int(self._client.zcount(self._k(key), min_score, max_score))
             self._healthy = True
             return count
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis zcount 失败
             self._healthy = False
             logger.warning("Redis zcount 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -319,9 +340,33 @@ class RedisStore:
             removed = int(self._client.zremrangebyscore(self._k(key), min_score, max_score))
             self._healthy = True
             return removed
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis zremrangebyscore 失败
             self._healthy = False
             logger.warning("Redis zremrangebyscore 失败（%s），调用方应降级", exc)
+            raise StoreUnavailable(str(exc)) from exc
+
+    def zrem(self, key: str, member: str) -> int:
+        if not self._client:
+            raise StoreUnavailable("redis unavailable")
+        try:
+            removed = int(self._client.zrem(self._k(key), member))
+            self._healthy = True
+            return removed
+        except Exception as exc:  # noqa: BLE001 - Redis zrem 失败
+            self._healthy = False
+            logger.warning("Redis zrem 失败（%s），调用方应降级", exc)
+            raise StoreUnavailable(str(exc)) from exc
+
+    def zrange(self, key: str, min_score: float, max_score: float) -> list[str]:
+        if not self._client:
+            raise StoreUnavailable("redis unavailable")
+        try:
+            members = self._client.zrangebyscore(self._k(key), min_score, max_score)
+            self._healthy = True
+            return [m if isinstance(m, str) else m.decode() for m in members]
+        except Exception as exc:  # noqa: BLE001 - Redis zrange 失败
+            self._healthy = False
+            logger.warning("Redis zrange 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
 
     def healthy(self) -> bool:
@@ -347,7 +392,7 @@ class RedisStore:
             result = self._client.eval(script, len(key_list), *key_list, *list(args))
             self._healthy = True
             return list(result)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - Redis eval 失败
             self._healthy = False
             logger.warning("Redis eval 失败（%s），调用方应降级", exc)
             raise StoreUnavailable(str(exc)) from exc
@@ -367,7 +412,7 @@ class SharedState:
     （否则一次网络抖动就把整个进程变回单副本语义，且不会被察觉）。
     """
 
-    def __init__(self, redis_url: str = "", prefix: str = "kquery:"):
+    def __init__(self, redis_url: str = "", prefix: str = "kquery:") -> None:
         self._local = LocalStore()
         self._redis = RedisStore(redis_url, prefix) if redis_url else None
         self._degraded_ops = 0
@@ -410,6 +455,29 @@ class SharedState:
     def delete(self, key: str) -> None:
         self._call("delete", key)
 
+    def zrem(self, key: str, member: str) -> int:
+        """从 zset 索引里移除成员（删除文档时同步清索引）。"""
+        try:
+            return int(self._call("zrem", key, member) or 0)
+        except Exception:  # noqa: BLE001 - 共享状态不可读：计数按 0 处理
+            logger.debug("共享状态不可读：计数按 0 处理")
+            return 0
+
+    def zrange(self, key: str, min_score: float, max_score: float) -> list[str]:
+        """按分数区间取成员（Redis 不可用时返回空列表，不抛）。
+
+        列表失败**不抛**：调用方（会话列表、任务列表）拿到空列表继续服务，
+        比整个请求 500 更符合"降级而非报错"的既有纪律。
+        """
+        try:
+            return list(self._call("zrange", key, min_score, max_score) or [])
+        except Exception:  # noqa: BLE001 - 共享状态不可读：列表按空处理
+            logger.debug("共享状态不可读：列表按空处理")
+            return []
+
+    def zadd(self, key: str, member: str, score: float) -> None:
+        self._call("zadd", key, member, score)
+
     def exists(self, key: str) -> bool:
         return bool(self._call("exists", key))
 
@@ -422,9 +490,6 @@ class SharedState:
         if self._redis is None:
             raise StoreUnavailable("redis not configured")
         return self._redis.eval(script, keys, args)
-
-    def zadd(self, key: str, member: str, score: float) -> None:
-        self._call("zadd", key, member, score)
 
     def zcount(self, key: str, min_score: float, max_score: float) -> int:
         return self._call("zcount", key, min_score, max_score)

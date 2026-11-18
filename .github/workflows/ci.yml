@@ -1,5 +1,4 @@
 name: ci
-
 on:
   push:
     branches: [main, master]
@@ -10,20 +9,27 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# 说明（2026-11-12 结构整理）：
+# - 测试目录 `tests/` 在**仓库根**（与 `backend/` 平级），所以测试相关 job 的
+#   working-directory 是仓库根，pytest 的配置在根 `pyproject.toml`；
+# - 依赖与虚拟环境仍在 `backend/`（`backend/.venv`、`uv.lock`），
+#   因此命令统一用 `uv run --project backend ...`（在根目录执行）。
+
 jobs:
   lint:
     name: lint
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
       - name: ruff check
-        run: uv run --group dev ruff check app tests
+        run: uv run --project backend --group dev python -m ruff check backend/app tests scripts
+      - name: 配置模板一致性（.env.example 与 Settings 漂移 → 红）
+        # backend/.env.example 是**生成物**（A-19）：字段来源是 Settings。
+        # 改了配置没重新生成 = 部署时按示例配不出这个能力。
+        run: uv run --project backend python scripts/gen_env_example.py --check
 
   test:
     name: test (py${{ matrix.python-version }})
@@ -32,41 +38,163 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.11", "3.12"]
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
       - name: Install (milvus-lite on Linux)
-        run: uv sync --frozen --group dev
+        run: uv sync --project backend --frozen --group dev
       - name: pytest with coverage
         # Linux 走真实 Milvus Lite（Windows 才回退 FAISS，见 tests/conftest.py）
-        run: uv run pytest --cov=app --cov-report=xml --cov-report=term
+        run: uv run --project backend --group dev python -m pytest --cov --cov-report=xml --cov-report=term
       - name: Upload coverage
         uses: actions/upload-artifact@v4
         with:
           name: coverage-py${{ matrix.python-version }}
-          path: backend/coverage.xml
+          path: coverage.xml
           if-no-files-found: error
 
   # 弱断言护栏：文档  记录的测试质量问题，靠静态检查长期拦住
   test-quality:
     name: test-quality
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
     steps:
       - uses: actions/checkout@v4
       - name: 禁止恒真断言与死代码
         run: |
           ! grep -rn "or True" tests/ --include=*.py
           ! grep -rn "if False else" tests/ --include=*.py
-      - name: conftest 必须注入 admin 默认头（否则鉴权测试全红）
-        run: grep -q "X-Roles" tests/conftest.py
+      - name: conftest 必须显式清理环境变量（否则用例间串味）
+        # 认证与授权已下线（2026-11-12），原先这里断言 conftest 注入 admin 默认头；
+        # 现在改为断言"每个用例用完必须清理自己设置的环境变量"——
+        # 这是更普遍的纪律（DATA_DIR / MODEL_PROVIDER / VECTOR_STORE 等）。
+        run: grep -q "os.environ.pop" tests/conftest.py
+      - name: 根目录配置必须带 pytest 超时（否则死锁的用例会静默挂住整个套件）
+        run: grep -q "timeout" pyproject.toml
+
+  # 检索质量门禁（S4）：金标集 + 基线。检索参数/chunk 策略改动若让 recall@5、nDCG@10
+  # 相对基线劣化 >2pp 即失败——把"调参有没有收益"从感觉变成 CI 的判断。
+  retrieval-eval:
+    name: retrieval-eval (质量门禁)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --project backend --frozen --group dev
+      - name: 启动期配置校验
+        run: uv run --project backend --group dev python -c "import sys; sys.path.insert(0,'backend'); from app.core.config import Settings; assert not Settings().validate_startup()"
+      - name: 本地检索评测（真 BM25 + mock 向量 + 真 RRF/重排）
+        run: |
+          uv run --project backend --group dev python scripts/eval/run_eval.py --mode local \
+            --queries tests/data/eval/queries.jsonl --qrels tests/data/eval/qrels.tsv \
+            --runs tests/data/eval/runs.local.jsonl --out tests/data/eval/report.local.json
+      - name: 相对基线的回退门禁（>2pp 失败）
+        run: |
+          uv run --project backend --group dev python scripts/eval/run_eval.py --mode file \
+            --runs tests/data/eval/runs.local.jsonl --qrels tests/data/eval/qrels.tsv \
+            --baseline tests/data/eval/baseline.json --max-drop 0.02
+      # 成本-质量曲线（`EV-06`）：把「质量」与「成本」放在一张表上，
+      # 并给出帕累托前沿——「哪套切块既更准又更便宜」从此有据可查。
+      - name: 成本-质量曲线（帕累托前沿）
+        run: |
+          uv run --project backend --group dev python scripts/eval/cost_quality.py \
+            --out tests/data/eval/cost_quality.json
+      # 生成质量门禁（`EV-06`）：**CI 必须用启发式判定**（确定性、无需 API Key）。
+      # ⚠️ **绝不能在 CI 里调真实模型**：没有 Key 会直接红；有 Key 会让门禁结果
+      # 随模型波动，且把「模型供应商的临时故障」变成「PR 失败」。
+      # 阈值来自 rubric 文件（`EV-02`），**不硬编码在 CI 里**——
+      # 换 rubric 版本必须重建基线（`judge_baseline.json` 带 rubric 版本）。
+      - name: 生成质量门禁（启发式判定，阈值取自 rubric）
+        run: |
+          uv run --project backend --group dev python scripts/eval/run_eval.py --mode file \
+            --runs tests/data/eval/runs.local.jsonl --qrels tests/data/eval/qrels.tsv \
+            --judge heuristic --rubric tests/data/eval/rubric.v1.json \
+            --judge-report tests/data/eval/judge_report.ci.json
+      # 切块策略对比（信息性，不拦构建）：每次跑都产出"哪套切块更好"的对照表，
+      # 改动切块参数时在 PR 里直接看得到差异。
+      - name: 切块策略实验
+        run: |
+          uv run --project backend --group dev python scripts/eval/chunk_experiment.py \
+            --out tests/data/eval/chunk_experiment.json
+      - name: Upload 切块实验报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-experiment
+          path: tests/data/eval/chunk_experiment.json
+          if-no-files-found: error
+      # 多模态（图文）评测：常规 16 条 + 对抗 11 条（必须看原图才能答）。
+      # 对抗集的**文本可答性必须是 0** —— 那是对抗题"确实只能靠原图"的不变量，
+      # 由 tests/unit/test_multimodal_corpus.py 守卫；这里跑一遍是为了产出可对比的数字。
+      - name: 多模态评测（图文：常规 + 对抗）
+        run: |
+          uv run --project backend --group dev python scripts/eval/run_eval.py --mode local \
+            --corpus tests/data/eval/corpus_img \
+            --queries tests/data/eval/queries_img.jsonl \
+            --qrels tests/data/eval/qrels_img.tsv \
+            --runs tests/data/eval/runs_img.jsonl \
+            --out tests/data/eval/report_img.json
+          uv run --project backend --group dev python scripts/eval/run_eval.py --mode local \
+            --corpus tests/data/eval/corpus_img \
+            --queries tests/data/eval/queries_adv.jsonl \
+            --qrels tests/data/eval/qrels_adv.tsv \
+            --runs tests/data/eval/runs_adv.jsonl \
+            --out tests/data/eval/report_adv.json
+      # Agent 过程评测（§5.3）：工具选择准确率 / 平均迭代 / 失控率
+      # 三项都有验收口径 → 不达标即失败（工具选错是**能力问题**，不能靠感觉）。
+      - name: Agent 过程评测
+        run: |
+          uv run --project backend --group dev python scripts/eval/run_agent_eval.py \
+            --dataset tests/data/eval/agent_cases.jsonl \
+            --out tests/data/eval/agent_report.json
+      # 索引重建演练（§4.2）：沙箱重建 + 评测，**不切生产**
+      # （切换是运维动作，要在真实环境人工确认后执行）。
+      - name: 索引重建演练（沙箱）
+        run: |
+          uv run --project backend --group dev python scripts/eval/reindex.py \
+            --policy recursive-800-100 --out tests/data/eval/reindex_report.json
+
+  # 镜像构建（§8.1）：镜像不可复现 / 构建失败 / 缺文件都必须拦住。
+  image:
+    name: image (build + smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: 锁文件一致性（锁文件与 pyproject 不匹配 → 依赖不可复现）
+        run: uv lock --check --project backend
+      - name: 构建后端镜像
+        run: docker build -f backend/Dockerfile -t kquery/backend:ci backend
+      - name: 镜像冒烟（探针端点可用 + 非 root）
+        run: |
+          docker run -d --name kq -p 8100:8100 \
+            -e DATA_DIR=/data -e MODEL_PROVIDER=mock \
+            kquery/backend:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8100/livez > /dev/null; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8100/livez
+          test "$(docker exec kq id -u)" != "0" || (echo "容器以 root 运行" && exit 1)
+          docker rm -f kq
+
+  # 文档卫生：引用的文件路径必须真实存在（文档指向不存在的文件 = 事实错误，
+  # 而这类错误**不会**让任何测试变红——只能靠检查）。设计稿里声明为
+  # "待建/未实现"的路径在 scripts/check_doc_refs.py 的白名单里。
+  doc-refs:
+    name: doc-refs (引用完整性)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv run --project backend --group dev python scripts/check_doc_refs.py
 
   # 前端护栏（B0）：此前 CI 只跑后端 3 个 job，前端 TS 错误与单测失败无人拦截。
   # node 版本与 frontend/.nvmrc、frontend/Dockerfile 保持一致（22）。

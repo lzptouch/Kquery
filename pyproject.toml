@@ -1,0 +1,50 @@
+# 仓库根的**工具配置**（pytest / coverage / ruff）。
+#
+# 为什么放在根而不是 backend/：测试目录 `tests/` 在仓库根（与 backend/ 平级），
+# pytest 的 rootdir 与配置发现从**测试所在目录**向上走——配置留在 backend/ 里
+# 会被完全忽略（于是超时保护、覆盖率门槛全部失效，而且没有任何报错）。
+#
+# 依赖与虚拟环境仍在 backend/（`backend/.venv`、`uv.lock`），用
+# `uv run --project backend pytest` 从仓库根跑。
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `backend` 让 `import app.*` 可用；`.` 让 `import tests.*` 可用
+# （测试之间有跨目录 import，例如 tests/integration 被 tests/unit 复用）。
+pythonpath = ["backend", "."]
+addopts = "-q --timeout=120 --timeout-method=thread"
+# 超时是必需的而不是可选的：本项目大量测试涉及线程与 SSE 消费，
+# 一旦某个消费者死锁，没有超时的话整个测试套件会静默挂住，
+# 既看不出跑到哪一步，也没法区分"慢"和"死"。
+
+[tool.coverage.run]
+source = ["backend/app"]
+branch = false
+
+[tool.coverage.report]
+# 门槛取自实测基线（85%）略下调，留出余量避免阻塞开发；
+# 后续改造完成后应逐步抬升（每批次 +2pp）。
+fail_under = 80
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "@abstractmethod",
+    "if __name__ == .__main__.:",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+# 本项目大量使用中文注释与文档字符串，忽略行宽以外的风格争议项，
+# 保持 lint 只抓真正的错误（未使用变量、未定义名、错误的 except 顺序等）。
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+# E501 行宽由 line-length 控制；E203 与 black 冲突。
+# E702/E741 放行：并发测试里的紧凑分号写法与单字母循环变量是刻意为之，
+# 拆成多行反而更难读；lint 应只拦真实问题（F 类未使用/未定义、W292 缺尾换行）。
+ignore = ["E501", "E203", "E702", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F841", "W292"]

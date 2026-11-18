@@ -12,7 +12,6 @@
 溯源时前端可回显原页图像。
 """
 import hashlib
-import logging
 import os
 import re
 import tempfile
@@ -24,8 +23,9 @@ from app.core.envelope import ApiError, ErrCode
 from app.domain.schemas import MediaAsset, TableRecord
 from app.services.parsers.base import ParseResult
 from app.services.parsers.ocr import OcrEngine, _clean_ocr_text
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 单页文字量低于该阈值视为疑似扫描页（质量红线，§6.2）
 MIN_PAGE_CHARS = 30
@@ -45,7 +45,7 @@ class PdfParser:
         ocr_dpi: int = 120,
         ocr_max_pages: int = 200,
         scan_min_chars: int = MIN_PAGE_CHARS,
-    ):
+    ) -> None:
         self._ocr_engine = ocr_engine
         self._assets_dir = assets_dir
         self._ocr_enabled = ocr_enabled
@@ -61,7 +61,9 @@ class PdfParser:
         except Exception as exc:
             raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, f"PDF 打开失败（可能已加密或损坏）: {exc}") from exc
         if pdf.needs_pass:
-            raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, "PDF 已加密，无法解析")
+            # 加密是**可区分**的失败（人工解密后重传即可），不该和「文件损坏」
+            # 共用一个码（`A-10`：调用方要按码差异化处置）。
+            raise ApiError(ErrCode.PARSE_ENCRYPTED, "PDF 已加密，无法解析")
 
         result = ParseResult()
         ocr_pages = 0
@@ -143,6 +145,8 @@ class PdfParser:
         asset = self._save_page_asset(pdf, page_idx, doc_id, tenant_id)
         if asset:
             result.assets.append(asset)
+            # M4：页图绑定到该页的文本块（提示与 segments 的 source 同构）
+            result.asset_bindings.append((asset.asset_id, f"第{page_idx}页"))
 
         # 剥离 Markdown 表格块 → 独立 TableRecord（结构保护，不被切块器切断）
         body, tables = self._split_ocr_tables(text, page_idx, doc_id)

@@ -65,7 +65,7 @@ def _recursive_split(text: str, separators: list[str], chunk_size: int, overlap:
     return final
 
 
-def split_text(text: str, chunk_size: int = 300, overlap: int = 50) -> list[str]:
+def split_text(text: str, chunk_size: int = 800, overlap: int = 100) -> list[str]:
     """对外入口：把一段文本切成不超过 chunk_size 的块列表。"""
     if not text or not text.strip():
         return []
@@ -78,8 +78,8 @@ def build_chunks(
     doc_id: str,
     segments: list[tuple[str, str]],
     tenant_id: str,
-    chunk_size: int = 300,
-    overlap: int = 50,
+    chunk_size: int = 800,
+    overlap: int = 100,
     min_chars: int = 20,
 ) -> list[Chunk]:
     """把 (source, text) 片段列表切成 Chunk，生成稳定 chunk_id。

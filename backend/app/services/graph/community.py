@@ -6,15 +6,15 @@
 - 社区数量上限：过小社区（< min_size）不生成摘要（摘要成本与社区数线性相关）；
 - 摘要带生成时刻与模型版本（过时判据）。
 """
-import logging
 import time
 from typing import Protocol
 
 from app.domain.schemas import Community
 from app.services.graph.store import BaseGraphStore
 from app.services.llm import LLM
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 COMMUNITY_SUMMARY_PROMPT = """为下面的实体社区生成一段主题摘要（80 字以内）。
 摘要回答：这个社区涉及什么主题、有哪些关键实体、实体间的核心关系。
@@ -75,7 +75,7 @@ class HierarchicalCommunityDetector:
     聚合时按重叠度降序 + 成员名字典序做 tie-break。
     """
 
-    def __init__(self, merge_threshold: float = 0.3, max_level: int = 3):
+    def __init__(self, merge_threshold: float = 0.3, max_level: int = 3) -> None:
         self._merge_threshold = merge_threshold
         self._max_level = max_level
 
@@ -179,7 +179,7 @@ def build_communities(
             content = _community_brief(store, members, tenant_id)
             try:
                 community.summary = llm.generate(COMMUNITY_SUMMARY_PROMPT.format(content=content)).strip()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 社区 %s 摘要生成失败
                 logger.warning("社区 %s 摘要生成失败: %s", cid, exc)
         store.set_community(community)
         communities.append(community)
@@ -237,7 +237,7 @@ def _build_hierarchical(
                     community.summary = llm.generate(
                         COMMUNITY_SUMMARY_PROMPT.format(content=content)
                     ).strip()
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - 社区 %s 摘要生成失败
                     logger.warning("社区 %s 摘要生成失败: %s", cid, exc)
             store.set_community(community)
             communities.append(community)

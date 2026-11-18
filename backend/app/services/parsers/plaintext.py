@@ -13,15 +13,15 @@
    解析符号树的成本与收益不成比例。
 """
 import json
-import logging
 import re
 from html.parser import HTMLParser
 from pathlib import Path
 
 from app.core.envelope import ApiError, ErrCode
 from app.services.parsers.base import ParseResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 #: 纯文本扩展名（按整文件纯文本处理）
 TEXT_EXTENSIONS = {

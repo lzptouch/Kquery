@@ -1,38 +1,32 @@
-"""检索过滤条件与 ACL 下推。
+"""检索过滤条件（租户 / 单文档）。
 
-## 要解决的问题（后过滤吃掉 top-k 名额）
+## 认证与授权已下线（2026-11-12）
 
-三个检索后端都是**先按分数取 N 条，再在应用层过滤 tenant/doc**。加入 ACL 后
-这个顺序会出问题：
+本模块原先承载**文档级 ACL 下推**：调用方持有"可见文档清单"时，把它编成
+`doc_id in [...]` 下推到 Milvus，让向量库在召回阶段就排除不可见文档。
+
+该能力随文档级 ACL 一并删除。保留下来的是：
+
+- `tenant_id` —— **数据隔离维度**（不是权限功能）：文档、索引、图谱、记忆、
+  缓存键都按租户划分；
+- `doc_id` —— 单文档检索（快问通道、文档内 probe）。
+
+## 一道防线：动态超额取数（**目前只有 FAISS 后端实现了**）
+
+三个检索后端都是**先按分数取 N 条，再在应用层过滤 tenant/doc**。这个顺序会出问题：
 
 ```
-用户可读 10 份文档中的 7 份，不可读的 3 份恰好排在最前
-→ 取 top-4 → 命中 3 条不可读被过滤 → 只剩 1 条
-→ 极端情况下可见证据为 0 → 误判为「无权限」直接拒答
+租户内 10 份文档中的 3 份被 tenant/doc 过滤掉，且恰好排在最前
+→ 取 top-4 → 命中 3 条被过滤 → 只剩 1 条
 ```
 
-用户明明有权看那 7 份文档，却因为"排名更高的不可见文档占了名额"而拿不到答案。
+因此不再固定 `top_k * 4`，而是根据**实际过滤结果**迭代扩取：过滤后不足 `top_k`
+就扩大候选池重取，直到取满或候选耗尽。这对三个后端是统一逻辑，且**不需要预先知道
+任何文档集合**。
 
-## 两道防线
-
-**第一道（本模块核心）：动态超额取数。**
-不再固定 `top_k * 4`，而是根据**实际过滤结果**迭代扩取：过滤后不足 `top_k`
-就扩大候选池重取，直到取满或候选耗尽。这对三个后端是统一逻辑，且**不需要
-预先知道可见文档集合**（那个信息在多租户下代价高昂）。
-
-**第二道：表达式下推（Milvus 专属）。**
-当调用方**已经**持有可见文档清单（`visible_doc_ids`）时，把它编成
-`doc_id in [...]` 下推到 Milvus，让向量库在召回阶段就排除不可见文档——
-这样即使可见文档排名很靠后也能被取到。
-
-**降级纪律**：可见清单 > `PUSHDOWN_MAX_DOCS` 时不构造 `in [...]`（Milvus 表达式
-有长度上限，超长会直接报错），退回只下推 tenant + 第一道防线。
+**降级纪律**：达到 `MAX_OVERFETCH_FACTOR` 上限后不再扩取，宁可少给几条也不做全量扫描。
 """
 from dataclasses import dataclass, field
-
-# Milvus 表达式长度上限约 64KB；单个 doc_id 按 40 字符估算，
-# 取 500 作为保守阈值（约 20KB），留出余量给 tenant/版本等其它条件。
-PUSHDOWN_MAX_DOCS = 500
 
 # 超额取数的上限倍数：避免极端情况下把整个索引拉进内存。
 # 达到该倍数后不再扩取，宁可少给几条也不做全量扫描。
@@ -41,58 +35,32 @@ MAX_OVERFETCH_FACTOR = 32
 
 @dataclass
 class RetrievalFilters:
-    """一次检索的过滤条件。
-
-    `visible_doc_ids` 是**允许清单**（None = 不做文档级限制，例如 ACL 未启用）。
-    刻意只支持 allow 语义：deny 与多身份判定必须留在应用层（Milvus 表达式
-    无法优雅表达"不含"的多身份语义），见 acl.py 的判定树。
-    """
+    """一次检索的过滤条件。"""
 
     tenant_id: str = ""
-    doc_id: str | None = None          # 单文档检索（文档内 probe）
-    visible_doc_ids: set[str] | None = None  # ACL 允许清单（None = 不限制）
-    current_version_only: bool = True   # 只召回当前索引版本
+    doc_id: str | None = None          # 单文档检索（文档内 probe / 快问）
+    # 注：版本过滤不在这里——它由 `hybrid.py` 的 `is_current_version` 判定驱动
+    # （`A-21.2` 曾在这里放一个 `current_version_only` 字段，全仓无读取点，
+    #   留着只会让人以为「这里能控制版本过滤」）。
 
     def allows(self, doc_id: str, tenant_id: str) -> bool:
-        """应用层判定（第一道防线的过滤谓词）。"""
+        """应用层判定（过滤谓词）。"""
         if tenant_id != self.tenant_id:
             return False
         if self.doc_id is not None and doc_id != self.doc_id:
             return False
-        if self.visible_doc_ids is not None and doc_id not in self.visible_doc_ids:
-            return False
         return True
 
-    def overfetch_limit(self, top_k: int, factor: int) -> int:
-        """本轮应取多少候选（含 tenant/doc/ACL 过滤的余量）。"""
-        return max(top_k, top_k * max(1, min(factor, MAX_OVERFETCH_FACTOR)))
-
     def to_milvus_expr(self, extra: list[str] | None = None) -> str:
-        """编 Milvus 过滤表达式（第二道防线）。
+        """编 Milvus 过滤表达式。
 
-        可见清单过大时**不**加入 `doc_id in [...]`：超长表达式会让 Milvus 直接
-        报错（比"少过滤一点"严重得多），此时退回 tenant 粗过滤 + 应用层精确过滤。
+        只下推租户与单文档两个维度——文档级可见性下推已随 ACL 删除。
         """
         parts = [f'tenant_id == "{_escape(self.tenant_id)}"']
         if self.doc_id is not None:
             parts.append(f'doc_id == "{_escape(self.doc_id)}"')
-        elif self.visible_doc_ids is not None and len(self.visible_doc_ids) <= PUSHDOWN_MAX_DOCS:
-            if not self.visible_doc_ids:
-                # 空允许清单：没有任何可见文档，构造一个恒假条件（比不过滤安全）
-                parts.append('doc_id == "__none__"')
-            else:
-                ids = ", ".join(f'"{_escape(d)}"' for d in sorted(self.visible_doc_ids))
-                parts.append(f"doc_id in [{ids}]")
         parts.extend(extra or [])
         return " and ".join(parts)
-
-    def pushdown_degraded(self) -> bool:
-        """是否因清单过大而放弃了 doc 级下推（供日志与指标观测）。"""
-        return (
-            self.doc_id is None
-            and self.visible_doc_ids is not None
-            and len(self.visible_doc_ids) > PUSHDOWN_MAX_DOCS
-        )
 
 
 def _escape(value: str) -> str:

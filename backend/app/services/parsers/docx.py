@@ -11,7 +11,6 @@
 python-docx 是纯规则解析库（无权重无 GPU），符合「解析库 vs 模型能力」分界。
 """
 import hashlib
-import logging
 import re
 import shutil
 import subprocess
@@ -25,8 +24,9 @@ from docx.text.paragraph import Paragraph
 from app.core.envelope import ApiError, ErrCode
 from app.domain.schemas import MediaAsset, TableRecord
 from app.services.parsers.base import ParseResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _HEADING_RE = re.compile(r"^(?:Heading|标题)\s*(\d+)", re.IGNORECASE)
 
@@ -94,7 +94,7 @@ def _table_to_markdown(table: Table) -> tuple[str, int, int]:
 class DocxParser:
     name = "docx"
 
-    def __init__(self, assets_dir: Path):
+    def __init__(self, assets_dir: Path) -> None:
         self._assets_dir = assets_dir
 
     def parse(self, path: Path, doc_id: str, tenant_id: str, policy: dict) -> ParseResult:
@@ -110,6 +110,9 @@ class DocxParser:
             raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, f"DOCX 打开失败（可能损坏或加密）: {exc}") from exc
 
         result = ParseResult()
+        # 先抽图片：正文遍历要用 rel_id → asset_id 映射来定位"这张图在第几段"（M4），
+        # 顺序反了会取不到映射（属性尚未赋值）。
+        result.assets, self._rel_asset_ids = self._extract_images(document, doc_id, tenant_id)
         outline: list[dict] = []
         # 结构化分段：遇标题打包前段（§3 调研共识 1）
         sections: list[tuple[str, list[str]]] = []
@@ -135,6 +138,13 @@ class DocxParser:
                     current_title = title
                 elif paragraph.text.strip():
                     current_lines.append(paragraph.text.strip())
+                # M4：段落里的内嵌图 → 绑定到**当前章节**
+                # （DOCX 无页码概念，章节级是可达到的最细粒度）。
+                # 不把标记塞进正文：图片标记会参与 BM25 分词，污染检索。
+                for rel_id in _paragraph_image_rel_ids(paragraph):
+                    asset_id = self._rel_asset_ids.get(rel_id)
+                    if asset_id:
+                        result.asset_bindings.append((asset_id, current_title))
             elif child.tag.endswith("}tbl"):
                 table_seq += 1
                 markdown, rows, cols = _table_to_markdown(Table(child, document))
@@ -154,7 +164,6 @@ class DocxParser:
 
         result.segments = [(f"{title}", text) for title, lines in sections for text in lines]
         result.outline = outline
-        result.assets = self._extract_images(document, doc_id, tenant_id)
 
         if not result.segments and not result.tables:
             raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, "DOCX 未提取到有效内容")
@@ -165,9 +174,17 @@ class DocxParser:
             shutil.rmtree(tmp_dir, ignore_errors=True)
         return result
 
-    def _extract_images(self, document: Document, doc_id: str, tenant_id: str) -> list[MediaAsset]:
-        """word/media/ 嵌入图存档（描述文本由 的 qwen-vl 图像理解生成，本阶段先存档）。"""
+    def _extract_images(
+        self, document: Document, doc_id: str, tenant_id: str
+    ) -> tuple[list[MediaAsset], dict[str, str]]:
+        """word/media/ 嵌入图存档（描述文本由 qwen-vl 图像理解生成）。
+
+        返回 ``(资产列表, rel_id → asset_id)``：第二个返回值用于
+        **按文档流顺序**把图片绑定到所在章节（M4）——
+        关系表的顺序不等于正文顺序，只有 rel_id 映射才能对回正文。
+        """
         assets: list[MediaAsset] = []
+        rel_asset_ids: dict[str, str] = {}
         self._assets_dir.mkdir(parents=True, exist_ok=True)
         idx = 0
         for rel in document.part.rels.values():
@@ -175,16 +192,18 @@ class DocxParser:
                 continue
             try:
                 blob = rel.target_part.blob
-            except Exception:
+            except Exception:  # noqa: BLE001 - DOCX 内嵌图片读取失败：跳过该图
+                logger.debug("DOCX 内嵌图片读取失败：跳过该图")
                 continue
             idx += 1
             content_hash = hashlib.sha256(blob).hexdigest()
             ext = Path(rel.target_part.partname).suffix or ".png"
             asset_path = self._assets_dir / f"{doc_id}-img{idx}{ext}"
             asset_path.write_bytes(blob)
+            asset_id = f"{doc_id}#img-{idx}"
             assets.append(
                 MediaAsset(
-                    asset_id=f"{doc_id}#img-{idx}",
+                    asset_id=asset_id,
                     doc_id=doc_id,
                     uri=str(asset_path),
                     caption=f"DOCX 嵌入图 {idx}（描述文本待图像理解生成）",
@@ -193,4 +212,24 @@ class DocxParser:
                     kind="image",
                 )
             )
-        return assets
+            rel_asset_ids[rel.rId] = asset_id
+        return assets, rel_asset_ids
+
+
+def _paragraph_image_rel_ids(paragraph) -> list[str]:
+    """取段落里内嵌图片的 rel id 列表（M4 图文绑定）。
+
+    DOCX 的图片是 ``<a:blip r:embed="rIdN">`` 引用 —— 靠它把正文里的
+    图片位置和关系表里的资产对上。只认 ``r:embed``（内嵌），
+    不认 ``r:link``（外链图片没有本地字节）。
+    """
+    ns = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
+    out: list[str] = []
+    try:
+        for blip in paragraph._p.iter("{http://schemas.openxmlformats.org/drawingml/2006/main}blip"):
+            rel_id = blip.get(ns)
+            if rel_id:
+                out.append(rel_id)
+    except Exception:  # noqa: BLE001 - 取不到就当没有图片，不影响解析
+        return []
+    return out

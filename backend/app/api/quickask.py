@@ -15,7 +15,6 @@
 他人访问一律按"不存在"处理。
 """
 import json
-import logging
 from typing import Iterator
 
 from fastapi import APIRouter, Depends, Form, Query, Request, UploadFile
@@ -24,22 +23,19 @@ from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
 from app.core.tracing import elapsed_ms_since, get_trace_id, now_ms, set_trace_id
-from app.dependencies import acl_filter_of, enforce_rate_limit, get_pipeline, get_principal
+from app.dependencies import enforce_rate_limit, get_pipeline, get_principal
 from app.services.pipeline import RagPipeline
 from app.services.quickask import QuickAskService
-from app.services.security.auth import Principal
+from app.core.identity import Principal
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/quickask", tags=["quickask"])
 
 
 def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
-
-
-def get_quickask(request: Request) -> QuickAskService:
-    return request.app.state.quickask
 
 
 class QuickAskRequest(BaseModel):
@@ -107,7 +103,6 @@ def quickask_ask(
 
     tenant, user = principal.tenant_id, principal.user_id
     scoped = pipeline.bind_principal(tenant, user, principal)
-    scoped._acl_filter = acl_filter_of(request, principal)
 
     def event_source() -> Iterator[str]:
         try:
@@ -139,6 +134,9 @@ def quickask_status(
     request: Request,
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
+    """快问临时文档的状态（是否已建索引、剩余有效期）。
+
+    过期 → 404（`QUICK_DOC_EXPIRED`）；TTL 由 `quick_ask_ttl_s` 控制。"""
     trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
@@ -146,12 +144,13 @@ def quickask_status(
     return ok_envelope(service.status(doc_id, principal), trace_id, elapsed_ms_since(started))
 
 
-@router.delete("/{doc_id}", response_model=Envelope)
+@router.delete("/{doc_id}", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def quickask_delete(
     doc_id: str,
     request: Request,
     principal: Principal = Depends(get_principal),
 ) -> Envelope:
+    """删除快问临时文档（连带清理临时块与向量）。"""
     trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()

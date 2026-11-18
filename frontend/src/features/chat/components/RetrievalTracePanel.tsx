@@ -14,8 +14,6 @@ interface Props {
   /** CRAG 精炼前后查询（用于对比展示） */
   refineFrom?: string;
   refineTo?: string;
-  /** 因权限被过滤的条数（只报数量） */
-  aclFiltered?: number;
 }
 
 const BRANCH_STYLE: Record<string, { label: string; color: string }> = {
@@ -57,7 +55,6 @@ export function RetrievalTracePanel({
   crag,
   refineFrom,
   refineTo,
-  aclFiltered,
 }: Props) {
   if (fromCache) {
     return (
@@ -125,13 +122,6 @@ export function RetrievalTracePanel({
           本次未进行精排（重排服务降级），结果可能不够精确
         </div>
       )}
-      {/* 只报数量，绝不展示被过滤文档的任何元信息 */}
-      {(aclFiltered ?? stats.acl_filtered ?? 0) > 0 && (
-        <div className="degrade-note" role="note">
-          另有 {aclFiltered ?? stats.acl_filtered} 条结果因权限未展示
-        </div>
-      )}
-
       {/* CRAG 分支轮次：触发分支整段用对应颜色高亮 */}
       {crag && crag.rounds.length > 0 && (
         <div className="crag-rounds">

@@ -16,109 +16,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-PASSED: list[str] = []
-FAILED: list[tuple[str, str]] = []
+# 共享 HTTP 客户端（此前本文件与 api_sweep.py 各写一份，参数还不一致）
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from console import FAILED, PASSED, check, section  # noqa: E402
+from http_client import call, data_of, set_token, upload_multipart  # noqa: E402
 
 
-#  之后所有 /admin/* 都要求 admin 角色。本脚本是**鉴权改造前**写的，
-# 不带凭证会让管理端点全部 403——那不是产品缺陷而是脚本过期。这里统一注入身份头。
-# 说明：AUTH_ENABLED=false 时后端信任 X-Roles（本地开发模式）；真实凭证模式下
-# 需改用 Authorization: Bearer <token>，见 README。
-AUTH_HEADERS = {
-    "X-User-Id": "admin",
-    "X-Tenant-Id": "default",
-    "X-Roles": "admin",
-}
-TOKEN = ""  # 非空时改用 Bearer 凭证（生产/容器形态）
 
-
-def call(base: str, method: str, path: str, body=None, raw=False, timeout=120,
-         content_type: str | None = None, auth: bool = True, roles: str | None = None,
-         tenant: str | None = None):
-    """返回 (status, json_or_text)。不抛异常——失败也要继续跑后面的用例。
-
-    参数说明：
-    - `auth=False`：**故意**匿名请求，用于验证"没凭证必须被拒"
-    - `roles` / `tenant`：覆盖身份，用于验证越权与跨租户隔离
-    """
-    url = base.rstrip("/") + path
-    data = None
-    headers = {}
-    if auth:
-        if TOKEN:
-            headers["Authorization"] = f"Bearer {TOKEN}"
-        else:
-            headers.update(AUTH_HEADERS)
-            if roles is not None:
-                headers["X-Roles"] = roles
-            if tenant is not None:
-                headers["X-Tenant-Id"] = tenant
-    if body is not None:
-        if isinstance(body, bytes):
-            data = body
-        # 裸 bytes 无法判断意图，用一个显式参数；multipart 上传走 upload_file()
-            headers["Content-Type"] = content_type or "application/octet-stream"
-        else:
-            data = json.dumps(body).encode()
-            headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = resp.read()
-            if raw:
-                return resp.status, payload.decode(errors="replace")
-            try:
-                return resp.status, json.loads(payload)
-            except json.JSONDecodeError:
-                return resp.status, payload.decode(errors="replace")
-    except urllib.error.HTTPError as exc:
-        payload = exc.read()
-        if raw:
-            return exc.code, payload.decode(errors="replace")
-        try:
-            return exc.code, json.loads(payload)
-        except json.JSONDecodeError:
-            return exc.code, payload.decode(errors="replace")
-    except Exception as exc:  # noqa: BLE001
-        return 0, str(exc)
-
-
-def upload_multipart(base: str, path: str, filename: str, content: bytes,
-                     content_type: str = "text/markdown"):
-    """multipart/form-data 上传（快问通道用）。返回 (status, json_or_text)。"""
-    boundary = "----KquerySmokeBoundary"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-        f"Content-Type: {content_type}\r\n\r\n"
-    ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("utf-8")
-    return call(base, "POST", path, body=body,
-                content_type=f"multipart/form-data; boundary={boundary}")
-
-
-def check(name: str, condition: bool, detail: str = "") -> None:
-    if condition:
-        PASSED.append(name)
-        print(f"  \033[32m✓\033[0m {name}")
-    else:
-        FAILED.append((name, detail))
-        print(f"  \033[31m✗\033[0m {name} — {detail}")
-
-
-def section(title: str) -> None:
-    print(f"\n\033[1m{title}\033[0m")
-
-
-def data_of(body):
-    """取信封的 data 字段。data 可能是 null（错误响应），必须容错——
-    直接 body["data"].get(...) 会在错误路径上抛 AttributeError，
-    把"接口返回了错误"变成"脚本崩了"，反而看不到真正的失败原因。"""
-    if not isinstance(body, dict):
-        return {}
-    value = body.get("data")
-    return value if isinstance(value, dict) else {}
-
-
+# 认证已下线（2026-11-12）：管理面端点不再校验角色，不再注入任何身份头。
+# 认证已下线（2026-11-12）：不再注入身份头，所有端点直接可达。
+AUTH_HEADERS: dict[str, str] = {}
+# 令牌统一由 http_client 持有（call() 从那里读）
 def rows_of(body, key=None):
     """取列表型 data。"""
     if not isinstance(body, dict):
@@ -203,33 +112,13 @@ SAMPLE_MD = """# 曼昆经济学核心概念
 def run(base: str) -> int:
     section(f"目标服务: {base}")
 
-    # ---------------------------------------------------- 登录档与管理区门禁
-    section("认证 · 登录端点与身份")
-    # /auth/* 只在账号密码档开启时可用（AUTH_PASSWORD_ENABLED=true）。
-    # 未开启时返回 403 属预期——它不是"服务坏了"，而是"这个部署没开这个档位"。
-    status, body = call(base, "POST", "/auth/login",
-                        body={"username": "__probe__", "password": "definitely-wrong-1"},
-                        auth=False)
-    login_reachable = status != 404
-    check("登录端点已注册（未被代理成 SPA 页面）",
-          isinstance(body, dict) and ("error" in body or "data" in body),
-          f"实际 {status}: {str(body)[:100]}")
-    if status == 403:
-        check("账号密码档未开启时明确拒绝（不是静默放行）", True, "AUTH_PASSWORD_ENABLED=false")
-    elif login_reachable:
-        check("口令错误返回 401", status == 401, f"实际 {status}")
-
-    # /auth/me 的匿名行为按档位不同：令牌档下没有令牌必须 401；
-    # 身份头档下 HeaderAuthProvider 从不拒绝（它只是构造一个 anon 主体），
-    # 因此匿名请求会正常返回 200。两种都是既有设计，断言需与档位一致。
-    status, body = call(base, "GET", "/auth/me", auth=False)
-    if TOKEN:
-        check("令牌模式下未带凭证访问 /auth/me 返回 401", status == 401, f"实际 {status}")
-        status, body = call(base, "GET", "/auth/me")
-        check("携带令牌时 /auth/me 返回 200", status == 200, f"实际 {status}: {str(body)[:100]}")
-    else:
-        check("身份头模式下匿名 /auth/me 返回 200（anon 主体）", status == 200,
-              f"实际 {status}: {str(body)[:100]}")
+    # ---------------------------------------------------- 认证端点下线边界
+    section("认证 · 端点已下线")
+    # 认证与授权已于 2026-11-12 整体下线：/auth/* 与权限类端点必须 404。
+    # 保留这条检查是为了防止"路由还挂着但实现没了"导致 500。
+    for path in ("/auth/login", "/auth/register", "/auth/me"):
+        status, body = call(base, "GET", path, auth=False)
+        check(f"{path} 已下线（404）", status == 404, f"实际 {status}: {str(body)[:100]}")
 
     # ----------------------------------------------------------  契约
     section("全局契约与探针")
@@ -402,49 +291,12 @@ def run(base: str) -> int:
     # ----------------------------------------------------------  安全
     section("认证与审计")
     # 先验鉴权真的在拦人（ 的验收口）：匿名与越权都必须被拒。
-    # 这两条若失败，说明管理端点又裸奔了——比"功能好用"更该优先发现。
-    #
-    # 匿名期望值是 401/403 二者之一：401=没带凭证被认证层拦下，
-    # 403=带凭证但无角色被门禁拦下。两者都是"被拒"，断言具体哪一个
-    # 等于把"当前部署用哪档认证"硬编码进脚本，换个档位就误报。
-    anon_status, _ = call(base, "GET", "/admin/users/permission-matrix", auth=False)
-    check("匿名访问管理端点被拒（401/403）", anon_status in (401, 403), f"实际 {anon_status}")
-
-    # 越权断言只在**身份头模式**下有意义：`roles=` 靠 X-Roles 覆盖身份，
-    # 而令牌模式下 Authorization 头优先，X-Roles 会被后端完全忽略——
-    # 此时"非 admin"实际仍是那个 admin 令牌，断言会假性通过（更糟：假性失败）。
-    # 令牌模式下的越权矩阵由 tests/integration/test_auth_flow.py 覆盖
-    # （那里用真实注册出来的 sales 账号发真令牌）。
-    header_mode = not TOKEN
-    if header_mode:
-        non_admin_status, _ = call(
-            base, "GET", "/admin/users/permission-matrix", roles="user",
-        )
-        check("非 admin 访问管理端点被拒（403）", non_admin_status == 403,
-              f"实际 {non_admin_status}")
-
-        # 管理区收口后，knowledge/graph 与 /admin/* 一样要求 admin。
-        # 曾经它们只要求"已认证"，导致任何登录用户都能上传文档、建图谱、
-        # 读全量文件列表。
-        for probe_path in ("/knowledge/files", "/graph/stats"):
-            probe_status, _ = call(base, "GET", probe_path, roles="user")
-            check(f"非 admin 访问 {probe_path} 被拒（403）", probe_status == 403,
-                  f"实际 {probe_status}")
-
-        # 对话链路必须仍然对普通用户开放——收口管理区时最容易误伤的就是它
-        session_status, _ = call(base, "GET", "/sessions", roles="user")
-        check("非 admin 仍可访问 /sessions（对话链路未被误伤）",
-              session_status == 200, f"实际 {session_status}")
-    else:
-        section("认证 · 越权矩阵（令牌模式跳过）")
-        check("令牌模式下无法用 X-Roles 伪造身份，跳过越权断言", True,
-              "该矩阵由 test_auth_flow.py 用真实 sales 账号覆盖")
-
-    status, body = call(base, "GET", "/admin/users/permission-matrix")
-    check("权限矩阵端点返回 200", status == 200, f"实际 {status}")
-    matrix = data_of(body)
-    check("权限矩阵含能力清单", bool(matrix.get("capabilities")), f"keys={sorted(matrix)}")
-    check("权限矩阵含角色行", bool(matrix.get("matrix")))
+    # 认证与授权已下线（2026-11-12）：管理端点不再校验角色，越权矩阵整体消失。
+    # 保留的断言是**反向**的——权限类端点必须 404（防止路由残留）。
+    for gone_path in ("/admin/users/permission-matrix", "/admin/users",
+                      "/admin/documents/acl"):
+        gone_status, _ = call(base, "GET", gone_path, auth=False)
+        check(f"{gone_path} 已下线（404）", gone_status == 404, f"实际 {gone_status}")
 
     for path in ("/admin/audit", "/admin/audit/export", "/admin/quota",
                  "/admin/quota/platform", "/admin/sensitive"):
@@ -474,19 +326,8 @@ def run(base: str) -> int:
     check("400 响应不含 FastAPI 的 detail 结构", isinstance(body, dict) and "detail" not in body,
           f"实际 {str(body)[:150]}")
 
-    # ---------------------------------------------------------- F2 语音 / F4 快问
-    section("F2 语音 · F4 快问（doc-qa 能力整合）")
-
-    status, body = call(base, "GET", "/speech/status")
-    check("语音能力探针返回 200", status == 200, f"实际 {status}")
-    check("语音探针含 available 字段", "available" in data_of(body), f"keys={sorted(data_of(body))}")
-
-    # 未配置密钥时必须是 503（能力不可用），绝不能是 500
-    status, body = call(base, "POST", "/speech/sts-token")
-    check("未配置语音密钥时返回 503（非 500）", status == 503, f"实际 {status}")
-    check("503 响应含结构化错误码",
-          isinstance(body, dict) and (body.get("error") or {}).get("code") is not None,
-          f"实际 {str(body)[:150]}")
+    # ---------------------------------------------------------- F4 快问
+    section("F4 快问（doc-qa 能力整合）")
 
     # 快问：上传 → 提问 → 删除
     status, body = upload_multipart(base, "/quickask/upload", "冒烟临时.md",
@@ -530,10 +371,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default="http://localhost:8000",
                         help="服务基址。传 http://localhost:8081 可顺带验证 nginx 代理。")
-    parser.add_argument("--token", default="",
-                        help="Bearer 凭证（AUTH_ENABLED=true 时使用，替代 X-Roles 头）。")
     args = parser.parse_args()
-    TOKEN = args.token
+    set_token(args.token)
     start = time.perf_counter()
     code = run(args.base)
     print(f"耗时 {time.perf_counter() - start:.1f}s")

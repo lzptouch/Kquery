@@ -22,7 +22,7 @@ def split_sentences(text: str) -> list[str]:
 class SemanticChunker:
     name = "semantic"
 
-    def __init__(self, embeddings: Embeddings):
+    def __init__(self, embeddings: Embeddings) -> None:
         self._embeddings = embeddings
 
     def chunk(

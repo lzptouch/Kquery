@@ -19,6 +19,33 @@ if TYPE_CHECKING:  # 仅类型检查期需要，避免为注解引入运行时�
 
 _current_trace_id: contextvars.ContextVar[str] = contextvars.ContextVar("trace_id", default="")
 
+#: 请求级上下文（X-15）：日志字段的**唯一生产者**。
+#: 此前 tenant_id / user_id / route / latency_ms 四个字段"结构对了、内容空"——
+#: 因为没有任何地方往日志记录里写它们。这里由中间件写进 contextvar，
+#: 日志过滤器统一搬运，业务代码不必（也不应该）各自拼字段。
+_request_context: contextvars.ContextVar[dict] = contextvars.ContextVar(
+    "request_context", default={}
+)
+
+
+def set_request_context(**fields) -> object:
+    """写入请求上下文字段（返回可回滚的 token）。"""
+    current = dict(_request_context.get() or {})
+    current.update({k: v for k, v in fields.items() if v is not None})
+    return _request_context.set(current)
+
+
+def get_request_context() -> dict:
+    """读取当前请求上下文（副本，调用方改它不影响全局）。"""
+    return dict(_request_context.get() or {})
+
+
+def reset_request_context(token) -> None:
+    try:
+        _request_context.reset(token)
+    except ValueError:
+        pass
+
 
 def new_trace_id() -> str:
     return uuid.uuid4().hex[:16]

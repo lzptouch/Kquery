@@ -11,6 +11,9 @@
 import threading
 import time
 from dataclasses import dataclass
+from app.core.logging_setup import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -21,7 +24,7 @@ class Bucket:
 
 
 class TokenBucketLimiter:
-    def __init__(self):
+    def __init__(self) -> None:
         self._buckets: dict[str, Bucket] = {}
         self._lock = threading.Lock()
 
@@ -95,7 +98,7 @@ class RedisTokenBucketLimiter:
     绝不把"Redis 挂了"变成"请求全被限流"或"请求全被放行"。
     """
 
-    def __init__(self, state, fallback: TokenBucketLimiter | None = None):
+    def __init__(self, state, fallback: TokenBucketLimiter | None = None) -> None:
         self._state = state
         self._fallback = fallback or TokenBucketLimiter()
         self._degraded = 0
@@ -111,6 +114,7 @@ class RedisTokenBucketLimiter:
             allowed = int(result[0]) == 1
             remaining = float(result[1]) if len(result) > 1 else 0.0
         except Exception:  # noqa: BLE001 - Fail-Open：降级为进程内
+            logger.warning("共享状态不可用：Fail-Open 降级为进程内限流（额度按单副本计）")
             self._degraded += 1
             return self._fallback.allow(tenant_id, rate_per_min, capacity)
         if allowed:

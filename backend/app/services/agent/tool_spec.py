@@ -24,13 +24,12 @@
 老工具不声明 `parameters` 时，自动退化为 `{query: str}` 的通用 schema。
 这样改造可以逐个工具推进，不需要一次性重写全部工具与调用方。
 """
-import logging
 from dataclasses import dataclass, field
-from typing import Callable
 
 from pydantic import BaseModel, Field, ValidationError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DANGER_SAFE = "safe"
 DANGER_READ_ONLY = "read_only"
@@ -48,16 +47,17 @@ class QueryArgs(BaseModel):
 class ToolContext:
     """一次工具调用的环境。
 
-    工具通过它取租户与权限，而不是从自己的入参里读——入参是**模型可控**的，
+    工具通过它取租户与用户，而不是从自己的入参里读——入参是**模型可控**的，
     环境是**系统注入**的。把两者混在一起，模型就能通过构造入参越权
     （这正是 `SqlSearchTool` 之前"接收 tenant_id 却从不使用"埋下的隐患）。
+
+    认证与授权已下线，`acl_filter` 一并移除：工具结果不再做文档级可见性过滤。
     """
 
     tenant_id: str = "default"
     user_id: str = "anon"
     run_id: str = ""
     trace_id: str = ""
-    acl_filter: Callable[[str], bool] | None = None
     approved_tools: dict[str, bool] = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
@@ -86,7 +86,7 @@ def schema_of(tool) -> dict:
     if model is not None and isinstance(model, type) and issubclass(model, BaseModel):
         try:
             return model.model_json_schema()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 工具 %s 的 schema 生成失败
             logger.warning("工具 %s 的 schema 生成失败（退回通用 schema）: %s",
                            getattr(tool, "name", "?"), exc)
     declared = getattr(tool, "parameters", None)

@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kquery-frontend
+  labels:
+    app: kquery
+    component: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: kquery
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: kquery
+        component: frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: frontend
+          image: kquery/frontend:latest
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kquery-frontend
+  labels:
+    app: kquery
+    component: frontend
+spec:
+  selector:
+    app: kquery
+    component: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

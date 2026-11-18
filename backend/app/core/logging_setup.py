@@ -20,6 +20,23 @@ import re
 import sys
 from datetime import datetime, timezone
 
+
+def get_logger(name: str | None = None) -> logging.Logger:
+    """**统一日志入口**（`A-15`）。
+
+    所有模块的 logger 都从这里取，不再直接调 `logging.getLogger`——
+    这样「脱敏过滤器 / 上下文注入 / 字段截断」只在这一处接线，
+    新增模块也不会漏掉。
+
+    动机不是洁癖：绕过入口的 logger **拿不到** `ContextFilter` 注入的
+    `trace_id`，排障时无法把日志和请求串起来——一次问答横跨检索 / 重排 /
+    生成 / 自检四段，串不起来就只能靠时间戳人工对齐。
+    """
+    return logging.getLogger(name or __name__)
+
+
+logger = get_logger(__name__)
+
 # 与 sensitive.py 的 PII 正则同源（那里用于答案掩码，这里用于日志脱敏）。
 # 刻意不复用同一个对象：日志脱敏需要**更激进**（宁可多遮），
 # 而答案掩码要考虑可读性，两者策略会分别演化。
@@ -54,12 +71,22 @@ def redact(text: str) -> str:
 class JsonFormatter(logging.Formatter):
     """JSON 行格式（每行一条，便于日志平台采集）。"""
 
+    #: 单个字段的最大长度（`A-18`）。超长截断并标注——
+    #: 日志平台按行采集，一条 MB 级的日志会把采集链路与存储都撑爆，
+    #: 而真正有用的信息通常在开头几百字里。
+    MAX_FIELD_LEN = 512
+
+    def _clip(self, value: str) -> str:
+        if len(value) <= self.MAX_FIELD_LEN:
+            return value
+        return value[: self.MAX_FIELD_LEN] + f"…[+{len(value) - self.MAX_FIELD_LEN}字符]"
+
     def format(self, record: logging.LogRecord) -> str:
         payload: dict = {
             "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
-            "msg": redact(record.getMessage()),
+            "msg": self._clip(redact(record.getMessage())),
         }
         # 从 LogRecord 上取调用方附加的上下文字段（由 tracing 中间件注入）
         for f in REQUIRED_FIELDS:
@@ -76,9 +103,9 @@ class JsonFormatter(logging.Formatter):
             ):
                 continue
             if isinstance(value, (str, int, float, bool)) or value is None:
-                payload[key] = redact(value) if isinstance(value, str) else value
+                payload[key] = self._clip(redact(value)) if isinstance(value, str) else value
         if record.exc_info:
-            payload["exc"] = redact(self.formatException(record.exc_info))
+            payload["exc"] = self._clip(redact(self.formatException(record.exc_info)))
         return json.dumps(payload, ensure_ascii=False)
 
 
@@ -90,14 +117,31 @@ class ContextFilter(logging.Filter):
     trace_id 已由 `core/tracing.py` 的 contextvar 承载，这里只做搬运。
     """
 
+    #: 从请求上下文搬运到日志记录的字段（与 REQUIRED_FIELDS 对齐）
+    CONTEXT_FIELDS = ("tenant_id", "user_id", "route", "latency_ms", "span_id")
+
     def filter(self, record: logging.LogRecord) -> bool:
         if not getattr(record, "trace_id", ""):
             try:
+                # 破环：tracing 反向依赖 logging_setup
                 from app.core.tracing import get_trace_id
 
                 record.trace_id = get_trace_id() or ""
             except Exception:  # noqa: BLE001 - 日志不得因取 trace 失败而丢
                 record.trace_id = ""
+        # 请求上下文字段：只有"记录里没有"时才填（业务代码显式 extra 的值优先）
+        try:
+            # 破环：tracing 反向依赖 logging_setup
+            from app.core.tracing import get_request_context
+
+            ctx = get_request_context()
+        except Exception:  # noqa: BLE001 - 降级继续（异常已在本处被隔离，不影响对外语义）
+            ctx = {}
+        for field in self.CONTEXT_FIELDS:
+            if not getattr(record, field, ""):
+                value = ctx.get(field, "")
+                if value:
+                    setattr(record, field, value)
         return True
 
 
@@ -108,7 +152,7 @@ class SamplingFilter(logging.Filter):
     测试不会因为随机性变 flaky。
     """
 
-    def __init__(self, debug_rate: float = 0.1):
+    def __init__(self, debug_rate: float = 0.1) -> None:
         super().__init__()
         self._rate = max(0.0, min(1.0, float(debug_rate)))
         self._counter = 0
@@ -139,9 +183,14 @@ def setup_logging(level: str = "INFO", log_format: str = "text", debug_sample_ra
         # 采样只对 JSON（生产）形态生效；本地 text 形态保留全量 DEBUG
         handler.addFilter(SamplingFilter(debug_sample_rate))
     else:
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        # 文本形态也带 trace_id：排障时能直接 grep 一次请求的全部日志
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s [trace=%(trace_id)s] %(message)s"
+            )
+        )
     root.addHandler(handler)
 
     # 第三方库的 DEBUG 噪声在生产是纯负担
     for noisy in ("urllib3", "httpx", "httpcore", "asyncio", "pymilvus"):
-        logging.getLogger(noisy).setLevel(logging.WARNING)
+        get_logger(noisy).setLevel(logging.WARNING)

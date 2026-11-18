@@ -7,7 +7,7 @@ from app.services.vectorstore import VectorStore
 class VectorRetriever:
     name = "vector"
 
-    def __init__(self, embeddings: Embeddings, store: VectorStore):
+    def __init__(self, embeddings: Embeddings, store: VectorStore) -> None:
         self._embeddings = embeddings
         self._store = store
 

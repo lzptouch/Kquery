@@ -7,15 +7,15 @@
 HyDE 与 Fusion 不同时启用（互相稀释）。每个扩展器独立可注入、可测试、可替换；
 单个失败只标记该条改写未使用，不阻塞其它扩展。
 """
-import logging
 
 from pydantic import BaseModel, Field
 
 from app.services.llm import LLM
 from app.services.query.jsonutil import JsonParseError, parse_json
 from app.services.query.schemas import REWRITE_HYDE, REWRITE_REWRITE, REWRITE_STEPBACK, Rewrite
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 FUSION_PROMPT = """把下面的用户问题改写成 {n} 个语义等价但措辞不同的检索用问句（更规范、更书面、覆盖可能的同义术语）。
 只输出 JSON 数组，不要输出其它内容。
@@ -40,7 +40,7 @@ class _FusionPayload(BaseModel):
 class FusionExpander:
     name = "fusion"
 
-    def __init__(self, llm: LLM, n: int = 3):
+    def __init__(self, llm: LLM, n: int = 3) -> None:
         self._llm = llm
         self._n = n
 
@@ -56,7 +56,7 @@ class FusionExpander:
 class HydeExpander:
     name = "hyde"
 
-    def __init__(self, llm: LLM):
+    def __init__(self, llm: LLM) -> None:
         self._llm = llm
 
     def expand(self, question: str) -> list[Rewrite]:
@@ -69,7 +69,7 @@ class HydeExpander:
 class StepBackExpander:
     name = "stepback"
 
-    def __init__(self, llm: LLM):
+    def __init__(self, llm: LLM) -> None:
         self._llm = llm
 
     def expand(self, question: str) -> list[Rewrite]:

@@ -4,14 +4,14 @@
 1. 客户端文件名不可信——含路径分隔符或 `..` 一律拒绝，不做静默截断；
 2. 文件体先进临时文件、边写边计数、超限即中断删除——不允许整文件进内存后再校验。
 """
-import logging
 from pathlib import Path
 
 from fastapi import UploadFile
 
 from app.core.envelope import ApiError, ErrCode
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _CHUNK = 1024 * 1024  # 1MB：够小（不占内存），够大（系统调用次数可忽略）
 

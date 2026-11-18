@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# canary 覆盖层（`OP-03`）：与 base **同镜像同配置**，只多一个 `track: canary` 标签。
+#
+# 用法（本地干跑校验）：
+#   kubectl kustomize deploy/k8s/canary
+namespace: kquery
+
+resources:
+  - backend-canary-deployment.yaml
+  - ingress-canary.yaml
+
+commonLabels:
+  app: kquery

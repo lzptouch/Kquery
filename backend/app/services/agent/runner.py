@@ -6,9 +6,10 @@
 - 结果归一为问答契约（answer + evidence + verdict + agent 轨迹）；
 - 熔断退出映射为"不完整的成功"（status=circuit_breaker，仍 200 返回）。
 """
-import logging
+import json
 import queue
 import threading
+from pathlib import Path
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Iterator
@@ -28,6 +29,7 @@ from app.services.agent.cost import get_ledger
 from app.services.agent.react import ReActThinker
 from app.services.agent.sessions import SessionStore
 from app.services.agent.state import initial_state
+from app.services.agent.tools import DANGER_WRITE
 from app.services.pipeline import (
     GENERAL_KNOWLEDGE_PROMPT,
     NO_INFO_ANSWER,
@@ -36,8 +38,27 @@ from app.services.pipeline import (
     build_evidence_block,
 )
 from app.services.validation.history import CRAG_KIND
+from app.core.errors import ConfigError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+def tool_fallbacks(settings) -> dict[str, str]:
+    """解析工具空结果降级映射（`{"原工具": "兜底工具"}`）。
+
+    配错不阻断运行：解析失败按空映射处理（没有降级 = 旧行为）。
+    """
+    raw = str(getattr(settings, "agent_tool_fallbacks_json", "") or "")
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        logger.warning("工具降级映射解析失败（按无降级处理）: %s", raw[:80])
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if str(k) and str(v)}
+
 
 _DONE = object()  # 事件流终止哨兵
 
@@ -50,7 +71,19 @@ RETRIEVAL_TOOLS = frozenset({"vector_search", "graph_search", "image_search", "s
 ESTIMATED_TOKENS_PER_TOOL_CALL = 800
 
 
-def agent_prompt_builder(question: str, evidence_dicts: list[dict], *, parametric: bool = False) -> str:
+def agent_prompt_builder(
+    question: str,
+    evidence_dicts: list[dict],
+    *,
+    parametric: bool = False,
+    token_budget: int = 0,
+    parent_lookup=None,
+    dropped_out: list[dict] | None = None,
+    memory: str = "",
+    history_summary: str = "",
+    history_recent: list[dict] | None = None,
+    structured: bool = False,
+) -> str:
     """answer 节点的提示词：只读最终入选证据，不读 plan/reflect 中间结果。
 
     图谱/图像证据需要额外指引：关系三元组可以综合推理直接与间接关系；
@@ -59,11 +92,45 @@ def agent_prompt_builder(question: str, evidence_dicts: list[dict], *, parametri
 
     parametric=True 时切换为通用知识兜底提示词，不注入证据块
     （低分无关片段会干扰回答；doc/analysis/通用知识兜底回答.md §6.2）。
+
+    `structured=True`（`ST-01` 阶段 B，配置 `context_partition_render`）时改走
+    分段渲染：记忆 / 历史 / 工具目录各自成段，证据段排最后。默认 False = 逐字不变。
+    历史此前是**死字段**（`state.history_recent` 装配到状态但答案提示词零引用），
+    structured 模式才真正把它送进答案提示词。
     """
     if parametric:
         return GENERAL_KNOWLEDGE_PROMPT.format(question=question)
-    # ACL 提示条目（"另有 N 条因权限未展示"）只是 UI 提示，不进提示词与证据编号
-    evidence_dicts = [e for e in evidence_dicts if e.get("modality") != "acl_notice"]
+
+    # `ST-03`：Agent 路径接入**统一上下文组装**——
+    # ① 父块展开（与线性路径同一套语义：去重键 = 父块 ID）
+    # ② 预算裁剪（Agent 证据此前**无上限**：多轮工具调用后提示词无界增长）
+    # 被裁掉的条目写进 `dropped_out`（→ 接线到 `context_breakdown.dropped`）。
+    if parent_lookup is not None or token_budget:
+        # 按需载入：统一组装只在「有预算或父块」时才需要（多数调用不走这条）
+        from app.services.context.assembly import ContextItem, assemble_context
+        # 按需载入：同上（父块展开只在传了 parent_lookup 时才需要）
+        from app.services.context.expand import expand_parents
+
+        expanded, dropped = expand_parents(evidence_dicts, parent_lookup or (lambda _pid: None))
+        items = [
+            ContextItem(
+                key=e.key, doc_id=e.doc_id, content=e.content,
+                score=float((src.get("score") or 0.0)),
+                source=str(src.get("source") or ""), rank=i,
+            )
+            for i, (e, src) in enumerate(zip(expanded, evidence_dicts))
+        ]
+        assembled = assemble_context(items, token_budget=token_budget) if token_budget else None
+        if assembled is not None:
+            kept = {it.key for it in assembled.items}
+            for it in assembled.dropped:
+                dropped.append({"key": it.key, "reason": it.reason or "超出上下文预算"})
+            evidence_dicts = [
+                src for e, src in zip(expanded, evidence_dicts) if e.key in kept
+            ]
+        if dropped_out is not None:
+            dropped_out.extend(dropped)
+
     evidence = [
         Evidence(
             rank=i + 1,
@@ -77,11 +144,28 @@ def agent_prompt_builder(question: str, evidence_dicts: list[dict], *, parametri
         )
         for i, e in enumerate(evidence_dicts)
     ]
-    prompt = PROMPT_TEMPLATE.format(
-        no_info=NO_INFO_ANSWER,
-        evidence_block=build_evidence_block(evidence),
-        question=question,
-    )
+    if structured:
+        # 按需载入：默认（legacy）路径不导入渲染器
+        from app.services.context.render import render_history_lines, render_prompt
+
+        history_lines: list[str] = []
+        if history_summary.strip():
+            history_lines.append(f"- 前文摘要：{history_summary.strip()}")
+        history_lines.extend(render_history_lines(history_recent or []))
+        prompt = render_prompt(
+            question,
+            evidence,
+            structured=True,
+            memory=memory,
+            history=history_lines,
+            no_info=NO_INFO_ANSWER,
+        )
+    else:
+        prompt = PROMPT_TEMPLATE.format(
+            no_info=NO_INFO_ANSWER,
+            evidence_block=build_evidence_block(evidence),
+            question=question,
+        )
     modalities = {e.get("modality") for e in evidence_dicts}
     extras = []
     if "graph" in modalities:
@@ -137,7 +221,8 @@ class AgentRunner:
         self_checker=None,  # HallucinationChecker：逐句自检
         executor=None,  # ThreadPoolExecutor：run/resume 工作线程来源（批次 1）
         run_permits: int = 16,  # Agent 并发闸门：在飞 run 上限，超出 429（批次 1）
-    ):
+        docstore=None,  # DocStore：`ST-03` 父块展开（取父块全文）
+    ) -> None:
         self._graph = graph
         self._sessions = sessions
         self._metrics = metrics_store
@@ -155,6 +240,8 @@ class AgentRunner:
         self._prom = prom
         self._llm = llm
         self._self_checker = self_checker
+        # `ST-03`：父块展开的取块回调（可缺省 → 不展开，行为与改造前一致）
+        self._docstore = docstore
         # 成本折算所需的价格表与模型名（从 settings 一次性解析）
         self._prices = price_table(settings) if settings else {}
         self._model_name = str(getattr(settings, "llm_model", "") or "")
@@ -162,6 +249,10 @@ class AgentRunner:
         # 改为固定池 + 许可闸门；池必须与工具池分离（图线程等待工具 future，同池死锁）。
         self._executor = executor or ThreadPoolExecutor(max_workers=8, thread_name_prefix="agent-run")
         self._permits = threading.Semaphore(max(1, int(run_permits)))
+        # 写类工具的人工审批（run_id → {工具名: True}）。
+        # 生命周期跨"中断 → resume"：run 挂起时审批必须留着，否则恢复后又要重批。
+        self._approved_lock = threading.Lock()
+        self._approved_tools: dict[str, dict[str, bool]] = {}
 
     # ---- 对外主入口：事件流 ----
 
@@ -185,7 +276,6 @@ class AgentRunner:
         session_id: str | None = None,
         skip_retrieval: bool = False,
         doc_name_resolver=None,
-        acl_filter=None,  # (doc_id) -> bool
         trace_id: str = "",
     ) -> Iterator[tuple[str, dict]]:
         """事件流：plan/tool_start/tool_end/reflect/iteration/token/fuse/_final。
@@ -207,9 +297,6 @@ class AgentRunner:
         state = initial_state(question, tenant_id, history)
         state["skip_retrieval"] = skip_retrieval
         if carried:
-            # 跨轮证据同样过 ACL（权限被收回后旧证据不可再用）
-            if acl_filter:
-                carried = [e for e in carried if acl_filter(e.get("doc_id", ""))]
             state["evidence"] = [{**e, "carried": True} for e in carried]
             state["last_evidence_count"] = len(carried)
 
@@ -221,6 +308,26 @@ class AgentRunner:
             budget_from_settings(self._settings, tenant_id) if self._settings else AgentBudget()
         )
 
+        # `ST-02`：历史摘要压缩——更早的轮次压成结构化摘要，最近 N 轮保留原文。
+        # **必须在预算创建之后**：压缩本身是一次模型调用，预算闸门要靠它判断
+        # 「值不值得花这次调用」（预算不够就直接截断回落，不烧预算）。
+        compaction = self._compact_history(history, budget=budget)
+        # 计量（`ST-02`）：压缩次数与省下的 token。
+        # 成本账本的 `compress` 阶段此前**只有枚举没有写入点**——这里补上。
+        saved = max(0, compaction.tokens_before - compaction.tokens_after)
+        if self._prom is not None:
+            try:
+                self._prom.record_history_compaction(compaction.method, saved)
+            except Exception:  # noqa: BLE001 - 指标失败不得影响问答
+                pass
+        if compaction.method != "skipped":
+            state["history"] = compaction.recent_turns
+            state["history_summary"] = compaction.summary
+            state["history_recent"] = compaction.recent_turns
+            state["history_compaction"] = compaction.as_dict()
+        # 是否已拿到真实 LLM 用量（规划/反思阶段）。拿到后不再叠加常量估算口径。
+        real_usage_seen = False
+
         # LangGraph 启用 checkpointer 后**必须**提供 thread_id，
         # 否则 invoke 直接抛 ValueError。这里按 `{session_id}:{turn}` 约定传入：
         # 有 session_id 时可断点续跑/回放，无 session_id（一次性问答）时
@@ -230,6 +337,7 @@ class AgentRunner:
                 session = self._sessions.get(session_id, tenant_id, user_id)
                 turn = int(session.get("turn", 0)) + 1
             except Exception:  # noqa: BLE001 - 会话不可用不应阻断问答
+                logger.debug("会话不可用不应阻断问答")
                 turn = 1
             thread_id = thread_id_for(session_id, turn)
         else:
@@ -259,7 +367,6 @@ class AgentRunner:
                 config = {
                     "configurable": {
                         "emit": emit,
-                        "acl_filter": acl_filter,
                         # 预算账本注入图，tool_node 每轮调用前检查
                         "budget": budget,
                         # HITL 配置（None = 不挂起）
@@ -282,17 +389,43 @@ class AgentRunner:
                             getattr(self._settings, "agent_max_verify_rounds", 1)
                             if self._settings else 1
                         ),
+                        # `ST-03`：上下文预算（Agent 证据此前**无上限**）与父块查找
+                        "context_token_budget": int(
+                            getattr(self._settings, "context_token_budget", 0) or 0
+                            if self._settings else 0
+                        ),
+                        "parent_lookup": (
+                            self._docstore.get_parent if self._docstore is not None else None
+                        ),
+                        # `ST-01` 阶段 B：渲染模式（legacy | structured），由 answer 节点透传给提示词构建器
+                        "context_partition_render": str(
+                            getattr(self._settings, "context_partition_render", "legacy")
+                            if self._settings else "legacy"
+                        ),
                     }
                 }
                 if thread_id:
                     config["configurable"]["thread_id"] = thread_id
+                # 预审批（用户在中断前就授权过的写类工具）
+                config["configurable"]["approved_tools"] = self.approved_tools(thread_id or "")
+                # M5：资产目录（VLM 直答据此定位原图文件）
+                assets_dir = self._assets_dir()
+                if assets_dir:
+                    config["configurable"]["assets_dir"] = assets_dir
+                # 工具空结果的降级链（graph_search → vector_search 等）
+                config["configurable"]["tool_fallbacks"] = tool_fallbacks(self._settings)
                 final = self._graph.invoke(state, config=config)
                 events.put(("_state", final))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - Agent 执行异常
                 logger.exception("Agent 执行异常")
                 events.put(("_error", exc))
             finally:
                 events.put(_DONE)
+                # 取消标志用完即清：工具派发只在图执行期间发生，图返回后
+                # 标志再无消费者。此前 clear_cancel 零调用点，`_cancel_flags`
+                # 集合随 run 数无界增长（内存泄漏 + 误伤同 id 的新 run）。
+                if thread_id and self._registry is not None:
+                    self._registry.clear_cancel(thread_id)
 
         self._executor.submit(work)
 
@@ -334,10 +467,29 @@ class AgentRunner:
                 continue
             if event == "_error":
                 raise payload
-            if event == "tool_end" and budget is not None:
-                # 每次工具调用都伴随至少一次 LLM 调用（规划/反思），
-                # 这里按"每工具调用约 N token"的既有口径估算（与
-                # query/orchestrator.py 的 ESTIMATED_TOKENS_PER_CALL 同源）。
+            if event == "usage":
+                # 真实 LLM 用量（规划/反思阶段）。此前这些阶段一律按常量估算，
+                # 与真实用量脱钩 → agent_token_budget 只对 answer 段真实生效。
+                # 有真实值就不再叠加常量估算，否则同一阶段被记两次。
+                tokens = int(payload.get("tokens") or 0)
+                if tokens > 0:
+                    phase = str(payload.get("phase") or "think")
+                    usage_cost = estimate_cost_yuan(
+                        tokens, self._prices, self._model_name
+                    )
+                    if budget is not None:
+                        budget.settle_tokens(tokens, usage_cost)
+                    get_ledger().record(
+                        trace_id, tenant_id, phase, self._model_name,
+                        tokens, usage_cost,
+                        priced=self._model_name in self._prices,
+                    )
+                    real_usage_seen = True
+                continue
+            if event == "tool_end" and budget is not None and not real_usage_seen:
+                # 每次工具调用都伴随至少一次 LLM 调用（规划/反思）。
+                # **仅在没有真实 usage 上报时**才按"每工具调用约 N token"估算
+                # （启发式规划器/mock 模式没有真实用量可读）。
                 phase_cost = estimate_cost_yuan(
                     ESTIMATED_TOKENS_PER_TOOL_CALL, self._prices, self._model_name
                 )
@@ -368,6 +520,13 @@ class AgentRunner:
                     self._prom.agent_tool_calls_total.labels(
                         tool=tool, result=outcome
                     ).inc()
+                    # 失败归因：只有能分类的失败才计数（error_class 为空表示
+                    # 未分类的旧路径，避免把"未知"当成一个真实原因统计）。
+                    error_class = str(payload.get("error_class") or "")
+                    if outcome in ("error", "timeout") and error_class:
+                        self._prom.agent_tool_failures_total.labels(
+                            tool=tool, error_class=error_class
+                        ).inc()
                     elapsed_ms = payload.get("elapsed_ms")
                     if isinstance(elapsed_ms, (int, float)):
                         self._prom.agent_tool_duration_seconds.labels(tool=tool).observe(
@@ -448,6 +607,16 @@ class AgentRunner:
 
 
         # ---- 结果归一 ----
+        # answer 阶段的真实用量**回填预算**：此前只进指标与账单，
+        # 预算账本漏计最贵的一段（生成）→ token 预算形同虚设。
+        # 必须在快照生成之前回填，否则前端看到的预算视图少了这段消耗。
+        answer_usage = getattr(self._llm, "last_usage", None)
+        if answer_usage is not None and getattr(answer_usage, "total", 0):
+            ans_tokens = int(answer_usage.total)
+            ans_cost = estimate_cost_yuan(ans_tokens, self._prices, self._model_name)
+            if budget is not None:
+                budget.settle_tokens(ans_tokens, ans_cost)
+
         result = self._build_result(
             final_state or {}, question, doc_name_resolver,
             int((time.monotonic() - started) * 1000), trace_id,
@@ -486,8 +655,9 @@ class AgentRunner:
                     session_id, tenant_id, user_id,
                     question, result["answer"], result["verdict"], final_state,
                     answer_source=result.get("answer_source", ""),
+                    trace_id=trace_id,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:  # noqa: BLE001 - 会话快照写入失败
                 logger.exception("会话快照写入失败（不影响本次应答）")
         # 提炼本次经验（写入侧）
         self._record_memory(tenant_id, final_state or {})
@@ -552,6 +722,7 @@ class AgentRunner:
             if callable(generator):
                 items = generator(answer, 3)
             else:
+                # 破环：llm 反向依赖 agent 侧接口
                 from app.services.llm import generate_followups as _fallback
 
                 items = _fallback(self._llm, answer, 3)
@@ -564,6 +735,47 @@ class AgentRunner:
 
     # ---- TASK-117：长期记忆 ----
 
+    def _compact_history(self, history: list[dict], budget=None):
+        """历史摘要压缩（`ST-02`）。返回 `CompactionResult`（未启用时 method=skipped）。
+
+        **绝不抛错**：压缩是优化路径，失败就回落截断，不能让问答挂掉。
+        """
+        # 按需载入：历史压缩只在启用且有历史时才需要（热路径不必付导入成本）
+        from app.services.context.history import (
+            METHOD_SKIPPED,
+            CompactionResult,
+            compact_history,
+        )
+
+        settings = self._settings
+        if settings is None or not bool(getattr(settings, "history_compaction_enabled", False)):
+            return CompactionResult(method=METHOD_SKIPPED, note="历史压缩未启用")
+        if not history:
+            return CompactionResult(method=METHOD_SKIPPED, note="没有历史")
+        # 预算闸门：压缩是一次模型调用，预算不够就别烧
+        budget_ok = True
+        if budget is not None:
+            try:
+                budget_ok = budget.can_afford(tokens=600)
+            except Exception:  # noqa: BLE001 - 预算判定失败时保守放行
+                budget_ok = True
+        try:
+            return compact_history(
+                history,
+                self._llm,
+                keep_recent=int(getattr(settings, "history_compaction_keep_recent", 3) or 3),
+                trigger_tokens=int(
+                    getattr(settings, "history_compaction_trigger_tokens", 4000) or 4000
+                ),
+                max_output_tokens=int(
+                    getattr(settings, "history_compaction_max_output_tokens", 600) or 600
+                ),
+                budget_ok=budget_ok,
+            )
+        except Exception as exc:  # noqa: BLE001 - 压缩失败不打断问答
+            logger.warning("历史压缩失败（忽略）: %s", exc)
+            return CompactionResult(method=METHOD_SKIPPED, note=f"压缩异常：{exc}")
+
     def _memory_hint(self, tenant_id: str) -> str:
         """取该租户的经验并渲染成提示词片段（无记忆时返回空串）。
 
@@ -572,10 +784,11 @@ class AgentRunner:
         if self._memory is None:
             return ""
         try:
+            # 破环：memory 依赖 agent 状态类型
             from app.services.agent.memory import LongTermMemory
 
             return LongTermMemory.render_hint(self._memory.recall(tenant_id))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 长期记忆读取失败：按空文本继续
             logger.debug("长期记忆读取失败（忽略）: %s", exc)
             return ""
 
@@ -584,11 +797,79 @@ class AgentRunner:
         if self._memory is None:
             return
         try:
+            # 破环：memory 依赖 agent 状态类型
             from app.services.agent.memory import record_from_run
 
             record_from_run(self._memory, tenant_id, state)
         except Exception as exc:  # noqa: BLE001 - 记忆写入绝不阻断主流程
             logger.debug("长期记忆提炼失败（忽略）: %s", exc)
+
+    # ---- 人在环：写类工具审批 ----
+
+    def approve_tools(
+        self, run_id: str, tools: list[str], approved: bool = True
+    ) -> dict[str, bool]:
+        """登记（或撤销）某 run 的写类工具审批，返回该 run 当前的审批集合。
+
+        这是"预审批"入口：用户可以在看到待批之前就授权某类工具，
+        避免每次都打断。真正的逐次审批发生在图节点的 `interrupt()` 上。
+        """
+        with self._approved_lock:
+            current = self._approved_tools.setdefault(run_id, {})
+            for name in tools or []:
+                name = str(name).strip()
+                if not name:
+                    continue
+                if approved:
+                    current[name] = True
+                else:
+                    current.pop(name, None)
+            if not current:
+                self._approved_tools.pop(run_id, None)
+            return dict(current)
+
+    def approved_tools(self, run_id: str) -> dict[str, bool]:
+        """取某 run 的预审批集合（供图执行时注入 configurable）。"""
+        if not run_id:
+            return {}
+        with self._approved_lock:
+            return dict(self._approved_tools.get(run_id) or {})
+
+    def all_tools(self) -> list[str]:
+        """注册表里的全部工具名（审批接口用来区分"未知工具"与"不是写类工具"）。"""
+        if self._registry is None:
+            return []
+        try:
+            return [e.get("name", "") for e in self._registry.catalog()]
+        except Exception:  # noqa: BLE001 - 会话列表读取失败：按空列表处理
+            logger.debug("会话列表读取失败：按空列表处理")
+            return []
+
+    def _assets_dir(self):
+        """资产目录（图像原文件所在处）；没有设置就不启用 VLM 直答。"""
+        settings = getattr(self, "_settings", None)
+        data_dir = getattr(settings, "data_dir", None)
+        if data_dir is None:
+            return None
+        return Path(data_dir) / "assets"
+
+    def write_tools(self) -> list[str]:
+        """注册表里的写类工具名（供审批接口校验参数，别让前端传错名字静默失效）。"""
+        if self._registry is None:
+            return []
+        try:
+            entries = self._registry.catalog()
+        except Exception:  # noqa: BLE001 - 会话读取失败：按空列表处理
+            logger.debug("会话读取失败：按空列表处理")
+            return []
+        return [e.get("name", "") for e in entries if e.get("danger") == DANGER_WRITE]
+
+    def clear_approvals(self, run_id: str) -> None:
+        """清理某 run 的审批（run 结束/取消后调用，避免审批集合无界增长）。"""
+        if not run_id:
+            return
+        with self._approved_lock:
+            self._approved_tools.pop(run_id, None)
 
     # ---- 人在环 ----
 
@@ -601,7 +882,7 @@ class AgentRunner:
             return {"awaiting": False, "next": [], "payload": {}}
         try:
             snapshot = self._graph.get_state({"configurable": {"thread_id": run_id}})
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 查询中断状态失败 run_id=%s
             logger.warning("查询中断状态失败 run_id=%s: %s", run_id, exc)
             return {"awaiting": False, "next": [], "payload": {}}
         pending = getattr(snapshot, "next", ()) or ()
@@ -630,7 +911,6 @@ class AgentRunner:
         run_id: str,
         decision,
         doc_name_resolver=None,
-        acl_filter=None,
         trace_id: str = "",
     ) -> Iterator[tuple[str, dict]]:
         """用 `Command(resume=decision)` 唤醒挂起的 run，并产出后续事件流。
@@ -642,7 +922,7 @@ class AgentRunner:
         from langgraph.types import Command
 
         if self._checkpointer is None or not run_id:
-            raise ValueError("未启用 checkpointer，无法恢复运行")
+            raise ConfigError("未启用 checkpointer，无法恢复运行")
 
         events: queue.Queue = queue.Queue()
         started = time.monotonic()
@@ -650,6 +930,8 @@ class AgentRunner:
 
         # 从 checkpoint 恢复预算计数：不恢复的话用户反复 resume 即可绕过 token 预算
         budget = self._restore_budget(run_id)
+        # 租户同样从 checkpoint 的 state 取（resume 路径不带 principal）
+        tenant_id = self._restore_tenant(run_id)
         hitl_cfg = None
         if self._settings is not None and bool(getattr(self._settings, "agent_hitl_enabled", False)):
             hitl_cfg = {
@@ -666,14 +948,17 @@ class AgentRunner:
                 config = {
                     "configurable": {
                         "emit": emit,
-                        "acl_filter": acl_filter,
                         "budget": budget,
                         "hitl": hitl_cfg,
                         "thread_id": run_id,
+                        # 预审批 + 审批决策：resume 时把用户刚批的工具带上，
+                        # 否则恢复后写工具仍会被"需审批"挡住。
+                        "approved_tools": self.approved_tools(run_id),
+                        "tool_fallbacks": tool_fallbacks(self._settings),
                     }
                 }
                 events.put(("_state", self._graph.invoke(Command(resume=decision), config=config)))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - Agent 恢复执行异常 run_id=%s
                 logger.exception("Agent 恢复执行异常 run_id=%s", run_id)
                 events.put(("_error", exc))
             finally:
@@ -708,6 +993,21 @@ class AgentRunner:
                 continue
             if event == "_error":
                 raise payload
+            if event == "usage":
+                # 真实 LLM 用量（与主路径同口径）：有真实值就不再叠加常量估算
+                tokens = int(payload.get("tokens") or 0)
+                if tokens > 0:
+                    usage_cost = estimate_cost_yuan(
+                        tokens, self._prices, self._model_name
+                    )
+                    budget.settle_tokens(tokens, usage_cost)
+                    if tenant_id:
+                        get_ledger().record(
+                            trace_id, tenant_id, str(payload.get("phase") or "think"),
+                            self._model_name, tokens, usage_cost,
+                            priced=self._model_name in self._prices,
+                        )
+                continue
             if event == "tool_end" and budget is not None:
                 budget.settle_tokens(
                     ESTIMATED_TOKENS_PER_TOOL_CALL,
@@ -755,6 +1055,15 @@ class AgentRunner:
         result["resumed"] = True
         yield "_final", result
 
+    def _restore_tenant(self, run_id: str) -> str:
+        """从 checkpoint 的 state 取回租户（resume 路径没有 principal 参数）。"""
+        try:
+            snapshot = self._graph.get_state({"configurable": {"thread_id": run_id}})
+            return str((getattr(snapshot, "values", None) or {}).get("tenant_id") or "")
+        except Exception:  # noqa: BLE001 - 记忆读取失败：按空文本处理
+            logger.debug("记忆读取失败：按空文本处理")
+            return ""
+
     def _restore_budget(self, run_id: str):
         """从 checkpoint 恢复预算计数（缺失时退化为新账本）。"""
         budget = (
@@ -763,11 +1072,17 @@ class AgentRunner:
         try:
             snapshot = self._graph.get_state({"configurable": {"thread_id": run_id}})
             saved = (getattr(snapshot, "values", None) or {}).get("budget") or {}
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - 记忆快照读取失败：按空快照处理
+            logger.debug("记忆快照读取失败：按空快照处理")
             saved = {}
         if saved:
             budget.tokens_used = int(saved.get("tokens_used", 0) or 0)
             budget.cost_used = float(saved.get("cost_used_yuan", 0.0) or 0.0)
+            # 恢复时**继承已消耗的时间**：新建账本会把 deadline 重新计时，
+            # 用户反复 resume 就能无限延长整体时限——预算与 token 一样必须单调。
+            elapsed_ms = int(saved.get("elapsed_ms", 0) or 0)
+            if elapsed_ms > 0:
+                budget.started_at = time.monotonic() - elapsed_ms / 1000.0
         return budget
 
     # ---- 结果归一 ----
@@ -810,11 +1125,6 @@ class AgentRunner:
             },
             "tool_calls": len(retrieval_calls),
             "tool_errors": sum(1 for c in retrieval_calls if c.get("error")),
-            "acl_filtered": sum(
-                int(e.get("acl_filtered_count", 0) or 0)
-                for e in state.get("evidence", [])
-                if e.get("modality") == "acl_notice"
-            ),
         }
 
     def _crag_payload(self, score: float, evidence_count: int, trace_id: str) -> dict | None:
@@ -847,13 +1157,7 @@ class AgentRunner:
         answer = state.get("final_answer", "")
         answer_source = state.get("answer_source", "")
         all_evidence = state.get("evidence", [])
-        # ACL 提示条目只用于 UI 提示，不进证据编号（安全红线：只报数量）
-        acl_filtered = sum(
-            e.get("acl_filtered_count", 0)
-            for e in all_evidence
-            if e.get("modality") == "acl_notice"
-        )
-        evidence_dicts = [e for e in all_evidence if e.get("modality") != "acl_notice"]
+        evidence_dicts = list(all_evidence)
         status = state.get("status", "completed")
         incomplete = state.get("incomplete", False)
 
@@ -912,7 +1216,7 @@ class AgentRunner:
                 confidence = round(min(0.95, state.get("evidence_score", 0.5)), 4)
             refusal_reason = ""
 
-        # 兜底回答不引用证据：前端不展示无关片段（acl_filtered 计数保留）
+        # 兜底回答不引用证据：前端不展示无关片段
         if answer_source == "parametric":
             evidence = []
 
@@ -944,11 +1248,15 @@ class AgentRunner:
             "fuse_reason": state.get("fuse_reason", ""),
             "agent": agent_payload,
             "elapsed_ms": elapsed_ms,
-            "acl_filtered": acl_filtered,
             "from_cache": False,
             "retrieval": self._retrieval_stats(state, len(evidence)),
             "crag": self._crag_payload(avg_score, len(evidence), trace_id),
             "evidence_score": round(avg_score, 4),
             "regenerated": False,
             "unsupported_claims_count": 0,
+            # `ST-03`：Agent 路径的上下文构成（被裁 / 被去重的条目）
+            "context_breakdown": {
+                "dropped": list(state.get("dropped_evidence") or []),
+                "dropped_count": len(state.get("dropped_evidence") or []),
+            },
         }

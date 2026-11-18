@@ -28,7 +28,7 @@ import threading
 class ReadWriteLock:
     """读共享 / 写独占，写者优先。"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._cond = threading.Condition(threading.Lock())
         self._readers = 0
         self._writer = False
@@ -79,7 +79,7 @@ class ReadWriteLock:
 class _ReadGuard:
     __slots__ = ("_lock",)
 
-    def __init__(self, lock: ReadWriteLock):
+    def __init__(self, lock: ReadWriteLock) -> None:
         self._lock = lock
 
     def __enter__(self):
@@ -94,7 +94,7 @@ class _ReadGuard:
 class _WriteGuard:
     __slots__ = ("_lock",)
 
-    def __init__(self, lock: ReadWriteLock):
+    def __init__(self, lock: ReadWriteLock) -> None:
         self._lock = lock
 
     def __enter__(self):

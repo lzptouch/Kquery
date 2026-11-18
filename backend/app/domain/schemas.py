@@ -3,6 +3,8 @@
 字段按"将来要进数据库"的标准设计：标识稳定可组合、租户字段从第一天就存在、
 证据是一等实体（带标识、可追溯、可评分）。
 """
+from dataclasses import field
+
 from pydantic import BaseModel, Field, computed_field
 
 # 文档状态机： 仅 uploaded / parsing / indexed / failed， 扩展为七态
@@ -31,37 +33,6 @@ class DocumentRecord(BaseModel):
     uploaded_at: str = ""
     #  扩展：章节大纲（解析时产出并持久化，预览页左侧结构）
     outline: list[dict] = Field(default_factory=list)
-    #  扩展：文档级 ACL（默认拒绝——未显式授权不可见）
-    acl_allow: list[str] = Field(default_factory=list)  # 身份表达式：user:/role:/group:
-    acl_deny: list[str] = Field(default_factory=list)  # 拒绝名单（优先于授权）
-    acl_public: bool = True  # 租户内公开
-    #  扩展：所属知识库（空串在加载时归一化为 "default"，见 KnowledgeService._load_metadata）
-    knowledge_base_id: str = ""
-
-
-class KnowledgeBase(BaseModel):
-    """知识库：文档的上位容器。授权与检索过滤的第一类实体。
-
-    判定树见 services/security/kb.py（租户闸门 → 授权名单 → 库公开 → 默认拒绝）。
-    """
-
-    kb_id: str  # 全局唯一，slug 规则同 doc_id
-    name: str  # 展示名
-    description: str = ""
-    tenant_id: str  # 租户隔离
-    is_public: bool = False  # 租户内全员可见（默认 KB 显式置 True）
-    created_by: str = ""  # 创建者 user_id
-    created_at: str = ""
-    updated_at: str = ""
-
-
-class KbGrant(BaseModel):
-    """KB 授权：某用户可用某知识库。"""
-
-    kb_id: str
-    user_id: str
-    granted_by: str  # 授权操作者（管理员）
-    granted_at: str = ""
 
 
 class Chunk(BaseModel):
@@ -76,9 +47,17 @@ class Chunk(BaseModel):
     is_short: bool = False  # 超短块标记（保留但标记）
     # ----  扩展（§4.3：四处扩展必须同时存在）----
     chunker: str = "recursive"  # 切块器标识：recursive / semantic / parent_child / raptor
+    # 扩展：该块关联的图像资产 id（M4 图文绑定）。空列表 = 纯文本块。
+    related_assets: list[str] = field(default_factory=list)
     level: int = 0  # 层级：0 为叶子，越大越抽象（RAPTOR 摘要树）
     parent_id: str = ""  # 父块标识，叶子为空；命中子块后回溯父块补全上下文
-    modality: str = "text"  # 模态：text / table / image / audio
+    modality: str = "text"  # 模态：text / table / image
+    # 注入风险标记（`KQ-27` 第二层）：入库时命中「高风险指令模式」就打标，
+    # 检索侧**降权**（不是排除——排除会让攻击者靠触发拦截来隐藏内容）。
+    # **旧索引没有这个字段** → 读出来是 False = 正常（回退安全，不需要重建索引）。
+    injection_risk: bool = False
+    # 命中的模式描述（排障用：能看出是「忽略指令」还是「工具调用诱导」）
+    injection_hits: list[str] = field(default_factory=list)
 
 
 # 文档附加状态：已下线（删除索引但保留源文件与记录）
@@ -116,7 +95,7 @@ class FileRecord(BaseModel):
     size: int = 0
     status: str = FILE_QUEUED
     stage: str = FILE_QUEUED  # 当前所处阶段（7 态之一）
-    stage_progress: float = 0.0  # 阶段内进度 0~1（OCR / 转写必需）
+    stage_progress: float = 0.0  # 阶段内进度 0~1（OCR 必需）
     stage_elapsed_ms: int = 0  # 当前阶段已耗时
     error_stage: str = ""  # 失败所在阶段，决定重试粒度
     error_reason: str = ""  # 失败原因（可读）
@@ -132,13 +111,12 @@ class IngestTask(BaseModel):
 
     task_id: str
     status: str = TASK_QUEUED
-    parse_policy: dict = Field(default_factory=dict)  # 解析策略（OCR / 转写开关等）
+    parse_policy: dict = Field(default_factory=dict)  # 解析策略（OCR 等开关）
     chunk_policy: dict = Field(default_factory=dict)  # 切块策略与参数
     total_files: int = 0
     done_files: int = 0
     created_by: str = "system"  # 提交人，审计用
     tenant_id: str = "default"  # 提交主体租户（任务查询/重试/取消的归属依据，KQ-02）
-    kb_id: str = "default"  # 目标知识库（缺省归默认 KB，与文档归属一致）
     created_at: str = ""
     files: list[FileRecord] = Field(default_factory=list)
 
@@ -156,7 +134,7 @@ class TableRecord(BaseModel):
 
 
 class MediaAsset(BaseModel):
-    """图像/音频资源：本体进对象存储，元数据与描述文本入库。"""
+    """图像资源：本体进对象存储，元数据与描述文本入库。"""
 
     asset_id: str
     doc_id: str
@@ -165,7 +143,7 @@ class MediaAsset(BaseModel):
     caption: str = ""  # 描述文本（让文字问题也能命中图片）
     hash: str = ""  # 内容摘要，跨文档去重
     tenant_id: str = "default"
-    kind: str = "image"  # image / audio
+    kind: str = "image"  # 资源类型（目前只有 image）
 
 
 class Evidence(BaseModel):
@@ -180,7 +158,7 @@ class Evidence(BaseModel):
     filename: str
     #  扩展：keyword（关键词路）/ vector（语义路）/ both（两路融合命中）
     source_route: str = "vector"
-    #  扩展：模态（text / table / image / audio）与切块器标识
+    #  扩展：模态（text / table / image）与切块器标识
     modality: str = "text"
     chunker: str = "recursive"
     #  扩展：该证据由哪条改写/哪个子问题带回（{kind, text}，双向定位支点）
@@ -190,6 +168,9 @@ class Evidence(BaseModel):
     rejected_reason: str = ""
     #  扩展：图像证据的资源地址（前端渲染缩略图）；图谱证据的来源块列表
     uri: str = ""
+    #  扩展：该文本块关联的图像资产（M4 图文绑定）。前端在"文字证据"旁边
+    #  回显原图，而不是只给 caption 文字。
+    related_assets: list[str] = field(default_factory=list)
     source_chunks: list[str] = []  # 图谱关系的支撑块（溯源）
 
 
@@ -280,6 +261,9 @@ class RetrievalStats(BaseModel):
     # 本次降级（失败被跳过）的检索路。为空表示全部正常——
     # 有了它，"这一次召回为什么偏少"才有可解释的线索。
     degraded_routes: list[str] = Field(default_factory=list)
+    # 精排降级原因（如 "empty_result"：重排返回成功但结果为空）。
+    # 与 degraded_routes 分开：一个是"路挂了"，一个是"精排没产出"。
+    rerank_degraded: str = ""
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -358,7 +342,7 @@ class AskRequest(BaseModel):
     # Agentic 模式与会话续聊
     session_id: str | None = None  # 携带则在会话上下文中提问（证据跨轮累积）
     mode: str = "auto"  # auto（默认线性）/ agent（状态机）
-    user_id: str | None = None  # 归属判定（也可走 X-User-Id 头）
+    user_id: str | None = None  # 归属判定（认证已下线，恒为固定身份 default/local）
     # F4 快问：限定只检索该临时文档（不传 = 走全知识库）
     doc_id: str | None = None
 
@@ -386,10 +370,19 @@ class AskResult(BaseModel):
     crag: dict | None = None  # {branch, rounds: [{round, branch, avg_score, evidence_count, refined_query}]}
     #  扩展：自检明细（哪些声明被剔除、用的什么方式校验）
     self_check: "SelfCheckRecord | None" = None
-    #  扩展：因权限被过滤的条数（只报数量，绝不暴露被过滤文档的元信息）
-    acl_filtered: int = 0
     # F5 扩展：推荐追问（LLM 不可用时为空列表，绝不影响主答案）
     followups: list[str] = []
+    #  扩展：上下文构成表（`ST-01` 阶段 A）：五个来源的条数 / token / 配额 + 被丢弃条目。
+    # **只观测**：不影响渲染，仅供前端解释与 `/admin/metrics/context` 统计。
+    context_breakdown: dict = {}
+    #  扩展：模型路由元信息（`LM-01`）：实际用哪个模型作答 + 是否发生过降级。
+    # 默认关时两个字段都是空/false（行为与开启前完全一致）。
+    model_used: str = ""
+    routing_degraded: bool = False
+    #  扩展：被丢弃的候选（`A-21.7`）。
+    # 此前这些信息只写进一个**没人读**的实例属性，前端拿不到「为什么这条
+    # 证据没进上下文」——用户看到引用不全时无从解释。
+    context_dropped: list[dict] = []
 
 
 class SelfCheckRecord(BaseModel):
@@ -407,23 +400,6 @@ class SelfCheckRecord(BaseModel):
     reasoning: str = ""
     model_version: str = ""
     elapsed_ms: int = 0
-
-
-class CragRound(BaseModel):
-    """CRAG 单轮记录（ CRAG_ROUND 实体）。
-
-    落库而非只随响应返回：否则事后无法复盘"这次为什么被拒答"。
-    """
-
-    trace_id: str = ""
-    question: str = ""
-    tenant_id: str = "default"
-    round: int = 1
-    branch: str = "correct"  # correct / ambiguous / incorrect
-    avg_score: float = 0.0
-    evidence_count: int = 0
-    refined_query: str = ""
-    created_at: float = 0.0
 
 
 AskResult.model_rebuild()

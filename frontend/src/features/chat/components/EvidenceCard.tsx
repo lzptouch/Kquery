@@ -81,8 +81,12 @@ export function EvidenceCard({ evidence, expanded, highlighted, onToggle, onView
       </button>
       {expanded && (
         <>
-          {/* 图像证据：缩略图 + 描述（资源缺失降级占位不整卡失败，§四 4.2） */}
-          {evidence.modality === "image" && evidence.uri && (
+          {/* 图像回显：缩略图 + 描述（资源缺失降级占位不整卡失败，§四 4.2）。
+              **判定条件从 `modality === "image"` 放宽为"有 uri 就行"**——
+              M4 图文绑定之后，文字证据也可能带一张原图（该页/该章节的插图），
+              旧条件会让这批图永远不显示。 */}
+          {(evidence.modality === "image" || evidence.related_assets?.length) &&
+            evidence.uri && (
             <div className="evidence-image">
               <img
                 src={`/assets/${encodeURIComponent(evidence.uri.split("/").pop() ?? "")}`}

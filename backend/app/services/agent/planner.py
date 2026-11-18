@@ -6,14 +6,15 @@
 - Plan 质量三判定：可执行 / 不冗余 / 无环依赖。
 """
 import json
-import logging
 import re
 from typing import Protocol
 
 from app.services.agent.tools import ToolRegistry
 from app.services.llm import LLM
+from app.core.errors import ModelOutputError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 PLAN_PROMPT = """你是任务规划器。根据用户问题和可用工具，生成一份有序的检索/计算计划。
 
@@ -65,7 +66,7 @@ def sanitize_steps(
 
 
 class LLMPlanner:
-    def __init__(self, llm: LLM, registry: ToolRegistry, max_steps: int = 6, max_retries: int = 1):
+    def __init__(self, llm: LLM, registry: ToolRegistry, max_steps: int = 6, max_retries: int = 1) -> None:
         self._llm = llm
         self._registry = registry
         self._max_steps = max_steps
@@ -84,7 +85,7 @@ class LLMPlanner:
                 steps = sanitize_steps(payload.get("steps") or [], self._registry, self._max_steps)
                 if steps:
                     return steps
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 规划解析失败，重试
                 logger.warning("规划解析失败，重试: %s", exc)
         # 兜底：单步向量检索（降级不崩溃）
         logger.warning("规划失败兜底：单步 vector_search")
@@ -96,14 +97,14 @@ class LLMPlanner:
     def _extract_json(text: str) -> str:
         m = re.search(r"\{[\s\S]*\}", text)
         if not m:
-            raise ValueError("规划中未找到 JSON")
+            raise ModelOutputError("规划中未找到 JSON")
         return m.group(0)
 
 
 class HeuristicPlanner:
     """确定性规划（测试与 mock 模式）：按问题形态产出计划。"""
 
-    def __init__(self, registry: ToolRegistry):
+    def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
 
     def plan(self, question: str, replan_hint: str = "") -> list[dict]:

@@ -7,15 +7,15 @@
   只反映"答案与证据的一致性"，不是概率，不反映证据本身是否正确；
 - 自检器故障 → 降级：不阻断答案返回，置信度标为 None（未知）并如实提示。
 """
-import logging
 
 from pydantic import BaseModel, Field
 
 from app.domain.schemas import SelfCheckRecord
 from app.services.llm import LLM
 from app.services.query.jsonutil import JsonParseError, parse_json_model
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 SELFCHECK_PROMPT = """你是事实校验器。逐句核对答案中的事实性声明是否能在证据中找到支持。
 
@@ -80,7 +80,7 @@ def compute_confidence(unsupported_count: int) -> float:
 
 
 class HallucinationChecker:
-    def __init__(self, llm: LLM, max_retries: int = 1, model_version: str = ""):
+    def __init__(self, llm: LLM, max_retries: int = 1, model_version: str = "") -> None:
         self._llm = llm
         self._max_retries = max_retries
         self.model_version = model_version
@@ -93,7 +93,7 @@ class HallucinationChecker:
             try:
                 raw = self._llm.generate(prompt)
                 return parse_json_model(raw, SelfCheckResult)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 幻觉自检重试
                 last_error = exc
                 logger.warning("幻觉自检重试: %s", exc)
         raise JsonParseError(f"幻觉自检失败: {last_error}")

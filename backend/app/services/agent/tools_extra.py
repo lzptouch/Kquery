@@ -13,15 +13,15 @@
 | `sql_schema` | `sql_search` 完全依赖 LLM 猜表结构 |
 | `datetime_calc` | 「去年同期」「三个工作日后」这类日期推理无可依赖 |
 """
-import logging
 import re
 import sqlite3
 import time
 from datetime import date, timedelta
 
 from app.services.agent.tools import TOOL_RESULT_CAP, ToolResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ListDocumentsTool:
@@ -41,7 +41,7 @@ class ListDocumentsTool:
     returns = "文档清单（文件名、块数、状态、版本、上传时间）"
     danger = "read_only"
 
-    def __init__(self, knowledge, max_rows: int = 20):
+    def __init__(self, knowledge, max_rows: int = 20) -> None:
         self._knowledge = knowledge
         self._max_rows = max(1, max_rows)
 
@@ -70,7 +70,7 @@ class ListDocumentsTool:
         started = time.monotonic()
         try:
             docs = list(self._knowledge.list_files() or [])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 降级继续（异常已在本处被隔离，不影响对外语义）
             return ToolResult(error=f"文档清单读取失败: {exc}")
 
         def name_of(d) -> str:
@@ -131,7 +131,7 @@ class SqlSchemaTool:
     )
     danger = "read_only"
 
-    def __init__(self, dsn: str, tenant_column: str | None = None, sample_rows: int = 2):
+    def __init__(self, dsn: str, tenant_column: str | None = None, sample_rows: int = 2) -> None:
         self._dsn = dsn
         self._tenant_column = tenant_column or None
         self._sample_rows = max(0, sample_rows)
@@ -140,7 +140,7 @@ class SqlSchemaTool:
         started = time.monotonic()
         try:
             conn = sqlite3.connect(f"file:{self._dsn}?mode=ro", uri=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 降级继续（异常已在本处被隔离，不影响对外语义）
             return ToolResult(error=f"业务库不可用: {exc}")
         try:
             conn.row_factory = sqlite3.Row
@@ -206,7 +206,7 @@ class DateTimeCalcTool:
     )
     danger = "safe"
 
-    def __init__(self, today: date | None = None):
+    def __init__(self, today: date | None = None) -> None:
         self._today = today  # 便于测试注入固定"今天"
 
     def _base(self) -> date:

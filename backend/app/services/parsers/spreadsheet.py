@@ -11,14 +11,14 @@ openpyxl 读不了 BIFF 格式的 `.xls`。doc-qa 的正则 `\\.xlsx?$` 写了 `
 `read_only=True` 流式读行 + 单表行数上限 + 总段数上限：Excel 被人做成
 "一个 sheet 一百万行"是常见的事，一次性全量展开会把内存吃光。
 """
-import logging
 from pathlib import Path
 
 from app.core.envelope import ApiError, ErrCode
 from app.domain.schemas import TableRecord
 from app.services.parsers.base import ParseResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 #: 单个 sheet 最大行数（超出截断并写 warning）
 MAX_SHEET_ROWS = 20_000

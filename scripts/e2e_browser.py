@@ -21,32 +21,18 @@ import time
 
 from playwright.sync_api import sync_playwright
 
-PASSED: list[str] = []
-FAILED: list[tuple[str, str]] = []
+# 共享浏览器辅助（此前 4 个脚本各写一份，`check` 的返回类型还不一致）
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_helpers import (  # noqa: E402
+    FAILED,
+    PASSED,
+    check,
+    page_text,
+    section,
+)
+
 CONSOLE_ERRORS: list[str] = []
-
-
-def check(name: str, condition: bool, detail: str = "") -> bool:
-    if condition:
-        PASSED.append(name)
-        print(f"  \033[32m✓\033[0m {name}")
-        return True
-    FAILED.append((name, detail))
-    print(f"  \033[31m✗\033[0m {name} — {detail}")
-    return False
-
-
-def section(title: str) -> None:
-    print(f"\n\033[1m{title}\033[0m")
-
-
-def page_text(page) -> str:
-    try:
-        return page.inner_text("body")
-    except Exception:  # noqa: BLE001
-        return ""
-
-
 def run(base: str, headed: bool, sample_file: str) -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not headed)

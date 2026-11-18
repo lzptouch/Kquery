@@ -17,6 +17,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Protocol
 
+import numpy as np
+
+from app.core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 
 def make_cache_key(
     tenant_id: str, question: str, model_version: str, config_digest: str, scope: str = ""
@@ -63,7 +69,7 @@ class CacheEntry:
     # 检索范围（F4 快问）：doc_id 维度。近似命中必须按它过滤，
     # 否则"针对 A 文档的答案"会被"针对 B 文档的相似问题"命中——同样是串答案。
     scope: str = ""
-    # 维度签名（KQ-04）：模型版本 + 配置摘要（含 user/acl_version/index_version）。
+    # 维度签名（KQ-04）：模型版本 + 配置摘要（含 user/index_version）。
     # 近似命中必须签名完全一致——只按租户过滤会把 A 用户的答案命中给同租户 B 用户。
     signature: str = ""
 
@@ -74,6 +80,173 @@ class SemanticCache(Protocol):
     def set(self, key: str, payload: dict, ttl_seconds: float) -> None: ...
 
     def stats(self) -> dict: ...
+
+
+def _top_similarity(query: list, vectors: list[list]) -> tuple[int | None, float]:
+    """`query` 与一批向量的余弦相似度，返回 (最高分的下标, 该分值)。
+
+    **必须在锁外调用**（`KQ-17`）：这一步是 O(N×D)，而它此前被写在 `with self._lock:`
+    里面——一次近似查找会把同进程所有 `get()` / `set()` 一起堵住数百毫秒，缓存反而
+    成了串行点。
+
+    为什么换成 numpy：纯 Python 的 `sum(x * y for x, y in zip(a, b))` 在 2000 条
+    × 1024 维下是约 600 万次解释器级运算（数百毫秒）；numpy 一次矩阵乘 + 一次 norm
+    是毫秒级。向量本就以 `list[float]` 存在，转 float32 的拷贝成本远小于省下的时间。
+
+    维度不一致的条目直接跳过：余弦对它们没有定义，原实现靠 `_cosine` 返回 0.0 兜底，
+    语义等价（0.0 永远低于命中阈值）。
+    """
+    dim = len(query)
+    pairs = [(i, v) for i, v in enumerate(vectors) if len(v) == dim]
+    if not pairs:
+        return None, 0.0
+    matrix = np.asarray([v for _, v in pairs], dtype=np.float32)
+    q = np.asarray(query, dtype=np.float32)
+    q_norm = float(np.linalg.norm(q))
+    if q_norm == 0.0:
+        return None, 0.0
+    norms = np.linalg.norm(matrix, axis=1) * q_norm
+    # 零向量条目的分母为 0；显式屏蔽，否则 inf/nan 会污染 argmax
+    valid = norms > 1e-12
+    if not valid.any():
+        return None, 0.0
+    sims = np.zeros(len(pairs), dtype=np.float32)
+    sims[valid] = (matrix[valid] @ q) / norms[valid]
+    pos = int(np.argmax(sims))
+    return pairs[pos][0], float(sims[pos])
+
+
+# ---- 近似最近邻（LSH）----
+#
+# 为什么需要它：语义查找原本是"取出同组全部条目 → 一次矩阵乘"，O(N×D)。
+# 2000 条 × 1024 维是毫秒级，**万级就是几十毫秒**，而且每次都全扫、纳秒必争地
+# 挤在每一条问答的命中判定里。缓存的价值是省一次模型调用，但它不该自己变成
+# 一个新瓶颈。
+#
+# 做法：随机超平面 LSH。每个条目按 `sign(v·Rᵀ)` 落一个 12 bit 桶，
+# 查找时只在**汉明距离 ≤2 的邻居桶**里找候选（1+12+66 = 79 个桶的字典查询），
+# 再把候选喂给原来的 `_top_similarity` 精确算余弦。
+#
+# 为什么"近似"是可接受的：命中阈值是 0.95，落在这个距离内的向量几乎一定
+# 落在同一个桶附近（cos=0.95 时单个比特一致的期望是 0.9，12 bit 上汉明距离
+# ≤2 的概率约 0.97）。真正完全相同的问句走的是精确键命中，**不经过 LSH**。
+#
+# 组内条目少于 `_ANN_MIN_GROUP` 时**不启用** LSH：小规模下全扫既更准也更省
+# （79 次字典查询比 512 行矩阵乘还贵）。
+_ANN_MIN_GROUP = 512
+_ANN_BITS = 12
+_ANN_SEED = 0x5EED
+_ANN_PROBE_BITS = 2
+
+
+def _nearby_buckets(bits: int, width: int, max_flip: int) -> list[int]:
+    """`bits` 本身，以及汉明距离 ≤ `max_flip` 的所有邻居桶编号。"""
+    out = [bits]
+    for i in range(width):
+        flipped = bits ^ (1 << i)
+        out.append(flipped)
+        if max_flip >= 2:
+            for j in range(i + 1, width):
+                out.append(flipped ^ (1 << j))
+    return out
+
+
+class _LshIndex:
+    """按 (租户, 范围, 维度签名) 分组的随机超平面索引。
+
+    **只做候选筛选，不做相似度判定**——最终是否命中仍由 `_top_similarity` +
+    阈值决定，所以 LSH 召回偏差只影响命中率，永远不会造成"错答案被命中"。
+    """
+
+    def __init__(self, bits: int = _ANN_BITS) -> None:
+        self._bits = bits
+        self._proj: dict[int, np.ndarray] = {}
+        self._buckets: dict[tuple[str, str, str], dict[tuple[int, int], set[str]]] = {}
+        self._of_key: dict[str, tuple[tuple[str, str, str], tuple[int, int]]] = {}
+        self._lock = threading.Lock()
+
+    def _projections(self, dim: int) -> np.ndarray:
+        mat = self._proj.get(dim)
+        if mat is None:
+            # 固定种子：同一维度在进程内始终用同一组超平面，否则重启后
+            # 老条目与新查询会落到互不相干的两套空间里（索引直接失效）
+            rng = np.random.default_rng(_ANN_SEED + dim)
+            mat = rng.standard_normal((self._bits, dim)).astype(np.float32)
+            self._proj[dim] = mat
+        return mat
+
+    def bucket_of(self, vector: list) -> tuple[int, int] | None:
+        dim = len(vector)
+        if dim == 0:
+            return None
+        q = np.asarray(vector, dtype=np.float32)
+        if not np.any(q):
+            return None  # 零向量没有方向，与余弦语义一致（不参与近似命中）
+        signs = (self._projections(dim) @ q) > 0
+        bits = 0
+        for i, positive in enumerate(signs):
+            if bool(positive):
+                bits |= 1 << i
+        return dim, bits
+
+    def add(self, key: str, tenant_id: str, scope: str, signature: str, vector: list) -> None:
+        bucket = self.bucket_of(vector)
+        if bucket is None:
+            return
+        group = (tenant_id, scope, signature)
+        with self._lock:
+            self._detach_locked(key)  # 同键覆盖写：先摘掉旧桶里的引用
+            self._buckets.setdefault(group, {}).setdefault(bucket, set()).add(key)
+            self._of_key[key] = (group, bucket)
+
+    def remove(self, key: str) -> None:
+        with self._lock:
+            self._detach_locked(key)
+
+    def _detach_locked(self, key: str) -> None:
+        record = self._of_key.pop(key, None)
+        if record is None:
+            return
+        group, bucket = record
+        buckets = self._buckets.get(group)
+        if not buckets:
+            return
+        keys = buckets.get(bucket)
+        if keys:
+            keys.discard(key)
+            if not keys:
+                buckets.pop(bucket, None)
+        if not buckets:
+            self._buckets.pop(group, None)
+
+    def probe(self, tenant_id: str, scope: str, signature: str, vector: list) -> list[str] | None:
+        """返回候选键；`None` 表示"该走全扫"（组太小 / 向量不可用）。"""
+        bucket = self.bucket_of(vector)
+        if bucket is None:
+            return None
+        group = (tenant_id, scope, signature)
+        with self._lock:
+            buckets = self._buckets.get(group)
+            if not buckets:
+                return None
+            total = sum(len(keys) for keys in buckets.values())
+            if total < _ANN_MIN_GROUP:
+                return None
+            candidates: list[str] = []
+            for nearby in _nearby_buckets(bucket[1], self._bits, _ANN_PROBE_BITS):
+                keys = buckets.get((bucket[0], nearby))
+                if keys:
+                    candidates.extend(keys)
+            return candidates
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "ann_groups": len(self._buckets),
+                "ann_entries": len(self._of_key),
+                "ann_bits": self._bits,
+                "ann_min_group": _ANN_MIN_GROUP,
+            }
 
 
 class InMemorySemanticCache:
@@ -90,13 +263,15 @@ class InMemorySemanticCache:
         embeddings=None,
         sim_threshold: float = 0.95,
         max_scan: int = 2000,
-    ):
+    ) -> None:
         self._entries: dict[str, CacheEntry] = {}
         self._lock = threading.Lock()
         self._max_entries = max_entries
         self._embeddings = embeddings
         self._threshold = sim_threshold
         self._max_scan = max_scan
+        # 近似候选索引（LSH）：组内条目超过阈值后生效，见 `_LshIndex` 说明
+        self._lsh = _LshIndex()
 
     # ---- 过期清理 ----
 
@@ -123,6 +298,7 @@ class InMemorySemanticCache:
         scope: str = "",
         signature: str = "",
     ) -> None:
+        stores_vector = list(vector or [])
         with self._lock:
             if len(self._entries) >= self._max_entries:
                 # 简单逐出：删最早创建且命中最少的一批
@@ -131,16 +307,18 @@ class InMemorySemanticCache:
                 )[: max(1, self._max_entries // 10)]
                 for k, _ in victims:
                     self._entries.pop(k, None)
+                    self._lsh.remove(k)  # 索引与条目同生共死，否则候选里全是空指针
             self._entries[key] = CacheEntry(
                 payload=payload,
                 created_at=time.time(),
                 ttl_seconds=ttl_seconds,
-                vector=list(vector or []),
+                vector=stores_vector,
                 question=question or str(payload.get("question", "")),
                 tenant_id=tenant_id,
                 scope=scope,
                 signature=signature,
             )
+            self._lsh.add(key, tenant_id, scope, signature, stores_vector)
 
     def lookup(
         self,
@@ -160,7 +338,7 @@ class InMemorySemanticCache:
 
         近似命中的三个硬条件（KQ-04 + F4）：
         - 同一租户（否则跨租户串答案）；
-        - 维度签名完全一致（模型版本 + user + acl_version + index_version + 配置摘要），
+        - 维度签名完全一致（模型版本 + user + index_version + 配置摘要），
           否则同租户内 A 用户的答案会命中给 B 用户，权限/配置变更后还会命中旧条目；
         - `scope` 一致（F4 快问）：检索范围不同的条目一律不互相命中。
 
@@ -173,35 +351,54 @@ class InMemorySemanticCache:
         if not vector or not signature:
             return None, "miss"
         now = time.time()
-        best: CacheEntry | None = None
-        best_sim = self._threshold
+        # ① 锁内只取**引用快照**（O(n) 拷贝指针，不拷向量）；过滤与计算全在锁外。
+        #    此前整段扫描 + 余弦都在 `self._lock` 里，2000 条时把缓存变成全局串行点（KQ-17）。
+        #
+        #    候选来源二选一：
+        #    - 组内条目 < `_ANN_MIN_GROUP`：全扫（精确，小规模成本可忽略）；
+        #    - 否则走 LSH 邻居桶（把 O(N) 压成 79 次字典查询）。
+        #    两条路径之后**都**要过同一套三闸 + 阈值，所以 LSH 只影响命中率，
+        #    不可能造出"错答案被命中"。
         with self._lock:
-            scanned = 0
-            for entry in self._entries.values():
-                # 租户隔离第一闸：近似命中只认同租户条目（兑现上方注释承诺）
-                if entry.tenant_id != tenant_id:
-                    continue
-                # 维度签名闸：主体/权限/数据版本/模型/配置任一不同即不可命中
-                if entry.signature != signature:
-                    continue
-                # 范围闸（F4 快问）：快问（doc_id）与全库检索的答案不得互相命中
-                if entry.scope != scope:
-                    continue
-                if now - entry.created_at > entry.ttl_seconds:
-                    continue
-                if not entry.vector:
-                    continue
-                scanned += 1
-                if scanned > self._max_scan:
-                    break
-                sim = _cosine(vector, entry.vector)
-                if sim >= best_sim:
-                    best_sim, best = sim, entry
-        if best is None:
+            probed = self._lsh.probe(tenant_id, scope, signature, vector)
+            if probed is None:
+                snapshot = list(self._entries.items())
+            else:
+                # 探不到邻居就是未命中：**不再回退全扫**——否则每次 miss 又把
+                # O(N×D) 请回来，等于没做。代价是极少数边界近似（汉明 >2）漏命中，
+                # 这在"缓存少命中一次"的量级上，可接受且可观测（`ann_misses`）。
+                snapshot = [(k, self._entries[k]) for k in probed[: self._max_scan] if k in self._entries]
+        # ② 三闸过滤（租户 / 维度签名 / 范围）+ TTL：与命中判定同语义，只是挪到锁外
+        candidates: list[tuple[str, CacheEntry]] = []
+        for key, entry in snapshot:
+            if entry.tenant_id != tenant_id:
+                continue
+            if entry.signature != signature:
+                continue
+            if entry.scope != scope:
+                continue
+            if not entry.vector:
+                continue
+            if now - entry.created_at > entry.ttl_seconds:
+                continue
+            candidates.append((key, entry))
+            if len(candidates) >= self._max_scan:
+                break
+        if not candidates:
             return None, "miss"
-        best.hit_count += 1
-        best.last_hit_at = now
-        return best, "semantic"
+        # ③ 锁外向量化算相似度
+        pos, sim = _top_similarity(vector, [e.vector for _, e in candidates])
+        if pos is None or sim < self._threshold:
+            return None, "miss"
+        # ④ 回锁复核：快照之后该条目可能被逐出或被同键覆盖，
+        #    直接对旧对象自增计数会让统计落在一个已不在表里的对象上
+        key, entry = candidates[pos]
+        with self._lock:
+            if self._entries.get(key) is not entry:
+                return None, "miss"
+            entry.hit_count += 1
+            entry.last_hit_at = now
+            return entry, "semantic"
 
     def stats(self) -> dict:
         with self._lock:
@@ -212,6 +409,7 @@ class InMemorySemanticCache:
                 "total_hits": sum(e.hit_count for e in alive),
                 "semantic_ready": self._embeddings is not None,
                 "sim_threshold": self._threshold,
+                **self._lsh.stats(),
             }
 
 
@@ -255,15 +453,16 @@ class RedisSemanticCache:
         sim_threshold: float = 0.95,
         max_scan: int = 2000,
         max_entries: int = 10000,
-    ):
+    ) -> None:
         self._state = state
         self._embeddings = embeddings
         self._threshold = sim_threshold
         self._max_scan = max_scan
         self._max_entries = max_entries
-        # 本地近似索引：key → (vector, tenant_id, scope, created_at, ttl)
-        self._index: dict[str, tuple[list, str, str, float, float]] = {}
+        # 本地近似索引：key → (vector, tenant_id, scope, signature, created_at, ttl)
+        self._index: dict[str, tuple[list, str, str, str, float, float]] = {}
         self._lock = threading.Lock()
+        self._lsh = _LshIndex()
         self._hits = 0
         self._misses = 0
 
@@ -310,6 +509,7 @@ class RedisSemanticCache:
         try:
             raw = self._state.get(self._k(key))
         except Exception:  # noqa: BLE001 - 存储异常 → 视作未命中
+            logger.debug("缓存存储异常：视作未命中")
             return None
         if not raw:
             return None
@@ -347,6 +547,7 @@ class RedisSemanticCache:
         try:
             self._state.set(self._k(key), self._encode(entry), int(ttl_seconds) or 0)
         except Exception:  # noqa: BLE001 - 写失败不影响本次返回
+            logger.debug("缓存写入失败：不影响本次返回")
             pass
         if vector:
             with self._lock:
@@ -354,9 +555,11 @@ class RedisSemanticCache:
                     # 简单逐出：丢最早写入的
                     oldest = min(self._index.items(), key=lambda kv: kv[1][4])[0]
                     self._index.pop(oldest, None)
+                    self._lsh.remove(oldest)
                 self._index[key] = (
                     list(vector), tenant_id, scope, signature, entry.created_at, ttl_seconds
                 )
+                self._lsh.add(key, tenant_id, scope, signature, list(vector))
 
     def lookup(
         self,
@@ -375,38 +578,41 @@ class RedisSemanticCache:
                 self._misses += 1
             return None, "miss"
         now = time.time()
-        best_key: str | None = None
-        best_sim = self._threshold
+        # 同 InMemorySemanticCache：锁内只取快照，过滤与余弦都在锁外（KQ-17）。
+        # 本地近似索引里只有 key→元组，快照不会拷贝向量本身（元组里的 list 是引用）。
         with self._lock:
-            scanned = 0
-            for key, (
-                vec,
-                entry_tenant,
-                entry_scope,
-                entry_signature,
-                created_at,
-                ttl,
-            ) in self._index.items():
-                if entry_tenant != tenant_id:
-                    continue
-                if entry_scope != scope:
-                    continue
-                # 维度签名闸（KQ-04）：主体/权限/数据版本/模型/配置任一不同即不可命中
-                if entry_signature != signature:
-                    continue
-                if now - created_at > ttl:
-                    continue
-                scanned += 1
-                if scanned > self._max_scan:
-                    break
-                sim = _cosine(vector, vec)
-                if sim >= best_sim:
-                    best_sim, best_key = sim, key
-        if best_key is None:
+            probed = self._lsh.probe(tenant_id, scope, signature, vector)
+            if probed is None:
+                snapshot = list(self._index.items())
+            else:
+                snapshot = [(k, self._index[k]) for k in probed[: self._max_scan] if k in self._index]
+        candidates: list[tuple[str, list]] = []
+        for key, (
+            vec,
+            entry_tenant,
+            entry_scope,
+            entry_signature,
+            created_at,
+            ttl,
+        ) in snapshot:
+            if entry_tenant != tenant_id:
+                continue
+            if entry_scope != scope:
+                continue
+            # 维度签名闸（KQ-04）：主体/权限/数据版本/模型/配置任一不同即不可命中
+            if entry_signature != signature:
+                continue
+            if now - created_at > ttl:
+                continue
+            candidates.append((key, vec))
+            if len(candidates) >= self._max_scan:
+                break
+        pos, sim = _top_similarity(vector, [vec for _, vec in candidates])
+        if pos is None or sim < self._threshold:
             with self._lock:
                 self._misses += 1
             return None, "miss"
-        entry = self.get(best_key)
+        entry = self.get(candidates[pos][0])
         if entry is None:
             with self._lock:
                 self._misses += 1
@@ -421,6 +627,7 @@ class RedisSemanticCache:
                 "semantic_ready": self._embeddings is not None,
                 "sim_threshold": self._threshold,
                 "backend": "redis",
+                **self._lsh.stats(),
             }
 
 

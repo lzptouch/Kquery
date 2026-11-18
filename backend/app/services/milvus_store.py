@@ -6,15 +6,16 @@
   租户与文档过滤由 Milvus 标量过滤表达式一次完成；
 - COSINE 度量 + 入库前归一化（沿用 约定）。
 """
-import logging
 import threading
 
 from pymilvus import DataType, MilvusClient
 
 from app.domain.schemas import Chunk
 from app.services.upstream import bulkhead
+from app.core.errors import StorageCorruptedError, UpstreamUnavailableError
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _OUTPUT_FIELDS = [
     "chunk_id", "doc_id", "seq", "content", "tenant_id", "source", "is_short",
@@ -22,6 +23,21 @@ _OUTPUT_FIELDS = [
 ]
 
 _EXPECTED_FIELDS = set(_OUTPUT_FIELDS) | {"vector"}
+
+
+def _vector_dim(desc: dict) -> int:
+    """从 `describe_collection` 结果里取向量字段维度（取不到返回 0）。
+
+    Milvus 把维度放在字段的 `params.dim` 里；不同版本/实现可能给字符串，
+    所以统一 `int()` 兜底——这里只做「与配置是否一致」的判断，取不到就跳过校验。
+    """
+    for field in desc.get("fields", []):
+        if field.get("name") == "vector":
+            try:
+                return int((field.get("params") or {}).get("dim") or 0)
+            except (TypeError, ValueError):
+                return 0
+    return 0
 
 
 def _row_to_chunk(row: dict) -> Chunk:
@@ -44,12 +60,26 @@ class MilvusVectorStore:
     """与 VectorStore（FAISS）相同的方法签名：load/save/add/search/delete_doc/
     doc_chunk_ids/get_chunk/all_chunks/total。"""
 
-    def __init__(self, uri: str, dim: int, collection: str = "kquery_chunks"):
+    def __init__(
+        self,
+        uri: str,
+        dim: int,
+        collection: str = "kquery_chunks",
+        index_type: str = "hnsw",
+        m: int = 32,
+        ef_construction: int = 200,
+        ef_search: int = 64,
+    ) -> None:
         self._uri = uri
         self._dim = dim
         self._collection = collection
         self._lock = threading.Lock()
         self._client = MilvusClient(uri=uri)
+        # `A-26`：索引类型可配置。`flat` 保留给「小库对拍 / 排查召回差异」的场景
+        self._index_type = "FLAT" if str(index_type).lower() == "flat" else "HNSW"
+        self._m = max(4, int(m))
+        self._ef_construction = max(8, int(ef_construction))
+        self._ef_search = max(int(ef_search), 1)
 
     # ---- 生命周期 ----
 
@@ -69,11 +99,22 @@ class MilvusVectorStore:
         schema.add_field("parent_id", DataType.VARCHAR, max_length=256)
         schema.add_field("modality", DataType.VARCHAR, max_length=32)
         index = self._client.prepare_index_params()
-        index.add_index(field_name="vector", index_type="FLAT", metric_type="COSINE")
+        if self._index_type == "HNSW":
+            index.add_index(
+                field_name="vector",
+                index_type="HNSW",
+                metric_type="COSINE",
+                params={"M": self._m, "efConstruction": self._ef_construction},
+            )
+        else:
+            index.add_index(field_name="vector", index_type="FLAT", metric_type="COSINE")
         self._client.create_collection(
             collection_name=self._collection, schema=schema, index_params=index
         )
-        logger.info("Milvus 集合已创建: %s（%d 维）", self._collection, self._dim)
+        logger.info(
+            "Milvus 集合已创建: %s（%d 维，索引 %s）",
+            self._collection, self._dim, self._index_type,
+        )
 
     def load(self) -> None:
         """启动校验：集合不存在则创建；schema 版本不符则重建（数据可重灌）；
@@ -89,12 +130,21 @@ class MilvusVectorStore:
                     )
                     self._client.drop_collection(self._collection)
                     self._create_collection()
+                elif (existing_dim := _vector_dim(desc)) and existing_dim != self._dim:
+                    # 维度是集合 schema 的硬约束：换向量模型（1024 → 1536）后插入会报
+                    # 「dimension mismatch」，但错误出现在入库时、离配置改动很远。
+                    logger.warning(
+                        "Milvus 集合维度不符（集合 %d 维 / 配置 %d 维），重建集合（向量需重新灌入）",
+                        existing_dim, self._dim,
+                    )
+                    self._client.drop_collection(self._collection)
+                    self._create_collection()
             else:
                 self._create_collection()
             self._client.load_collection(self._collection)
             logger.info("Milvus 已连接: %s（向量数=%d）", self._uri, self.total)
         except Exception as exc:
-            raise RuntimeError(f"Milvus 向量库不可用，拒绝启动: {exc}") from exc
+            raise UpstreamUnavailableError("Milvus 向量库不可用，拒绝启动") from exc
 
     def save(self) -> None:
         """Milvus 自动持久化；flush 保证落盘可见性。"""
@@ -109,7 +159,7 @@ class MilvusVectorStore:
         if not chunks:
             return
         if len(chunks) != len(vectors):
-            raise ValueError("chunks 与 vectors 数量不一致")
+            raise StorageCorruptedError("chunks 与 vectors 数量不一致")
         rows = [
             {
                 "chunk_id": c.chunk_id,
@@ -158,6 +208,9 @@ class MilvusVectorStore:
                 filter=expr,
                 limit=top_k,
                 output_fields=_OUTPUT_FIELDS,
+                # HNSW 的查询宽度：不传就用服务端默认值，「召回略降」于是变成
+                # 一个看不见的默认差异（lite 与服务端的默认值并不保证一致）
+                search_params={"ef": max(self._ef_search, int(top_k))},
             )
         hits: list[tuple[Chunk, float]] = []
         for hit in results[0]:
@@ -204,8 +257,33 @@ class MilvusVectorStore:
         rows = self._query_all(f'doc_id == "{doc_id}"', ["chunk_id"])
         return [r["chunk_id"] for r in rows]
 
+    def delete_chunks(self, chunk_ids: set[str]) -> int:
+        """按 chunk_id 删除块（M2，镜像 FAISS 实现）。
+
+        Milvus 的 delete 用表达式：`chunk_id in [...]`。
+        分批是为了避开超长表达式（块多时单条 SQL 会超长度限制）。
+        """
+        if not chunk_ids:
+            return 0
+        removed = 0
+        ids = sorted(chunk_ids)
+        for i in range(0, len(ids), 500):
+            batch = ids[i : i + 500]
+            quoted = ", ".join(f'"{cid}"' for cid in batch)
+            try:
+                self._client.delete(
+                    collection_name=self._collection,
+                    filter=f"chunk_id in [{quoted}]",
+                )
+                removed += len(batch)
+            except Exception as exc:  # noqa: BLE001 - 删不掉要报错，不能静默
+                logger.warning("Milvus 按 chunk_id 删除失败（%d 批）: %s", i // 500, exc)
+                raise
+        return removed
+
     def doc_versions(self, doc_id: str) -> list[int]:
         """文档已存在的索引版本号（从 chunk_id 里的 `@v{n}` 解析）。"""
+        # 破环：vectorstore 反向依赖 milvus_store
         from app.services.vectorstore import chunk_version
 
         return sorted({v for v in (chunk_version(cid) for cid in self.doc_chunk_ids(doc_id)) if v})
@@ -215,6 +293,7 @@ class MilvusVectorStore:
 
         与 VectorStore 同语义：版本号来自 chunk_id，删除按 chunk_id 精确执行。
         """
+        # 破环：vectorstore 反向依赖 milvus_store
         from app.services.vectorstore import chunk_version
 
         versions = self.doc_versions(doc_id)
@@ -237,6 +316,7 @@ class MilvusVectorStore:
         Milvus 的主键即 chunk_id，改主键只能"读出含向量的整行 → 以新主键 upsert →
         删旧主键"。因此这里一次性把整批行搬完，不做逐条改写。
         """
+        # 破环：vectorstore 反向依赖 milvus_store
         from app.services.vectorstore import chunk_version, with_version
 
         rows = self._query_all(f'doc_id == "{doc_id}"', [*_OUTPUT_FIELDS, "vector"])
@@ -273,7 +353,7 @@ class MilvusVectorStore:
     def close(self) -> None:
         try:
             self._client.close()
-        except Exception:
+        except Exception:  # noqa: BLE001 - Milvus 客户端关闭失败：进程正在退出，不阻断关停
             pass
 
     @property

@@ -1,0 +1,101 @@
+# Kquery 的 Prometheus 告警规则（批次 6）。
+#
+# 口径纪律：
+# - 指标全部**已存在**（app/core/metrics.py），本文件只写规则，不新增指标；
+# - label 一律用低基数维度（reason/upstream/tool/status），**不放 tenant/user**；
+# - 每条规则都写清"为什么这条阈值有意义"，避免后人凭感觉改数字。
+groups:
+  - name: kquery-capacity
+    rules:
+      # 在飞请求接近执行器上限（32）→ 新请求开始排队。
+      # 阈值 28 = 32 的 87%：留出余量给长尾请求，不等到打满才发现。
+      - alert: KqueryInflightNearLimit
+        expr: kquery_inflight_requests > 28
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "在飞请求接近执行器上限（>28）"
+          description: "执行器上限 32；持续 5 分钟说明上游变慢或流量上涨，考虑扩容（先核对上游配额）。"
+
+      # 排队深度 > 150（队列上限 200）→ 请求开始被拒绝（503）。
+      - alert: KqueryQueueDepthHigh
+        expr: kquery_queue_depth > 150
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "问答队列积压（>150）"
+          description: "队列上限 200，超过 150 意味着接近快速失败线；查上游延迟与限流命中。"
+
+      # 熔断打开 → 某类上游已经不可用。
+      - alert: KqueryUpstreamCircuitOpen
+        expr: kquery_upstream_circuit_open == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "上游熔断打开（{{ $labels.upstream }}）"
+          description: "隔离仓已打开该上游：请求会直接失败（降级交由上层）。检查平台配额与网络。"
+
+      # 语义缓存命中 < 30% → 缓存基本没起作用（每次都真跑一遍模型 = 成本失控）。
+      - alert: KqueryCacheHitRateLow
+        expr: |
+          sum(rate(rag_cache_total{result="hit"}[10m]))
+          / clamp_min(sum(rate(rag_cache_total[10m])), 0.001) < 0.3
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "语义缓存命中率偏低（<30%）"
+          description: "缓存失效会直接抬高模型调用成本；检查缓存后端是否降级到内存、TTL 是否过短。"
+
+  - name: kquery-agent
+    rules:
+      # 工具成功率 < 90%（5 分钟）→ 工具链在退化（熔断摘除 / 参数错 / 上游慢）。
+      - alert: KqueryToolSuccessRateLow
+        expr: |
+          sum(rate(rag_agent_tool_failures_total[5m]))
+          / clamp_min(sum(rate(rag_agent_tool_calls_total[5m])), 0.001) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent 工具失败率偏高（>10%）"
+          description: "按 error_class 维度看失败归因（approval_required / tripped / timeout / param_invalid）。"
+
+      # 迭代次数打满 → Agent 熔断，答案大概率不完整。
+      - alert: KqueryAgentIterationLimit
+        expr: |
+          avg_over_time(rag_agent_iterations_bucket[15m]) > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent 平均迭代轮数偏高"
+          description: "验收口径是平均 ≤3；持续偏高说明检索或反思在空转，考虑调 CRAG 阈值或缩短计划。"
+
+  - name: kquery-availability
+    rules:
+      # 5xx 比例 > 5% → 服务在报错（现在失败语义已修成真 5xx，这��规则才准）。
+      - alert: KqueryHighErrorRate
+        expr: |
+          sum(rate(kquery_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum(rate(kquery_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx 比例过高（>5%）"
+          description: "按 route 维度看是哪个端点在报错；配合 X-Trace-Id 反查日志。"
+
+      # p95 延迟 > 30s → 请求接近 ask_deadline_ms（120s）的一半，用户已在等。
+      - alert: KqueryLatencyHigh
+        expr: |
+          histogram_quantile(0.95, sum(rate(kquery_http_latency_seconds_bucket[5m])) by (le, route)) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 延迟偏高（>30s）"
+          description: "SSE 路径本就长；同步路径超过 30s 说明上游慢或重试过多。"

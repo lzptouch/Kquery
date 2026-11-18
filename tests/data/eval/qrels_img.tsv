@@ -1,0 +1,18 @@
+# 多模态金标集（图文语料）：query_id\tanchor\tgrade
+# anchor = 答案所在块的独特短语（与切块方式无关）
+i01	身后左侧是一面美国国旗	2
+i02	猫是棕灰色虎斑纹	2
+i03	杯碟右侧放着一把金属小勺	2
+i04	黄昏或夜间	2
+i05	黑色背景上散布着大量遥远星系	2
+i06	画面右上方有一个明显的圆形陨石坑	2
+i07	架在三脚架上的中画幅相机	2
+i08	血管从左侧明亮的视神经盘呈树枝状向	2
+i09	纸面上用笔手写的数字与英文字母	2
+i10	右下方有一个边缘发暗的圆形亮斑	2
+i11	深灰色长条砖按错缝方式整齐排列	2
+i12	中间散布多株圆心形的三叶草叶片	2
+t01	Pillow is the friendly PIL fork by	2
+t02	pip install scikit-image	2
+t03	Python Imaging Library (Fork)	2
+t04	https://scikit-image.org/docs/stable/	2

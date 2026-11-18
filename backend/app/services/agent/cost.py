@@ -35,7 +35,7 @@ class CostRecord:
 class CostLedger:
     """进程内成本账本。"""
 
-    def __init__(self, max_records: int = MAX_RECORDS):
+    def __init__(self, max_records: int = MAX_RECORDS) -> None:
         self._records: deque[CostRecord] = deque(maxlen=max_records)
         self._lock = threading.Lock()
 
@@ -150,7 +150,3 @@ def get_ledger() -> CostLedger:
     return _LEDGER
 
 
-def install_ledger(ledger: CostLedger) -> None:
-    global _LEDGER
-    with _LOCK:
-        _LEDGER = ledger

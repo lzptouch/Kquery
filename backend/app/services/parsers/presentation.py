@@ -19,14 +19,14 @@ doc-qa 的 `deepdoc/parser/ppt_parser.py` 只有 68 行，逻辑就是
 单页形状数上限 + 总页数上限 + 单段字符上限：PPT 被做成"一页十万个文本框"
 并不罕见，全量展开会把内存吃光。
 """
-import logging
 from pathlib import Path
 
 from app.core.envelope import ApiError, ErrCode
 from app.domain.schemas import TableRecord
 from app.services.parsers.base import ParseResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 #: 单页最多抽取的形状数（超出截断）
 MAX_SHAPES_PER_SLIDE = 500

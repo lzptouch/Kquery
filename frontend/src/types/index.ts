@@ -19,6 +19,8 @@ export interface Evidence {
   rejected_reason?: string;
   /** 图像证据资源地址 / 图谱关系支撑块 */
   uri?: string;
+  /** 该文本证据关联的图像资产（M4 图文绑定）——前端可回显原图 */
+  related_assets?: string[];
   source_chunks?: string[];
 }
 
@@ -179,7 +181,6 @@ export interface RetrievalStats {
   tool_calls?: number;
   tool_errors?: number;
   /** 因 ACL 被过滤的条数 */
-  acl_filtered?: number;
   from_cache?: boolean;
   reranked_flag?: boolean;
 }
@@ -222,13 +223,19 @@ export interface KnowledgeFile {
   chunks: number;
   status: "uploaded" | "parsing" | "indexed" | "failed";
   error?: string | null;
-  knowledge_base_id?: string;
 }
 
 export interface Envelope<T> {
   status: "ok" | "warn" | "error";
   data: T | null;
-  error: { code: number; message: string } | null;
+  /**
+   * 错误信封。
+   *
+   * `retry_after` **只在背压场景出现**（429 限流 / 503 并发闸门满），
+   * 值是秒数（来自响应头 `Retry-After`）。真故障（500 等）**不带**这个字段——
+   * 把「服务挂了」伪装成「稍后再试」会让用户一直等一个不会自愈的失败。
+   */
+  error: { code: number; message: string; retry_after?: number } | null;
   meta: { trace_id: string; elapsed_ms: number };
 }
 
@@ -256,23 +263,8 @@ export interface SessionUser {
 }
 
 /** `/auth/login` 与 `/auth/register` 的响应体。 */
-export interface LoginResponse {
-  token: string;
-  user_id: string;
-  tenant_id: string;
-  roles: string[];
-  groups: string[];
-  expires_in: number;
-}
 
 /** `/auth/me` 的响应体。is_admin 由后端给出，避免各页面各写一遍 `roles.includes("admin")`。 */
-export interface MeResponse {
-  user_id: string;
-  tenant_id: string;
-  roles: string[];
-  groups: string[];
-  is_admin: boolean;
-}
 
 export interface ChatMessage {
   id: string;
@@ -306,7 +298,6 @@ export interface ChatMessage {
   incomplete?: boolean;
   fuseReason?: string;
   /** 因权限被过滤的结果数（只报数量，绝不展示被过滤文档的元信息） */
-  aclFiltered?: number;
   /** F5：推荐追问（LLM 不可用时为空） */
   followups?: string[];
 }
@@ -370,7 +361,15 @@ export interface SessionSummary {
 export interface SessionDetail {
   session_id: string;
   title: string;
-  turns: { question: string; answer: string; verdict: string; turn: number; answer_source?: AnswerSource }[];
+  turns: {
+    question: string;
+    answer: string;
+    verdict: string;
+    turn: number;
+    answer_source?: AnswerSource;
+    /** 该轮的 trace_id：恢复历史时重启「复制 trace / 查成本」入口（`X-22` 残余） */
+    trace_id?: string;
+  }[];
   updated_at: number;
 }
 
@@ -379,68 +378,26 @@ export interface AgentMetrics {
   avg_iterations: number;
   fuse_rate: number;
   tool_distribution: Record<string, number>;
+  /**
+   * 工具失败率（`MP-01`）：分母 = 工具调用总数。
+   * 没有工具调用时为 0（不是 null）——「没调用过」不等于「失败率未知」。
+   */
+  tool_calls_total?: number;
+  tool_failures?: number;
+  tool_failure_rate?: number;
+  tool_failure_distribution?: Record<string, number>;
   abnormal: { ts: number; session_id: string; kind: string; detail: string }[];
 }
 
 // ---------- 企业护栏 ----------
 
-export interface UserRecord {
-  user_id: string;
-  tenant_id: string;
-  roles: string[];
-  groups: string[];
-  enabled: boolean;
-}
 
-export interface DocAcl {
-  doc_id: string;
-  filename: string;
-  tenant_id: string;
-  allow: string[];
-  deny: string[];
-  is_public: boolean | null;
-  effective_public: boolean;
-  updated_at?: number;
-  updated_by?: string;
-}
 
-export interface AclImpact {
-  added_count: number;
-  removed_count: number;
-  added_users: string[];
-  removed_users: string[];
-  total_after: number;
-}
 
 // ---------- 知识库（KB 实体 + 按用户授权）----------
 
-export interface KnowledgeBase {
-  kb_id: string;
-  name: string;
-  description: string;
-  tenant_id: string;
-  is_public: boolean;
-  created_by: string;
-  created_at: string;
-  updated_at: string;
-  doc_count: number;
-  granted_count: number;
-}
 
-export interface KbGrant {
-  kb_id: string;
-  user_id: string;
-  granted_by: string;
-  granted_at: string;
-  user_enabled: boolean;
-  user_roles: string[];
-}
 
-export interface KbGrantResult {
-  kb_id: string;
-  impact: AclImpact;
-  risk: string;
-}
 
 /** 监控大盘首屏指标（/admin/metrics/summary） */
 export interface MetricsSummary {
@@ -485,6 +442,19 @@ export interface RetrievalConfigView {
   active: RetrievalConfig;
   pending: RetrievalConfig | null;
   effective_at: number | null;
+}
+
+/**
+ * 灰度覆盖作用域（`MP-02`）。
+ *
+ * `scope` 形如 `tenant:<id>`（定向到单个租户）或 `percent:<0-100>`
+ * （**稳定哈希分桶**：同一租户永远落在同一桶，多副本/重启不变）。
+ */
+export interface ScopedConfig {
+  scope: string;
+  enabled: boolean;
+  experiment_id: string;
+  config: RetrievalConfig;
 }
 
 /** 知识库 KPI（/knowledge/stats） */

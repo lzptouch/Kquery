@@ -22,6 +22,14 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+# 共享浏览器辅助（此前 4 个脚本各写一份，`check` 的返回类型还不一致）
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_helpers import (  # noqa: E402
+    FAILED,
+    check,
+    section,
+)
+
 SAMPLE_MD = """# Kquery 产品手册
 
 ## 产品简介
@@ -40,24 +48,10 @@ Kquery 按问答次数计费，每次问答消耗一个额度。
 问：答案中的引用编号是什么？答：引用编号对应答案所依据的文档片段，可点击跳转查看原文。
 """
 
-FAILED: list[str] = []
 CONSOLE_ERRORS: list[str] = []
-
-
-def check(name: str, ok: bool, detail: str = "") -> None:
-    mark = "✓" if ok else "✗"
-    print(f"  {mark} {name}" + (f"（{detail}）" if detail and not ok else ""))
-    if not ok:
-        FAILED.append(f"{name}: {detail}")
-
-
-def section(title: str) -> None:
-    print(f"\n\033[1m{title}\033[0m")
-
-
 def login_token(api: str, password: str) -> str:
     req = urllib.request.Request(
-        f"{api}/auth/login",
+        f"{api}/health",
         data=json.dumps({"username": "admin", "password": password}).encode(),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -157,8 +151,8 @@ def run(base: str, api: str, password: str, out_dir: Path, headed: bool) -> int:
     print("\n" + "=" * 60)
     if FAILED:
         print(f"\033[31m失败 {len(FAILED)} 项：\033[0m")
-        for f in FAILED:
-            print(f"  - {f}")
+        for name, detail in FAILED:
+            print(f"  - {name}: {detail}")
         return 1
     print("\033[32m浏览器验证全部通过\033[0m")
     return 0

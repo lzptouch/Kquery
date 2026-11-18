@@ -26,9 +26,17 @@ WORKDIR /build
 
 # 先只拷依赖清单：这一步命中缓存后，业务代码改动不会触发重装。
 # 锁文件单独 COPY 是有意的——锁文件变了才算依赖真的变了。
-COPY pyproject.toml uv.lock* ./
+# 注意：这里**不写通配符**。`COPY uv.lock*` 在锁文件缺失时会静默跳过，
+# 然后 `uv sync --frozen` 会在没有锁的情况下失败（或者更糟：悄悄用上索引版本）。
+COPY pyproject.toml uv.lock ./
+# 用锁文件安装：`uv pip install -r pyproject.toml` **不读 uv.lock**，
+# 装出来的版本会随索引漂移 —— 镜像不可复现（同一 tag 今天明天内容不同）。
+# `uv sync --frozen` 严格按锁文件装，且 --frozen 不会偷偷更新锁。
+# UV_PROJECT_ENVIRONMENT 必填：uv sync 默认装进项目目录下的 .venv，
+# 不指定就会把依赖装到 /build/.venv，而运行时 PATH 指向 /opt/venv → 依赖"消失"。
 RUN uv venv /opt/venv \
-    && VIRTUAL_ENV=/opt/venv uv pip install -r pyproject.toml
+    && UV_PROJECT_ENVIRONMENT=/opt/venv VIRTUAL_ENV=/opt/venv \
+       uv sync --frozen --no-dev --no-install-project
 
 
 # ---------- 运行阶段 ----------
@@ -37,6 +45,8 @@ FROM python:3.12-slim AS runtime
 # 非 root 运行：容器逃逸时拿到的是无特权用户（stage-10 §1）
 # curl 是 HEALTHCHECK 的客户端——镜像里没有 curl 时探针会永远失败，
 # 而容器本身是好的，这种"探针假阴性"排查起来最费时间，所以要在这里显式装。
+# 当前范围只有**图文**（视频入库 M3 已从计划里去掉），所以**不装 ffmpeg**
+# ——它会给镜像加约 80MB 而用不上。等真要做视频时再加回来（并在计划里登记）。
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 1001 kquery \

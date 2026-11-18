@@ -5,7 +5,6 @@
 - 提示词 + 自定义 JSON 解析（不用 function calling）——换平台换档位解析逻辑不变；
 - 失败兜底：默认"需要检索"（46xx 静默降级，不阻塞主链路）。
 """
-import logging
 import re
 
 from pydantic import BaseModel
@@ -13,8 +12,9 @@ from pydantic import BaseModel
 from app.services.llm import LLM, LLMError
 from app.services.query.jsonutil import JsonParseError, parse_json_model
 from app.services.query.schemas import IntentResult
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 INTENT_PROMPT = """你是意图分类器。判断用户问题的意图类型，只输出 JSON，不要输出其它内容。
 
@@ -66,7 +66,7 @@ def is_obvious_chitchat(question: str) -> bool:
 
 
 class IntentClassifier:
-    def __init__(self, llm: LLM, max_retries: int = 1):
+    def __init__(self, llm: LLM, max_retries: int = 1) -> None:
         self._llm = llm
         self._max_retries = max_retries
 

@@ -5,15 +5,15 @@
 - 失败模式：实体未命中 → 返回空由 Agent 回退向量检索，不允许直接判无答案；
 - 输出：带方向的关系路径文本（"A —投资→ B"），附支撑块溯源。
 """
-import logging
 
 import numpy as np
 
 from app.services.embeddings import Embeddings
 from app.services.graph.resolver import EntityResolver
 from app.services.graph.store import BaseGraphStore
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 SEED_TOP_K = 3  # 种子实体上限（防子图爆炸）
 SEED_VECTOR_TH = 0.5  # 向量召回种子的最低相似度（召回宁宽，BFS 再剪）
@@ -27,7 +27,7 @@ class GraphQueryService:
         embeddings: Embeddings,
         bfs_depth: int = 2,
         seed_top_k: int = SEED_TOP_K,
-    ):
+    ) -> None:
         self._store = store
         self._resolver = resolver
         self._embeddings = embeddings
@@ -56,7 +56,7 @@ class GraphQueryService:
                     tenant_id=tenant_id,
                 )
                 seeds = [name for name, _ in hits]
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - 种子向量召回失败
                 logger.warning("种子向量召回失败: %s", exc)
         return seeds[: self._seed_top_k]
 

@@ -1,0 +1,6 @@
+{"query_id": "q001", "ranked": ["kquery-overview#2", "kquery-retrieval#1", "kquery-overview#3"], "routes": {"keyword": ["kquery-overview#2", "kquery-retrieval#1"], "vector": ["kquery-retrieval#1"]}, "fused": ["kquery-overview#2", "kquery-retrieval#1"]}
+{"query_id": "q002", "ranked": ["kquery-overview#2", "kquery-retrieval#1", "kquery-retrieval#2"], "routes": {"keyword": ["kquery-retrieval#2"], "vector": ["kquery-retrieval#1"]}, "fused": ["kquery-overview#2", "kquery-retrieval#1", "kquery-retrieval#2"]}
+{"query_id": "q003", "ranked": ["kquery-overview#2", "kquery-agent#1"], "routes": {"keyword": ["kquery-agent#1"], "vector": ["kquery-overview#2"]}, "fused": ["kquery-overview#2", "kquery-agent#1"]}
+{"query_id": "q004", "ranked": ["kquery-agent#1", "kquery-agent#2"], "routes": {"keyword": ["kquery-agent#2"], "vector": ["kquery-agent#1"]}, "fused": ["kquery-agent#1", "kquery-agent#2"]}
+{"query_id": "q005", "ranked": ["kquery-overview#1", "kquery-overview#3"], "routes": {"keyword": ["kquery-overview#3"], "vector": ["kquery-overview#1"]}, "fused": ["kquery-overview#1", "kquery-overview#3"]}
+{"query_id": "q006", "ranked": ["kquery-retrieval#2", "kquery-overview#2", "kquery-overview#3"], "routes": {"keyword": ["kquery-retrieval#2"], "vector": ["kquery-overview#2"]}, "fused": ["kquery-retrieval#2", "kquery-overview#2", "kquery-overview#3"]}

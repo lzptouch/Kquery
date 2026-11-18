@@ -9,7 +9,6 @@
 - POST /search/media：以文搜图；
 - GET /assets/{name}：图像资源服务（前端渲染用，路径安全校验）。
 """
-import logging
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -17,12 +16,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from app.core.envelope import ApiError, Envelope, ErrCode, ok_envelope
-from app.dependencies import require_role
-from app.core.tracing import elapsed_ms_since, new_trace_id, now_ms, set_trace_id
+from app.core.tracing import elapsed_ms_since, get_trace_id, now_ms, set_trace_id
+from app.dependencies import enforce_rate_limit
+from app.core.logging_setup import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-router = APIRouter(tags=["graph"], dependencies=[Depends(require_role("admin"))])
+router = APIRouter(tags=["graph"])
 SUBGRAPH_MAX_EDGES = 100  # 子图截断上限（超出必须提示）
 
 
@@ -41,7 +41,10 @@ def list_entities(
     q: str = Query(default="", max_length=100),
     types: str = Query(default=""),
 ) -> Envelope:
-    trace_id = new_trace_id()
+    """图谱实体列表（按度数 / 名称过滤，分页）。
+
+    图谱不可用时返回空列表而不是 404（图谱是增强能力，不是主链路）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     store = _graph_store(request)
@@ -61,7 +64,10 @@ def list_entities(
 
 @router.get("/graph/entity/{name}", response_model=Envelope)
 def entity_detail(name: str, request: Request) -> Envelope:
-    trace_id = new_trace_id()
+    """单个实体的详情：邻接关系、社区归属、出现过的文档。
+
+    实体不存在 → 404（`ENTITY_NOT_FOUND`）。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     store = _graph_store(request)
@@ -101,7 +107,7 @@ def subgraph(
     depth: int = Query(default=1, ge=1, le=3),
 ) -> Envelope:
     """子图（画布渲染）。默认展示高连接度核心实体（不用空白画布面对用户）。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     store = _graph_store(request)
@@ -153,7 +159,10 @@ def subgraph(
 
 @router.get("/graph/communities", response_model=Envelope)
 def list_communities(request: Request) -> Envelope:
-    trace_id = new_trace_id()
+    """社区（社区摘要）列表：层级、大小、代表实体。
+
+    社区数由 `community_max` 限制，超出后按权重截断。"""
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     store = _graph_store(request)
@@ -172,40 +181,89 @@ class BuildGraphRequest(BaseModel):
     rebuild_communities: bool = True
 
 
-@router.post("/graph/build", response_model=Envelope)
+def _run_graph_build(app, task) -> dict:
+    """在 worker 线程里真正干活（`C-09`）。
+
+    取块放在后台而不是接口层：`all_chunks()` 在大库上本身就要几百毫秒到几秒，
+    留在请求线程等于「后台化只做了一半」。
+    """
+    builder = app.state.graph_builder
+    store = app.state.store
+    chunks = store.all_chunks()
+    if task.doc_id:
+        chunks = [c for c in chunks if c.doc_id == task.doc_id]
+        if not chunks:
+            raise ValueError(f"文档无块: {task.doc_id}")
+    else:
+        # 全量构建：只建本租户的块（跨租户全量构建会把其它租户的图改写掉）
+        chunks = [c for c in chunks if c.tenant_id == task.tenant_id]
+    task.chunk_count = len(chunks)
+    task.stage = "extracting"
+    result = builder.build_from_chunks(
+        chunks, rebuild_doc_id=task.doc_id, tenant_id=task.tenant_id
+    )
+    if task.rebuild_communities:
+        task.stage = "communities"
+        result["community"] = builder.rebuild_communities(tenant_id=task.tenant_id)
+    return result
+
+
+@router.post("/graph/build", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def build_graph(req: BuildGraphRequest, request: Request) -> Envelope:
-    """从已有块构建图谱（显式触发——抽取成本是 GraphRAG 主要成本，不随上传自动跑）。"""
-    trace_id = new_trace_id()
+    """从已有块构建图谱：**受理即返回**，进度另查（`C-09`）。
+
+    同步版本在真实库上是分钟级操作，而 HTTP 超时通常 30~60 秒：
+    客户端超时、后台其实跑完了，用户重试一次就再跑一遍。现在返回 `task_id`，
+    由 `GET /graph/build/{task_id}` 查状态。
+    """
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
-    builder = request.app.state.graph_builder
-    store = request.app.state.store
     tenant = _tenant(request)
-    chunks = store.all_chunks()
+
+    # 租户断言必须同步做（快且是权限边界）：不能等到后台线程里才发现越权
     if req.doc_id:
-        # KQ-02：按 id 取资源的端点必须先做租户断言，否则 admin 可替其它租户建图
         doc = request.app.state.knowledge.get(req.doc_id)
         if doc.tenant_id != tenant:
             raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, f"文档不存在: {req.doc_id}", http_status=404)
-        chunks = [c for c in chunks if c.doc_id == req.doc_id]
-        if not chunks:
-            raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, f"文档无块: {req.doc_id}", http_status=404)
-        result = builder.build_from_chunks(chunks, rebuild_doc_id=req.doc_id, tenant_id=tenant)
-        if req.rebuild_communities:
-            result["community"] = builder.rebuild_communities(tenant_id=tenant)
-    else:
-        # 全量构建：只建本租户的块（跨租户全量构建会把其它租户的图改写掉）
-        chunks = [c for c in chunks if c.tenant_id == tenant]
-        result = builder.build_from_chunks(chunks, tenant_id=tenant)
-        if req.rebuild_communities:
-            result["community"] = builder.rebuild_communities(tenant_id=tenant)
-    return ok_envelope(result, trace_id, elapsed_ms_since(started))
+
+    registry = request.app.state.graph_build_tasks
+    try:
+        task = registry.submit(
+            lambda t: _run_graph_build(request.app, t),
+            tenant_id=tenant,
+            doc_id=req.doc_id,
+            rebuild_communities=req.rebuild_communities,
+        )
+    except RuntimeError as exc:
+        # 排队满 → 明确拒绝（拿到一个永远 queued 的 task_id 比拒绝更糟）
+        raise ApiError(
+            ErrCode.RATE_LIMITED, str(exc), http_status=503, retry_after=10
+        ) from exc
+
+    return ok_envelope(
+        {"task_id": task.task_id, "status": task.status, "doc_id": task.doc_id},
+        trace_id,
+        elapsed_ms_since(started),
+    )
+
+
+@router.get("/graph/build/{task_id}", response_model=Envelope)
+def get_build_task(task_id: str, request: Request) -> Envelope:
+    """图谱构建任务状态（只对本租户可见）。"""
+    trace_id = get_trace_id()
+    set_trace_id(trace_id)
+    started = now_ms()
+    task = request.app.state.graph_build_tasks.get(task_id)
+    if task is None or task.tenant_id != _tenant(request):
+        raise ApiError(ErrCode.TASK_NOT_FOUND, f"任务不存在: {task_id}", http_status=404)
+    return ok_envelope(task.snapshot(), trace_id, elapsed_ms_since(started))
 
 
 @router.get("/graph/stats", response_model=Envelope)
 def graph_stats(request: Request) -> Envelope:
     """图谱健康度（孤立实体占比 > 20% 说明关系抽取质量下降）。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     stats = _graph_store(request).stats(_tenant(request))
@@ -219,10 +277,10 @@ class MediaSearchRequest(BaseModel):
     top_k: int = Field(default=4, ge=1, le=10)
 
 
-@router.post("/search/media", response_model=Envelope)
+@router.post("/search/media", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def search_media(req: MediaSearchRequest, request: Request) -> Envelope:
     """以文搜图（图像描述向量与正文同空间）。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     tenant = request.state.principal.tenant_id
@@ -232,12 +290,43 @@ def search_media(req: MediaSearchRequest, request: Request) -> Envelope:
 
 class IndexImagesRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)  # 单次索引上限（VL 调用成本护栏）
+    # `LM-02`：一次提交多张（逐张结果独立返回，部分失败不回滚整批）。
+    # 上限 50 是**成本护栏**（VL 调用很贵），与「一次传多少张」是同一个闸门。
+    asset_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
-@router.post("/media/index", response_model=Envelope)
+def _build_batch_items(
+    paths: list[Path],
+    image_index,
+    knowledge,
+    caller_tenant: str,
+) -> list[tuple[Path, str, str, int, str]]:
+    """把资产路径转成批量索引的入参（沿用单张路径的租户 / 页码解析口径）。"""
+    items: list[tuple[Path, str, str, int, str]] = []
+    for img in paths:
+        asset_id = img.stem
+        if asset_id in image_index._entries:
+            continue
+        page = 0
+        if "#page-" in asset_id:
+            try:
+                page = int(asset_id.rsplit("#page-", 1)[1])
+            except ValueError:
+                page = 0
+        doc_id = asset_id.split("#")[0]
+        try:
+            doc_tenant = knowledge.get(doc_id).tenant_id
+        except Exception:  # noqa: BLE001 - 无主资产回落到调用主体租户
+            doc_tenant = caller_tenant
+        if doc_tenant != caller_tenant:
+            continue  # 不替其它租户建索引
+        items.append((img, asset_id, doc_id, page, doc_tenant))
+    return items
+
+@router.post("/media/index", response_model=Envelope, dependencies=[Depends(enforce_rate_limit)])
 def index_images(req: IndexImagesRequest, request: Request) -> Envelope:
     """扫描资源目录，为未建索引的图像生成描述并入统一向量库（显式触发，成本可控）。"""
-    trace_id = new_trace_id()
+    trace_id = get_trace_id()
     set_trace_id(trace_id)
     started = now_ms()
     settings = request.app.state.settings
@@ -246,6 +335,32 @@ def index_images(req: IndexImagesRequest, request: Request) -> Envelope:
     knowledge = request.app.state.knowledge
     caller_tenant = _tenant(request)
     indexed, failed, skipped = 0, 0, 0
+    # `LM-02`：指定了 asset_ids → 走批量路径（逐张并发，逐张成败独立）
+    if req.asset_ids:
+        targets: list[Path] = []
+        for asset_id in req.asset_ids:
+            path = assets_dir / f"{asset_id}.png"
+            if path.exists():
+                targets.append(path)
+        batch = image_index.index_images_batch(
+            _build_batch_items(targets, image_index, knowledge, caller_tenant),
+            concurrency=max(1, min(8, len(targets) or 1)),
+        )
+        for row in batch:
+            if row.get("ok"):
+                indexed += 1
+            else:
+                failed += 1
+        return ok_envelope(
+            {
+                "indexed": indexed,
+                "failed": failed,
+                "skipped": skipped,
+                "results": batch,
+            },
+            trace_id, elapsed_ms_since(started),
+        )
+
     if assets_dir.exists():
         for img in sorted(assets_dir.glob("*.png"))[: req.limit]:
             asset_id = img.stem
@@ -264,6 +379,7 @@ def index_images(req: IndexImagesRequest, request: Request) -> Envelope:
             try:
                 doc_tenant = knowledge.get(doc_id).tenant_id
             except Exception:  # noqa: BLE001 - 无主资产回落到调用主体租户
+                logger.debug("无主资产回落到调用主体租户")
                 doc_tenant = caller_tenant
             if doc_tenant != caller_tenant:
                 skipped += 1  # 不替其它租户建索引（也不报错，避免泄露存在性）
@@ -289,16 +405,18 @@ def serve_asset(name: str, request: Request) -> FileResponse:
     path = (assets_dir / name).resolve()
     # is_relative_to：startswith 前缀比较会被同名前缀的兄弟目录绕过（assets2/...）
     if not path.is_relative_to(assets_dir.resolve()) or not path.exists():
-        raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, "资源不存在", http_status=404)
+        # 素材（图片/媒体）缺失与「文档缺失」是两件事：前端对素材走**降级占位**
+        # （整卡不失败），对文档缺失才是错误页。用不同错误码，前端才能区分。
+        raise ApiError(ErrCode.ASSET_NOT_FOUND, "资源不存在", http_status=404)
     # KQ-02：资产归属来源文档的租户（资产名形如 "doc#page-N"）
     doc_id = path.stem.split("#", 1)[0]
     if doc_id:
         try:
             doc = request.app.state.knowledge.get(doc_id)
             if doc.tenant_id != _tenant(request):
-                raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, "资源不存在", http_status=404)
+                raise ApiError(ErrCode.ASSET_NOT_FOUND, "资源不存在", http_status=404)
         except ApiError:
             raise
         except Exception:  # noqa: BLE001 - 无主资产不放行（默认拒绝）
-            raise ApiError(ErrCode.DOCUMENT_NOT_FOUND, "资源不存在", http_status=404) from None
+            raise ApiError(ErrCode.ASSET_NOT_FOUND, "资源不存在", http_status=404) from None
     return FileResponse(path)

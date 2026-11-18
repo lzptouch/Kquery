@@ -4,7 +4,7 @@
  * ② 中间过程（默认折叠）：检索链路统计 + 证据切片 + 相关度分，
  *    点击"检索过程与证据"展开；点击答案中的引用编号会自动展开并定位到对应证据。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessage, Evidence } from "../../../types";
 import { downloadAnswerAsTxt } from "../../../lib/export-txt";
 import { AgentTraceTimeline } from "./AgentTraceTimeline";
@@ -21,7 +21,7 @@ interface Props {
   message: ChatMessage;
   onCitationClick: (messageId: string, rank: number) => void;
   onViewOriginal: (evidence: Evidence) => void;
-  onRetry?: () => void;
+  onRetry?: (messageId: string) => void;
   onReask?: (question: string) => void;
   /** F5：点击推荐追问（直接发问） */
   onFollowup?: (question: string) => void;
@@ -31,7 +31,22 @@ interface Props {
 
 const COLLAPSE_THRESHOLD = 3;
 
-export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetry, onReask, onFollowup, originalQuestion, highlightRank }: Props) {
+/** `memo` 是长会话的**前提**：流式输出时每个 token 都会重建 `messages` 数组，
+ * 没有 memo 的话 100 条历史消息会跟着一起重渲染（证据卡片、时间线全在里面）。
+ *
+ * 生效条件：父级传进来的回调必须是稳定引用（`useCallback`）。只要有一个内联
+ * 箭头函数，memo 就等于没加——这是这类优化最常见的失效方式，改 ChatPage 时
+ * 不要随手把 `onReask={(q) => send(q)}` 写回去。 */
+export const MessageBubble = memo(function MessageBubble({
+  message,
+  onCitationClick,
+  onViewOriginal,
+  onRetry,
+  onReask,
+  onFollowup,
+  originalQuestion,
+  highlightRank,
+}: Props) {
   const [expandedRanks, setExpandedRanks] = useState<Set<number>>(new Set());
   const [showAll, setShowAll] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -191,7 +206,7 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
             <span aria-hidden>⚠</span>
             <span>{message.error.message}</span>
             {onRetry && (
-              <button type="button" className="btn-text" onClick={onRetry}>
+              <button type="button" className="btn-text" onClick={() => onRetry(message.id)}>
                 重试
               </button>
             )}
@@ -288,11 +303,6 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
                     fused={Boolean(message.incomplete || message.fuseReason)}
                   />
                 )}
-                {message.aclFiltered != null && message.aclFiltered > 0 && (
-                  <div className="pending-note">
-                    🔒 另有 {message.aclFiltered} 条结果因权限未展示。如需访问请联系管理员申请权限。
-                  </div>
-                )}
                 {message.analysis && <QueryAnalysisPanel analysis={message.analysis} />}
                 <RetrievalTracePanel
                   stats={message.retrieval ?? null}
@@ -301,7 +311,6 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
                   crag={message.crag}
                   refineFrom={message.refineFrom}
                   refineTo={message.refineTo}
-                  aclFiltered={message.aclFiltered}
                 />
                 {message.evidence.length > 0 && (message.retrieval || message.confidence != null || message.crag) && (
                   <details
@@ -361,4 +370,4 @@ export function MessageBubble({ message, onCitationClick, onViewOriginal, onRetr
       </div>
     </div>
   );
-}
+});

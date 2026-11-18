@@ -1,4 +1,4 @@
-"""Kquery 基线压测 v2（异步版，对照 doc/plan/单体内并发能力提升-分析与实施计划.md）。
+"""Kquery 基线压测 v2（异步版；对应未实现项见 doc/design/01-工程基线与质量保障设计.md §十 C-02 / C-03）。
 
 与 v1 的区别：httpx.AsyncClient 真实持有连接（urllib 线程模型测不了"500 条 SSE 长连接"）。
 
@@ -15,7 +15,6 @@
 """
 import argparse
 import asyncio
-import json
 import subprocess
 import sys
 import time
@@ -37,6 +36,7 @@ class Stat:
         self.lat: list[float] = []
         self.status: dict[int, int] = {}
         self.errors = 0
+        self.elapsed_s: float = 0.0
 
     def add(self, status: int, latency_ms: float) -> None:
         self.status[status] = self.status.get(status, 0) + 1
@@ -58,6 +58,7 @@ async def bench(name: str, concurrency: int, duration_s: float, fn) -> Stat:
     started = time.perf_counter()
     await asyncio.gather(*[worker() for _ in range(concurrency)])
     elapsed = time.perf_counter() - started
+    stat.elapsed_s = elapsed
     total = sum(stat.status.values()) + stat.errors
     lat = sorted(stat.lat)
     status_str = ", ".join(f"{s}:{n}" for s, n in sorted(stat.status.items()))
@@ -181,14 +182,24 @@ def docker_stats() -> None:
 
 
 async def amain(args) -> int:
-    async with httpx.AsyncClient(base_url=args.api, timeout=None) as anon:
-        resp = await anon.post("/auth/login", json={"username": "admin", "password": args.password})
-        token = resp.json()["data"]["token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    # 认证已下线（2026-11-12）：不再登录，直接压。
+    headers: dict[str, str] = {}
     limits = httpx.Limits(max_connections=1000, max_keepalive_connections=1000)
     failed = 0
 
     async with httpx.AsyncClient(base_url=args.api, headers=headers, limits=limits) as client:
+        # `C-02`：单场景模式——只跑一次并输出**基线表的一行**。
+        if args.markdown_row:
+            stat = await bench(
+                f"ask ×{args.concurrency}", args.concurrency, args.duration, make_ask(client)
+            )
+            date = args.date or time.strftime("%Y-%m-%d")
+            print(
+                markdown_row(
+                    date, args.tag, args.scenario, args.concurrency, stat, args.note
+                )
+            )
+            return 0
         print(f"\n压测目标: {args.api}（httpx 异步，阶梯/保持场景）\n")
         print("[1] healthz 阶梯")
         for c in (1, 10, 30):
@@ -225,12 +236,60 @@ async def amain(args) -> int:
     return 0
 
 
+def markdown_row(
+    date: str,
+    tag: str,
+    scenario: str,
+    concurrency: int,
+    stat: Stat,
+    note: str = "",
+) -> str:
+    """把一次压测产出成**基线表的一行**（`C-02`）。
+
+    ## 为什么要脚本产出
+
+    手抄数字会抄错，而基线表是用来**比趋势**的——抄错一次就毁掉一整段趋势。
+    脚本产出 → 数字与压测结果同源。
+
+    ## 纪律：追加不覆盖
+
+    每次压测**追加一行**，旧的行不删：单点会被环境噪声支配，趋势才是结论。
+    """
+    lat = sorted(stat.lat)
+    total = sum(stat.status.values()) + stat.errors
+    qps = (total / stat.elapsed_s) if stat.elapsed_s > 0 else 0.0
+    n_429 = stat.status.get(429, 0)
+    # 503 是**背压**（并发闸门满），是设计内行为，不算 5xx 故障——
+    # 与压测自身的判定口径一致（`any(s >= 500 and s != 503)`）。
+    n_5xx = sum(n for s, n in stat.status.items() if s >= 500 and s != 503)
+    return (
+        f"| {date} | {tag} | {scenario} | {concurrency} | {qps:.1f} | "
+        f"{percentile(lat, 50):.0f} | {percentile(lat, 95):.0f} | {n_429} | {n_5xx} | {note} |"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8100")
     parser.add_argument("--password", default="Admin12345")
     parser.add_argument("--duration", type=float, default=8.0)
     parser.add_argument("--connections", type=int, default=100)
+    # `C-02`：基线留档——把结果产出成基线表的一行（追加，不覆盖）
+    parser.add_argument(
+        "--markdown-row", action="store_true",
+        help="只输出 Markdown 行（供追加到 doc/analysis/并发容量基线.md）",
+    )
+    parser.add_argument("--date", default="", help="基线行的日期（默认今天）")
+    parser.add_argument("--tag", default="local", help="镜像 tag / 环境标识")
+    parser.add_argument("--note", default="", help="备注")
+    parser.add_argument(
+        "--scenario", default="ask",
+        help="场景名（基线行的「场景」列）",
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=8,
+        help="单场景模式的并发数（基线行的「并发」列）",
+    )
     args = parser.parse_args()
     return asyncio.run(amain(args))
 

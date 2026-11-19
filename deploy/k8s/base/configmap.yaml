@@ -20,30 +20,3 @@ data:
   UPSTREAM_RERANK_PERMITS: "2"
   UPSTREAM_MILVUS_PERMITS: "8"
   RETRIEVAL_CONFIG_APPLY_DELAY_S: "300"
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: kquery-data
-  labels:
-    app: kquery
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 20Gi
----
-# 真实值**不要**提交进仓库：用 ExternalSecrets / SealedSecrets / kubectl create secret
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kquery-secrets
-  labels:
-    app: kquery
-type: Opaque
-stringData:
-  # 占位值：部署前必须替换（CI 有守卫检查不允许提交真实密钥）
-  dashscope-api-key: "REPLACE_ME"
-  redis-url: "redis://kquery:REPLACE_ME@kquery-redis:6379/0"
-  metrics-token: "REPLACE_ME"

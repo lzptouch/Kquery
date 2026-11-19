@@ -23,8 +23,9 @@ COPY frontend/ ./
 
 # 镜像里不能带任何后端地址：运行时后端主机名由 nginx 从环境变量读，
 # 同一份镜像才能在本地/测试/生产复用（stage-10 §7 配置外置）
-ARG VITE_API_BASE_URL=/api
-ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
+# 前端用相对路径调用后端（/ask、/knowledge…），由 nginx 按根路径前缀分流，
+# 不需要 API base 环境变量。此前的 VITE_API_BASE_URL=/api 是残留：源码零引用，
+# 且 /api 前缀与 nginx 的 location 清单对不上，留着只会误导。
 
 RUN npm run build
 

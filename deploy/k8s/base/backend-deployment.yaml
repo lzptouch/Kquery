@@ -37,7 +37,10 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
-              containerPort: 8100
+              # 镜像实际监听 8000（deploy/docker/backend.Dockerfile 的 EXPOSE/CMD）。
+              # 此前写 8100 是宿主映射端口的误抄——K8s 里没有宿主映射这层，
+              # 写错会让三个探针全部打不通、Pod 永远 NotReady。
+              containerPort: 8000
           env:
             - name: DATA_DIR
               value: /data
@@ -117,7 +120,7 @@ spec:
     component: backend
   ports:
     - name: http
-      port: 8100
+      port: 8000
       targetPort: http
 ---
 # init Job：替代 compose 的 init 容器（建 Milvus 集合 / 首建索引目录）

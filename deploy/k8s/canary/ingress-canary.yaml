@@ -32,7 +32,10 @@ spec:
     - host: kquery.local
       http:
         paths:
-          - path: /api
+          # 与 base/ingress.yaml 一致用根路径：前端调的是 /ask、/knowledge 这类
+          # 相对路径（frontend/src/lib/api-client.ts），nginx 按根路径前缀分流，
+          # 写 /api 前缀会 404——注解式切分本来就是整站按权重切。
+          - path: /
             pathType: Prefix
             backend:
               service:

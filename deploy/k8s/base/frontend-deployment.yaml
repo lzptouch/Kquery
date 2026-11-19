@@ -17,15 +17,17 @@ spec:
         app: kquery
         component: frontend
     spec:
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 10001
+      # 注意：前端镜像（nginx）未按 rootless 构建——运行时要写
+      # /var/cache/nginx 与 /var/run，强跑非 root 会启动即崩。
+      # 与 compose 行为一致先以镜像默认用户跑；镜像改造后再加回 securityContext。
       containers:
         - name: frontend
           image: kquery/frontend:latest
           ports:
             - name: http
-              containerPort: 80
+              # 前端镜像的 nginx listen 8080（deploy/docker/frontend.nginx.conf），
+              # 此前写 80 同样探针全挂。
+              containerPort: 8080
           resources:
             requests:
               cpu: "50m"

@@ -13,7 +13,7 @@
 | `nginx/nginx.conf` | 可选统一入口反代（前后端同源） |
 | `k8s/` | base / overlays / canary，Kustomize 组织 |
 | `milvus/` | 只起 Milvus + etcd 的编排与运行参数 |
-| `prometheus-rules.yaml` | 告警规则 |
+| `prometheus-rules.yaml` | Prometheus 告警规则（`rule_files` 格式，非 K8s 资源） |
 
 ## 镜像构建
 

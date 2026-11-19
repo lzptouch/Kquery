@@ -154,8 +154,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/frontend.Dockerfile
-      args:
-        VITE_API_BASE_URL: /api
+
     image: kquery-frontend:latest
     container_name: kquery-frontend
     ports:

@@ -3,7 +3,10 @@ kind: Kustomization
 namespace: kquery
 resources:
   - ../../base
-  - ../../prometheus-rules.yaml
+  # 告警规则**不在**这里：deploy/prometheus-rules.yaml 是 Prometheus 的
+  # rule_files 格式（groups/rules），不是 Kubernetes 资源——塞进 resources
+  # 会因「missing Resource metadata」渲染失败。要用 prometheus-operator
+  # 请把它转成 PrometheusRule CRD 再纳入清单。
 patches:
   - target:
       kind: Deployment

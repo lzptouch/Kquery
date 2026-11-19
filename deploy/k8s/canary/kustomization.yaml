@@ -11,5 +11,8 @@ resources:
   - backend-canary-deployment.yaml
   - ingress-canary.yaml
 
-commonLabels:
-  app: kquery
+# labels 取代已废弃的 commonLabels（kustomize 5.8 起告警）
+labels:
+  - pairs:
+      app: kquery
+    includeSelectors: true

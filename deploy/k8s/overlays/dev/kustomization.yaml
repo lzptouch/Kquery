@@ -4,6 +4,7 @@ namespace: kquery-dev
 resources:
   - ../../base
 patches:
+  # ---- 规模与资源：本地开发 1 副本就够 ----
   - target:
       kind: Deployment
       name: kquery-backend
@@ -14,3 +15,90 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/resources/requests/memory
         value: 512Mi
+  # ---- 环境接线：模型 provider 与向量库地址 ----
+  # KQUERY_MILVUS_URI 指向**宿主机**的 Milvus（本清单不编排有状态服务）：
+  # Docker Desktop K8s 用 host.docker.internal；kind/k3s 要改成宿主机 IP。
+  - target:
+      kind: Deployment
+      name: kquery-backend
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: KQUERY_MILVUS_URI
+          value: "http://host.docker.internal:19531"
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: "deepseek"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: EMBEDDING_PROVIDER
+          value: "minimax"
+      # minimax 只支持 embo-01（1536 维），不配这两个启动校验直接拒绝
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: EMBEDDING_MODEL
+          value: "embo-01"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: EMBEDDING_DIM
+          value: "1536"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: RERANK_PROVIDER
+          value: "deepseek"
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: DEEPSEEK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: kquery-secrets
+              key: deepseek-api-key
+              optional: true
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: MINIMAX_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: kquery-secrets
+              key: minimax-api-key
+              optional: true
+  # ---- 本地集群没有的设施，剔除 ----
+  # HPA 依赖 metrics-server + prometheus-adapter（External 指标），minReplicas=2
+  # 还会把 dev 的 1 副本拉回去。
+  - target:
+      kind: HorizontalPodAutoscaler
+      name: kquery-backend
+    patch: |
+      apiVersion: autoscaling/v2
+      kind: HorizontalPodAutoscaler
+      metadata:
+        name: kquery-backend
+      $patch: delete
+  # ServiceMonitor 需要 prometheus-operator 的 CRD，本地集群没有。
+  - target:
+      kind: ServiceMonitor
+      name: kquery-backend
+    patch: |
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: kquery-backend
+      $patch: delete
+  # 本地没有 nginx-ingress controller，Ingress 挂着也不生效；
+  # 验证走 kubectl port-forward。生产集群再启用 base 里的 Ingress。
+  - target:
+      kind: Ingress
+      name: kquery
+    patch: |
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: kquery
+      $patch: delete

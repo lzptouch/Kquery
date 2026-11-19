@@ -1,6 +1,7 @@
 # Kquery 的 K8s 部署（批次 5）
 
-> **验证范围**：本目录用 `kind` / `k3s` 做过全栈验证（含探针、HPA、SSE 流式、摘流）。
+> **验证范围**：2026-11-19 在 **Docker Desktop 自带 K8s（v1.36）** 上做过全栈实测——
+> 上传、切块预览、同步问答、SSE 流式、前端反代全部走通。
 > 生产环境（真实 Ingress Controller、cert-manager、托管 Milvus/Redis）**未验证**——
 > 清单里的 Ingress 注解按 nginx-ingress 写，其它 Controller 需要对等改写。
 
@@ -24,6 +25,52 @@ deploy/k8s/
 
 ## 本地验证
 
+### Docker Desktop 自带 K8s（2026-11-19 实测走通）
+
+```bash
+# 1) 镜像先在本地构建好；集群里直接用本地镜像（Docker Desktop 共享镜像库）
+cd deploy/docker && docker compose build backend frontend && cd -
+docker tag kquery-backend:latest kquery/backend:latest      # 清单里的镜像名
+docker tag kquery-frontend:latest kquery/frontend:latest
+
+# 2) 命名空间（kustomize 的 namespace: 字段只打标签，不建对象）
+kubectl create namespace kquery-dev
+
+# 3) 密钥：**必须在 apply 之后**创建，且用 replace 而不是 apply
+#    （清单里的 Secret 已移出 resources，见 base/secret.example.yaml）
+kubectl -n kquery-dev create secret generic kquery-secrets \
+  --from-literal=deepseek-api-key="$DEEPSEEK_API_KEY" \
+  --from-literal=minimax-api-key="$MINIMAX_API_KEY" \
+  --from-literal=metrics-token="$(openssl rand -hex 16)" \
+  --dry-run=client -o yaml | kubectl replace -f -
+
+# 4) 部署
+kubectl apply -k deploy/k8s/overlays/dev
+kubectl -n kquery-dev get pods -w
+
+# 5) 本地没有 nginx-ingress，用端口转发验证（dev overlay 已剔除 Ingress）
+kubectl -n kquery-dev port-forward svc/kquery-backend 18100:8000 &
+kubectl -n kquery-dev port-forward svc/kquery-frontend 18090:80 &
+curl -s http://localhost:18100/readyz
+curl -s -X POST http://localhost:18100/knowledge/upload -F "file=@doc.md"
+curl -s -X POST http://localhost:18090/ask -H 'Content-Type: application/json' \
+  -d '{"question":"测试问题"}'
+```
+
+**dev overlay 已经替你处理掉的**：1 副本、HPA/ServiceMonitor/Ingress 剔除（本地没有
+metrics-server / prometheus-operator / ingress controller）、向量库地址指向宿主机
+`host.docker.internal:19531`、embedding 模型与维度（minimax 只支持 embo-01 / 1536 维）。
+
+**端口别记错**（写错就是探针全挂、Pod 永远 NotReady）：
+
+| 位置 | 端口 | 说明 |
+| --- | --- | --- |
+| 后端容器 | 8000 | 镜像 `EXPOSE 8000`，uvicorn `--port 8000` |
+| 前端容器 | 8080 | 前端 nginx 的 `listen 8080` |
+| 宿主（compose） | 8100 / 8090 | 8100 是**宿主映射**端口，K8s 里没有这层 |
+
+### kind / k3s
+
 ```bash
 # 1) 建集群
 kind create cluster --name kquery
@@ -35,13 +82,17 @@ kubectl kustomize deploy/k8s/overlays/dev
 kubectl apply -k deploy/k8s/overlays/dev
 
 # 4) 看探针与摘流
-kubectl -n kquery get pods -w
-kubectl -n kquery describe pod -l app=kquery,component=backend | grep -A3 Readiness
+kubectl -n kquery-dev get pods -w
+kubectl -n kquery-dev describe pod -l app=kquery,component=backend | grep -A3 Readiness
 
 # 5) 验证 SSE 没被缓冲（应当**逐条**出现，而不是最后一次性出现）
+#    注意：前端调的是相对路径 /ask、/ask/stream，**不是** /api/ask
 curl -N -H 'Content-Type: application/json' \
-  -d '{"question":"测试问题"}' http://kquery.local/api/ask/stream
+  -d '{"question":"测试问题"}' http://<前端地址>/ask/stream
 ```
+
+kind 里连宿主机 Milvus 要把 `host.docker.internal` 换成宿主机 IP（kind 的节点在
+容器里，`host.docker.internal` 不解析）；或者干脆把 Milvus 也进集群。
 
 ## 关键决策（每条都有代价，别随手改）
 

@@ -10,7 +10,14 @@ resources:
   - hpa.yaml
   - configmap.yaml
   - pvc.yaml
-  - secret.example.yaml
+  - backend-alias-service.yaml
+# secret.example.yaml **不进 resources**：清单里的 Secret 会在每次 apply 时
+# 把占位值覆盖回真实密钥。密钥怎么创建见该文件头部。
 
-commonLabels:
-  app: kquery
+# labels 取代已废弃的 commonLabels（kustomize 5.8 起会告警）。
+# includeSelectors=true 保持原行为：标签同时进 selector，
+# 否则 Deployment 的 selector 与 template.labels 不一致会被 API 拒绝。
+labels:
+  - pairs:
+      app: kquery
+    includeSelectors: true

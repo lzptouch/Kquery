@@ -79,17 +79,17 @@ spec:
       component: backend
   policyTypes: ["Ingress"]
   ingress:
-    # 只允许前端与 Prometheus 访问后端
+    # 只允许前端与 Prometheus 访问后端（端口与容器实际监听一致）
     - from:
         - podSelector:
             matchLabels:
               app: kquery
               component: frontend
       ports:
-        - port: 8100
+        - port: 8000
     - from:
         - namespaceSelector:
             matchLabels:
               name: monitoring
       ports:
-        - port: 8100
+        - port: 8000

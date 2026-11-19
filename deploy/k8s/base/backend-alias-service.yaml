@@ -1,0 +1,19 @@
+# 后端别名 Service：前端镜像里的 nginx upstream 写死 `backend:8000`
+# （deploy/docker/frontend.nginx.conf，与 compose 服务名同源）。
+# K8s 里正式 Service 叫 `kquery-backend`，不改镜像的前提下用这个别名兜底——
+# 同集群内 `backend` 与 `kquery-backend` 解析到同一组 Pod。
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  labels:
+    app: kquery
+    component: backend
+spec:
+  selector:
+    app: kquery
+    component: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

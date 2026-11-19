@@ -83,7 +83,9 @@ class TestFrontendDeployment:
     def test_exists(self):
         docs = _load(K8S_DIR / "frontend-deployment.yaml")
         dep = _find(docs, "Deployment", "kquery-frontend")
-        assert dep["spec"]["template"]["spec"]["containers"][0]["ports"][0]["containerPort"] == 80
+        # 必须与镜像里 nginx 的 listen 端口一致（deploy/docker/frontend.nginx.conf），
+        # 否则探针全挂——这个断言就是防端口再被抄错。
+        assert dep["spec"]["template"]["spec"]["containers"][0]["ports"][0]["containerPort"] == 8080
 
 
 class TestScalingAndSafety:
@@ -107,10 +109,21 @@ class TestScalingAndSafety:
 
     def test_secret_has_no_real_credentials(self):
         """仓库里不允许出现真实密钥：只允许占位符。"""
-        docs = _load(K8S_DIR / "configmap.yaml")
+        docs = _load(K8S_DIR / "secret.example.yaml")
         secret = _find(docs, "Secret", "kquery-secrets")
         for key, value in (secret.get("stringData") or {}).items():
             assert "REPLACE_ME" in str(value), f"{key} 疑似真实凭据入库"
+
+    def test_secret_template_is_not_applied(self):
+        """密钥模板**不能**进 kustomization 的 resources。
+
+        清单里的 Secret 会在每次 `kubectl apply -k` 时把占位值写回，
+        覆盖掉运维注入的真实密钥——这类事故只在真部署时才暴露。
+        """
+        kustomization = (K8S_DIR / "kustomization.yaml").read_text(encoding="utf-8")
+        resources_block = kustomization.split("resources:", 1)[1].split("#", 1)[0]
+        assert "secret.example.yaml" not in resources_block
+        assert "kind: Secret" not in (K8S_DIR / "configmap.yaml").read_text(encoding="utf-8")
 
 
 class TestAlertRules:

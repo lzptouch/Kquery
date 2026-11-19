@@ -115,7 +115,7 @@ def test_thinking_exhausts_small_budget_visibly():
 def test_bad_key_is_translated_to_domain_error():
     """坏 key → 领域错误（不可重试、不可降级）。
 
-    **实测补充**（2026-11-14）：鉴权失败走的是 **HTTP 401**，不是
+    **实测补充**：鉴权失败走的是 **HTTP 401**，不是
     HTTP 200 + `base_resp=1004`——`base_resp` 那条路是给限流 / 余额等
     「请求合法但业务拒绝」的错误用的。两条路都必须归一成同一个领域错误，
     否则上层熔断会按「供应商方言」分裂。

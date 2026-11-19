@@ -2,7 +2,7 @@
 
 ## 为什么不是"角色越权"
 
-认证与授权已于 2026-11-12 整体下线，`Principal` 退化为固定值
+认证与授权已整体下线，`Principal` 退化为固定值
 （`tenant_id="default"` / `user_id="local"`，见 `app/core/identity.py`）。
 因此**没有第二个角色可以伪造**，"越权矩阵"只剩两条真实可攻击的路径：
 

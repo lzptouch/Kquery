@@ -74,7 +74,7 @@ def _post(url: str, payload: dict, token: str = "", timeout: float = 120.0) -> d
 
 
 def login(base_url: str, user: str, password: str) -> str:
-    """认证已下线（2026-11-12）：不再登录，令牌恒为空。
+    """认证已下线：不再登录，令牌恒为空。
 
     保留函数签名是为了不改调用面；将来恢复鉴权时把这里的登录逻辑加回来即可。
     """

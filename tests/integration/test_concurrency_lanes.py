@@ -224,7 +224,7 @@ class TestIngestBackpressure:
         manager._run_task = lambda task_id: block.wait(timeout=60)  # type: ignore[method-assign]
         try:
             accepted = rejected = 0
-            # 2026-11-12（`A-21.1`）：入库队列实现统一到 `core/tasks.BackgroundQueue`，
+            # `A-21.1`：入库队列实现统一到 `core/tasks.BackgroundQueue`，
             # 容量与 worker 数从 `stats()` 读（原先读内联队列的私有属性）。
             stats = manager._bg.stats()
             workers, capacity = stats["workers"], stats["capacity"]

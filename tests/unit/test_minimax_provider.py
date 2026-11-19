@@ -8,7 +8,7 @@
    千问模型名。只改 `MODEL_PROVIDER` 不改模型名，首次请求就会 404——
    解析期按 `PROVIDER_MODEL_DEFAULTS` 替换，并在 `provider_notes` 里说出来。
 
-**与 DeepSeek 的第三点差异（2026-11-14 实测修正）**：MiniMax **有** embeddings
+**与 DeepSeek 的第三点差异（实测修正）**：MiniMax **有** embeddings
 （`embo-01`，`POST /v1/embeddings`，1536 维，请求体是 `texts`/`type` 而非 OpenAI 的 `input`），
 所以向量通道在 `auto` 下**跟着 MiniMax 走**；rerank / OCR 仍没有，回落 dashscope。
 """
@@ -113,7 +113,7 @@ def test_auto_prefers_deepseek_then_minimax_then_dashscope():
 def test_embedding_follows_minimax_because_embo01_exists():
     """向量**跟着 MiniMax 走**：它有 `embo-01`（实测 `POST /v1/embeddings` 可用）。
 
-    这条曾经断言「回落 dashscope」，2026-11-14 实测推翻：MiniMax 是有向量接口的，
+    这条曾经断言「回落 dashscope」，实测推翻：MiniMax 是有向量接口的，
     只是形状不是 OpenAI 的（`texts`/`type`，1536 维），见 `MiniMaxEmbeddings`。
     回落逻辑一旦写错，会把请求发到一个**存在的**端点却用错请求体 → 400 而非 404，
     更难定位。

@@ -351,7 +351,7 @@ class VectorStore:
 
 
 def build_vector_store(settings, alias=None, suffix: str = ""):
-    """向量库工厂（依赖注入：faiss 本地文件 / milvus 服务或 lite 文件，可替换）。
+    """向量库工厂（依赖注入：faiss 本地文件 / milvus 服务，可替换）。
 
     `suffix`：给**独立**的向量库起名（如图像向量路用 "_image"）。
     图像向量与文本向量维度不同、空间不同，**混在同一个集合里会污染文本检索**
@@ -380,6 +380,7 @@ def build_vector_store(settings, alias=None, suffix: str = ""):
             m=settings.vector_index_m,
             ef_construction=settings.vector_index_ef_construction,
             ef_search=settings.vector_index_ef_search,
+            consistency_level=settings.milvus_consistency_level,
         )
     index_dir = (
         settings.data_dir / alias.physical_name() if alias is not None else settings.index_dir

@@ -1,43 +1,71 @@
-# Python
+# ============================================================
+# Kquery .gitignore
+# ============================================================
+
+# ---------- 凭据与本地环境 ----------
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# ---------- 私有文档（不随开源仓库发布，仅保留在本地工作区） ----------
+# 现状分析（doc/analysis/）与目标态设计（doc/plan/）属于内部工程记录，
+# 不进入公开仓库；对外开放的文档在 wiki/ 与 doc/runbook/。
+/doc/analysis/
+/doc/plan/
+
+# ---------- 运行时数据 ----------
+# 仓库根的 data/ 是本地运行产物（向量索引 / 上传文档 / 元数据 / 会话）。
+# 用 `/data/` 而非 `data/`：后者会误伤 tests/data/（版本化的评测资产）。
+/data/
+backend/data/
+
+# Milvus / etcd 的本地卷与 nginx 运行日志（此前曾误入库，含 148MB etcd WAL）
+deploy/milvus/volumes/
+deploy/nginx/logs/
+
+# ---------- Python ----------
 __pycache__/
 *.py[cod]
 .venv/
+venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 *.egg-info/
-
-# 测试与覆盖率产物（根 .coverage 曾被漏挡，一度出现在 git status 里）
 .coverage
 .coverage.*
 htmlcov/
 coverage.xml
 
-# 运行时数据（向量索引 / 上传文档 / 元数据 / 会话）——**仓库根的** data/ 全部忽略。
-# 注意用 `/data/` 而不是 `data/`：后者会匹配任意层级的 data 目录，
-# 连 tests/data/eval/（版本化的金标集）一起被忽略掉。
-/data/
-# 评测产物（每次运行都会变；基线 baseline.json 与快照 runs.local.jsonl 要入库）
+# ---------- 前端 ----------
+node_modules/
+frontend/dist/
+*.tsbuildinfo
+frontend/node_modules/
+# 测试依赖链接：由 frontend 的 postinstall 生成，不入库（避免悬空符号链接）
+/tests/node_modules
+
+# ---------- 评测与测试产物（每次运行都变；基线 baseline.json 与快照要入库） ----------
 tests/data/eval/report.json
 tests/data/eval/report.local.json
 tests/data/eval/chunk_experiment.json
 tests/data/eval/report_img.json
-tests/data/eval/runs_img.jsonl
 tests/data/eval/report_adv.json
+tests/data/eval/runs_img.jsonl
 tests/data/eval/runs_adv.jsonl
 tests/data/eval/agent_report.json
 tests/data/eval/reindex_report.json
-backend/.env
+tests/data/eval/cost_quality.json
+tests/data/eval/judge_report*.json
+tests/data/eval/partition_ab.json
+tests/data/eval/runs.local.jsonl
 
-# 前端
-node_modules/
-frontend/dist/
-*.tsbuildinfo
-
-# IDE / OS
+# ---------- 工具缓存 / IDE / OS ----------
+.playwright-cli/
 .idea/
 .vscode/
 .DS_Store
 *.log
-*/volume
-*/volumes/

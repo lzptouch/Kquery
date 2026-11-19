@@ -70,7 +70,7 @@ def test_ask_returns_answer_with_evidence(client):
 def test_ask_without_knowledge_falls_back(client):
     """检索返回 0 条 → 通用知识兜底（verdict=answered + answer_source=parametric）。
 
-    行为变更（doc/analysis/通用知识兜底回答.md）：原语义为显式拒答，
+    行为变更：原语义为显式拒答，
     现改为由模型自身知识回答并标注来源；拒答红线场景见 test_parametric_fallback。
     """
     resp = client.post("/ask", json={"question": "任意问题"})

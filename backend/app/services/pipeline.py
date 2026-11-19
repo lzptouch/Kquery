@@ -41,7 +41,7 @@ from app.domain.constants import (  # noqa: E402,F401
     UPSTREAM_UNAVAILABLE_TEXT,
 )
 
-# 提示词与证据装配已抽到 `services/generation/`（`B0 X-27` 第一步，2026-11-13）。
+# 提示词与证据装配已抽到 `services/generation/`（`B0 X-27` 第一步）。
 # 这里**再导出一次**：`api` / `agent` / `context.partition` / 单测都在
 # `from app.services.pipeline import build_evidence_block / GENERAL_KNOWLEDGE_PROMPT ...`，
 # 搬走定义但保留导入路径，调用方零改动。
@@ -69,7 +69,7 @@ from app.services.generation.prompt import (  # noqa: E402,F401
     build_prompt as _build_prompt,
 )
 
-# 阶段间共享类型与纯判定（`B0 X-27` 第二步，2026-11-13）：
+# 阶段间共享类型与纯判定（`B0 X-27` 第二步）：
 # 同样**再导出**，`api` / 单测里的 `from app.services.pipeline import PipelineCancelled`
 # 与 `RagPipeline._to_self_check_record` 一类调用面保持零改动。
 from app.services.generation.types import (  # noqa: E402,F401

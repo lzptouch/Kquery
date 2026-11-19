@@ -150,7 +150,7 @@ class TestRouteInventory:
         )
 
     def test_removed_auth_surface_stays_removed(self, client):
-        """认证/授权下线（2026-11-12）后不得复活半残端点。
+        """认证/授权下线后不得复活半残端点。
 
         复活 `/auth/*` 或 `/admin/users` 而不恢复配套的授权语义，会得到一个
         "能登录但没有任何权限模型"的表面能力——比没有更危险。

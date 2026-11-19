@@ -24,7 +24,7 @@ backend/
 ## 技术栈
 
 - FastAPI + uvicorn，依赖用 uv 管理（`backend/.venv`、`backend/uv.lock`）
-- 向量库：Milvus（standalone / Lite 两种形态），可选 FAISS 本地索引
+- 向量库：Milvus 服务（`deploy/docker` 的 standalone 或自建集群），可选 FAISS 本地索引
 - 模型全部走云端 HTTP 接口，**无本地模型**：
   - 生成：DeepSeek（`/chat/completions`）或千问平台
   - 向量化：MiniMax `embo-01`（1536 维）或千问 `text-embedding-*`
@@ -41,7 +41,7 @@ uv sync --extra dev
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-生产容器由 `docker-compose.yml` 起在 **8100**（避开同机其它项目的 8000）。
+生产容器由 `deploy/docker/docker-compose.yml` 起在 **8100**（避开同机其它项目的 8000）。
 
 ## 测试
 
@@ -55,7 +55,7 @@ uv run --project backend pytest tests/unit -q
 
 ## 端点
 
-完整清单见 `GET /openapi.json` 与 `doc/analysis/03-接口与契约.md`。常用的：
+完整清单见 `GET /openapi.json` 与 [`wiki/03-接口参考.md`](../wiki/03-接口参考.md)。常用的：
 
 | 端点 | 说明 |
 | --- | --- |

@@ -11,7 +11,7 @@
 
 ## 基线怎么来的
 
-基线是**实测值**（2026-11-13：`from app.` 模块级 430 处，函数内 46 处）。
+基线是**实测值**（`from app.` 模块级 430 处，函数内 46 处）。
 守卫卡的是「不再变多」，不是「必须等于某个历史数字」——
 后者会让守卫在每次重构后都需要人工改数字，久而久之就失去意义。
 """
@@ -25,7 +25,7 @@ BACKEND_APP = Path(__file__).resolve().parents[2] / "backend" / "app"
 
 # 模块级 `from app.` 的上限基线（只减不增）。
 #
-# 2026-11-13：430 → 432 → 434 → 436。增加的处数都在**新模块**或**新错误码**上：
+# 430 → 432 → 434 → 436。增加的处数都在**新模块**或**新错误码**上：
 # - `services/openai_compat.py` / `services/injection_guard.py` / `services/llm_router.py`
 #   的 `from app.core.logging_setup import get_logger`——**core 是真正的底层依赖**，
 #   不下沉（下沉到函数里反而每次打日志都要重新 import）；
@@ -63,13 +63,13 @@ BACKEND_APP = Path(__file__).resolve().parents[2] / "backend" / "app"
 #   ——**core 内部**的同层导入（策略预设的非法输入要用领域异常）。
 #
 # 除此之外不允许增长：新增顶层导入前先问「它是不是可选依赖 / 条件装配 / 破环？」
-# 2026-11-13：447 → 449（`C-09` 图谱构建后台化）
+# 447 → 449（`C-09` 图谱构建后台化）
 # - `api/graph.py` 的 `from app.services.graph.build_tasks import GraphBuildTask`
 # - `main.py` 的 `from app.services.graph.build_tasks import GraphBuildTaskRegistry`
 #   两处都是 **api / 装配层依赖服务层**（正确方向），且 `build_tasks` 只依赖
 #   `concurrent.futures` 与标准库，不会引入环；下沉到函数内反而让每次构建都
 #   重新 import 一次。
-# 2026-11-13：449 → 484（`A-12` 装配层拆分）
+# 449 → 484（`A-12` 装配层拆分）
 # - `main.py`（1282 行）按装配域拆成 `bootstrap.py` + `assembly/{context,runtime,
 #   models,storage,knowledge,pipeline,agent,hooks,lifespan}.py` + `api/probes.py`
 #   + `core/probes.py`。**代码是移动而非新增**，但每拆出一个模块就多一份
@@ -79,7 +79,7 @@ BACKEND_APP = Path(__file__).resolve().parents[2] / "backend" / "app"
 #   （装配层依赖服务层与 core，正确方向），没有新增环。
 # - 只下沉「可选依赖」：`LLMRouter`（仅开降级时装配）、`CanaryController`
 #   （灰度控制器）、`DashScopeImageEmbedder`（仅启用图像向量）仍在函数内按需载入。
-# 2026-11-13：484 → 492（`B0 X-27` 第一步：提示词与证据装配抽成
+# 484 → 492（`B0 X-27` 第一步：提示词与证据装配抽成
 # `services/generation/{prompt,evidence}.py`）
 # - `services/generation/prompt.py` 的 `from app.domain.constants import NO_INFO_ANSWER`
 #   —— 领域常量是底层依赖，不下沉；
@@ -91,7 +91,7 @@ BACKEND_APP = Path(__file__).resolve().parents[2] / "backend" / "app"
 #   —— 调用方依赖被抽出的实现（**向下依赖**），且这些名字要**再导出**给
 #   `api` / `agent` / `context.partition` / 单测（搬走定义但不改导入路径）。
 # - `services/generation/__init__.py` **刻意不再导出**（否则白增 2 处）。
-# 2026-11-13：492 → 494（SSE 断点续传 + 反馈工单归属）
+# 492 → 494（SSE 断点续传 + 反馈工单归属）
 # - `api/ask.py` / `assembly/runtime.py` 的 `from app.services.sse_replay import ...`
 #   —— api/装配层依赖服务层（正确方向），且 `sse_replay` 只依赖标准库；
 # - `services/validation/feedback.py` 的 `from app.core.identity import ...`

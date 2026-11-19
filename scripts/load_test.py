@@ -1,4 +1,4 @@
-"""Kquery 基线压测 v2（异步版；对应未实现项见 doc/design/01-工程基线与质量保障设计.md §十 C-02 / C-03）。
+"""Kquery 基线压测 v2（异步版；对应设计项 C-02 / C-03，基线留档见 doc/analysis/并发容量基线.md）。
 
 与 v1 的区别：httpx.AsyncClient 真实持有连接（urllib 线程模型测不了"500 条 SSE 长连接"）。
 
@@ -182,7 +182,7 @@ def docker_stats() -> None:
 
 
 async def amain(args) -> int:
-    # 认证已下线（2026-11-12）：不再登录，直接压。
+    # 认证已下线：不再登录，直接压。
     headers: dict[str, str] = {}
     limits = httpx.Limits(max_connections=1000, max_keepalive_connections=1000)
     failed = 0

@@ -43,7 +43,7 @@ class TestResolvePolicy:
             resolve_policy("no-such-policy")
 
     def test_broken_json_raises(self):
-        # 2026-11-12（`A-07`）：策略 JSON 解析失败 → `ConfigError`（配置非法，500），
+        # `A-07`：策略 JSON 解析失败 → `ConfigError`（配置非法，500），
         # 不再是裸 `ValueError`（没有错误码，调用方无法区分「配置坏了」与「参数错了」）。
         with pytest.raises(ConfigError):
             resolve_policy("{not json")

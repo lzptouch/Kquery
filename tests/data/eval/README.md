@@ -15,7 +15,7 @@ CRAG 阈值无法标定 → ReAct 不敢默认开**。所有检索侧的优化�
 
 指标算错比指标缺失更危险（错的数字会被用来做参数决策），所以指标实现放在
 `backend/app/services/evaluation/`，纯函数、零依赖，每个都有可手工验算的单测
-（`backend/tests/unit/test_eval_metrics.py`）。
+（`tests/unit/test_eval_metrics.py`）。
 
 ## 2. 文件清单
 

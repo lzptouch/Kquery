@@ -26,7 +26,7 @@ export default defineConfig({
   server: {
     port: Number(process.env.KQUERY_DEV_PORT) || 5173,
     host: process.env.KQUERY_DEV_HOST || "127.0.0.1",
-    // 这份列表必须与 frontend/nginx.conf 的 location 保持一致。
+    // 这份列表必须与 deploy/docker/frontend.nginx.conf 的 location 保持一致。
     // 曾漏了 /readyz 与 /livez：nginx（生产）代理了它们，vite（开发）没有，
     // 于是开发环境下探针请求回落到 SPA 的 index.html —— 返回 200 + HTML，
     // 看起来"通了"，实际拿不到任何探针数据（dev/prod 行为不一致很难察觉）。
@@ -45,7 +45,7 @@ export default defineConfig({
       "/healthz": apiProxy,
       "/livez": apiProxy,
       "/readyz": apiProxy,
-      // F4 快问：必须与 frontend/nginx.conf 的前缀正则保持一致，
+      // F4 快问：必须与 deploy/docker/frontend.nginx.conf 的前缀正则保持一致，
       // 否则 dev 能用、prod 404（曾漏过 /readyz，坑写在上面的注释里）。
       "/quickask": apiProxy,
     },

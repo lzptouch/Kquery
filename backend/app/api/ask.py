@@ -555,7 +555,7 @@ async def ask_stream(
     """流式问答（SSE）：事件序列见 `doc/analysis/03-接口与契约.md` 的 SSE 字典。
 
     token 在**终稿**确定后按 12 字切片重放（保证引用与终稿一致），
-    因此它不是「首 token 延迟」意义上的真流式（见 `doc/plan/01` §十 `C-13`）。"""
+    因此它不是「首 token 延迟」意义上的真流式（真流式口径见 `doc/analysis/04-问答链路.md`）。"""
     trace_id = get_trace_id()
     set_trace_id(trace_id)
     _validate_question(req)

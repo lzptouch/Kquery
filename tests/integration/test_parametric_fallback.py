@@ -1,4 +1,4 @@
-"""通用知识兜底（doc/analysis/通用知识兜底回答.md §7.1）。
+"""通用知识兜底。
 
 知识库未收录问题时，由模型自身知识回答并标注来源，替代空拒答。
 红线场景（敏感词/权限/deadline）不兜底，保持拒答。
@@ -7,18 +7,17 @@ MockLLM 对 GENERAL_KNOWLEDGE_PROMPT 返回确定性兜底应答（llm.py），
 parametric 路径无需千问凭据即可全链路验证。
 """
 import os
-import sys
 import tempfile
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.conftest import upload_sample
+from tests.conftest import configure_vector_backend, upload_sample
 
 _ENV_KEYS = (
     "DATA_DIR", "MODEL_PROVIDER", "RETRIEVAL_CONFIG_APPLY_DELAY_S",
-    "VECTOR_STORE", "KQUERY_MILVUS_URI", "CRAG_CORRECT_TH", "CRAG_INCORRECT_TH",
-    "PARAMETRIC_FALLBACK_ENABLED",
+    "VECTOR_STORE", "KQUERY_MILVUS_URI", "MILVUS_COLLECTION", "MILVUS_CONSISTENCY_LEVEL",
+    "CRAG_CORRECT_TH", "CRAG_INCORRECT_TH", "PARAMETRIC_FALLBACK_ENABLED",
 )
 
 
@@ -35,11 +34,8 @@ def _make_client(tmp: str, fallback_enabled: str = "true") -> TestClient:
     os.environ["MODEL_PROVIDER"] = "mock"
     os.environ["RETRIEVAL_CONFIG_APPLY_DELAY_S"] = "0"
     os.environ["PARAMETRIC_FALLBACK_ENABLED"] = fallback_enabled
-    os.environ["VECTOR_STORE"] = os.environ.get("VECTOR_STORE") or (
-        "faiss" if sys.platform == "win32" else "milvus"
-    )
-    if os.environ["VECTOR_STORE"] == "milvus":
-        os.environ["KQUERY_MILVUS_URI"] = f"{tmp}/milvus_lite.db"
+    # 真实 Milvus 服务 + 清空测试集合（用例要求「空知识库」）
+    configure_vector_backend()
     os.environ["CRAG_CORRECT_TH"] = "0.3"
     os.environ["CRAG_INCORRECT_TH"] = "0.1"
     from app.core.config import get_settings

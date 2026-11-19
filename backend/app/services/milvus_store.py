@@ -1,10 +1,13 @@
 """Milvus 向量库实现（与 FAISS VectorStore 同一接口，可替换）。
 
-- 生产：Milvus Standalone（deploy/milvus，http://localhost:19530）；
-- 测试：Milvus Lite（pymilvus 内嵌，本地文件 URI），同一套 MilvusClient API；
+- 统一走 **Milvus 服务**（`deploy/docker` 里的 standalone，或自建集群），
+  不再使用 pymilvus 内嵌的 Milvus Lite 单文件形态——生产与测试连同一个服务，
+  避免「本地 lite 通过、上线换服务端行为不一致」这类只在部署后才暴露的差异；
 - 块元数据（content/source/tenant_id 等）作为标量字段与向量同库存储，
   租户与文档过滤由 Milvus 标量过滤表达式一次完成；
-- COSINE 度量 + 入库前归一化（沿用 约定）。
+- COSINE 度量 + 入库前归一化；
+- 一致性级别可配（`MILVUS_CONSISTENCY_LEVEL`）：生产默认 Bounded 换取延迟，
+  测试用 Strong 保证「写完立刻可查」。
 """
 import threading
 
@@ -69,10 +72,12 @@ class MilvusVectorStore:
         m: int = 32,
         ef_construction: int = 200,
         ef_search: int = 64,
+        consistency_level: str = "Bounded",
     ) -> None:
         self._uri = uri
         self._dim = dim
         self._collection = collection
+        self._consistency_level = consistency_level
         self._lock = threading.Lock()
         self._client = MilvusClient(uri=uri)
         # `A-26`：索引类型可配置。`flat` 保留给「小库对拍 / 排查召回差异」的场景
@@ -109,11 +114,14 @@ class MilvusVectorStore:
         else:
             index.add_index(field_name="vector", index_type="FLAT", metric_type="COSINE")
         self._client.create_collection(
-            collection_name=self._collection, schema=schema, index_params=index
+            collection_name=self._collection,
+            schema=schema,
+            index_params=index,
+            consistency_level=self._consistency_level,
         )
         logger.info(
-            "Milvus 集合已创建: %s（%d 维，索引 %s）",
-            self._collection, self._dim, self._index_type,
+            "Milvus 集合已创建: %s（%d 维，索引 %s，一致性 %s）",
+            self._collection, self._dim, self._index_type, self._consistency_level,
         )
 
     def load(self) -> None:
@@ -209,7 +217,7 @@ class MilvusVectorStore:
                 limit=top_k,
                 output_fields=_OUTPUT_FIELDS,
                 # HNSW 的查询宽度：不传就用服务端默认值，「召回略降」于是变成
-                # 一个看不见的默认差异（lite 与服务端的默认值并不保证一致）
+                # 一个看不见的默认差异（不同版本的服务端默认值并不保证一致）
                 search_params={"ef": max(self._ef_search, int(top_k))},
             )
         hits: list[tuple[Chunk, float]] = []

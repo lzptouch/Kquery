@@ -93,21 +93,8 @@ def _endpoints(app) -> list[tuple[str, str]]:
 def test_endpoint_count_matches_readme(client):
     """端点总数与 README 关键数字表一致（防新增端点忘记回填文档）。"""
     endpoints = _endpoints(client.app)
-    # 历史口径：87 → 认证与授权下线（2026-11-12）移除 18 个端点：
-    #   /auth/login、/auth/register、/auth/me（3）
-    #   /admin/users（GET/PUT）、/admin/users/{id}/password（3）
-    #   /admin/documents/acl（GET）、/admin/documents/{id}/acl（PUT）（2）
-    #   /admin/users/permission-matrix（GET）（1）
-    #   /admin/kb（GET/POST）、/admin/kb/{id}（PUT/DELETE）（4）
-    #   /admin/kb/{id}/grants（GET/PUT）、/admin/kb/{id}/documents（GET/PUT）（4）
-    #   /admin/users/{id}/kbs（GET）（1）
-    #   → 88 - 18 = 70。/admin/tools 由 api/security.py 迁到 api/admin.py，路径与方法不变。
-    #   （2026-11-13：+1 = GET /admin/metrics/context，`ST-01` 阶段 A 的上下文构成统计）
-    #   （2026-11-13：+1 = GET /graph/build/{task_id}，`C-09` 图谱构建后台化的状态查询；
-    #     POST /graph/build 路径与方法未变，只把「同步返回结果」改成「受理返回 task_id」）
-    #   （2026-11-13：+1 = GET /ask/stream/{trace_id}，SSE 断点续传（`Last-Event-ID`））
-    #   （2026-11-14：-3 = /speech/status、/speech/sts-token、/speech/transcribe
-    #     —— 语音能力整体下线，api/speech.py 删除）→ 69
+    # 端点总数 = 69（10 个 router：业务 9 个共 64 + 探针 5；
+    # 注册清单见 backend/app/bootstrap.py 的 register_routes）。
     assert len(endpoints) == 69, f"端点数变为 {len(endpoints)}，README §1.2 需同步更新"
 
 
@@ -164,7 +151,7 @@ def test_all_endpoints_follow_response_contract(client):
 
 
 def test_kb_endpoints_are_removed(client):
-    """知识库端点必须**已下线**（认证与授权下线，2026-11-12）。
+    """知识库端点必须**已下线**（认证与授权已下线）。
 
     保留这条断言是为了防止"删了代码但路由还挂着"——那会留下没有授权语义的
     半残端点（例如仍能建库、却不知道谁能看到）。

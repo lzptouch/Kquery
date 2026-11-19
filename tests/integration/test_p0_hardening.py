@@ -1,4 +1,4 @@
-"""P0 加固回归（对照 doc/analysis/知识库对照优化分析.md 的 KQ-01~KQ-08 / KQ-24）。
+"""P0 加固回归（历史缺陷编号 KQ-01~KQ-08 / KQ-24）。
 
 覆盖：
 - KQ-01 入库文件名路径穿越 + 同批重名；
@@ -12,7 +12,7 @@ import time
 
 from tests.conftest import SAMPLE_MD
 
-#: 认证已下线（2026-11-12）后，请求头**不能**切换租户/用户/角色。
+#: 认证已下线后，请求头**不能**切换租户/用户/角色。
 #: 这两组头用于固化"头无效"这一新不变量（原先它们是切换租户的手段）。
 CLAIM_TENANT_A = {"X-User-Id": "adminA", "X-Tenant-Id": "tA", "X-Roles": "admin"}
 CLAIM_TENANT_B = {"X-User-Id": "adminB", "X-Tenant-Id": "tB", "X-Roles": "admin"}

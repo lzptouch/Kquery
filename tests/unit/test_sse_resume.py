@@ -32,7 +32,7 @@ def _run_async(coro):
     running loop，两者分别抛
     `asyncio.run() cannot be called from a running event loop` 与
     `Cannot run the event loop while another loop is running`
-    —— 表现为单独跑本文件全绿、和 `tests/e2e_ui` 同跑就 4 条全红。
+    —— 表现为单独跑本文件全绿、和 `tests/e2e/ui` 同跑就 4 条全红。
     协程与主线程无共享 loop 状态，丢到子线程跑最省事。
     """
     outcome: dict[str, object] = {}

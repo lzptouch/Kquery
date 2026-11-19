@@ -217,7 +217,7 @@ def test_pdf18_page_bitmap_asset(write_pdf, ocr_engine, assets_dir) -> None:
 def test_pdf06_encrypted_pdf(write_pdf, ocr_engine) -> None:
     """PDF-06：加密 PDF → 3202 且文案含「已加密」，**不产出空索引**。
 
-    2026-11-12：码从 3003 改为 **3202（`PARSE_ENCRYPTED`）**——
+    码从 3003 改为 **3202（`PARSE_ENCRYPTED`）**——
     加密与「文件损坏」是两种不同的失败：加密件人工解密后重传即可，
     损坏件只能重传。调用方按码差异化处置，所以不能共用一个码（`A-10` 接线）。
     """

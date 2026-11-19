@@ -2,7 +2,7 @@
 
 ## 为什么要有这个守卫
 
-`frontend/vite.config.ts`（dev）与 `frontend/nginx.conf`（容器）各写了一份
+`frontend/vite.config.ts`（dev）与 `deploy/docker/frontend.nginx.conf`（容器）各写了一份
 「哪些路径转发给后端」的清单。两份清单**手写且无校验**，历史上漏过 `/readyz`：
 dev 下探针请求落到 SPA 的 HTML —— **HTTP 200 但内容不是 JSON**，
 排查时极难看出是代理层搞错了。
@@ -24,7 +24,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VITE_CONFIG = REPO_ROOT / "frontend" / "vite.config.ts"
-NGINX_CONF = REPO_ROOT / "frontend" / "nginx.conf"
+NGINX_CONF = REPO_ROOT / "deploy" / "docker" / "frontend.nginx.conf"
 
 # vite 的 proxy 键：`"/xxx": apiProxy`
 _VITE_KEY_RE = re.compile(r'"(?P<prefix>/[A-Za-z0-9_\-/]*)"\s*:\s*apiProxy')

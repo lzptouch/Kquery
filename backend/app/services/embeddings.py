@@ -242,7 +242,7 @@ class MiniMaxEmbeddings:
 
     ## 为什么单独一个类
 
-    MiniMax 的 embeddings **不是 OpenAI 形状**（2026-11-14 实测）：
+    MiniMax 的 embeddings **不是 OpenAI 形状**（实测）：
 
     - 请求体：`{"model":"embo-01","texts":[...],"type":"db"|"query"}`
       —— 字段是 `texts` 而不是 `input`，且**必须**给 `type`；

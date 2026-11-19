@@ -100,7 +100,7 @@ def test_db_and_query_projections_stay_close():
 
 @_need_deepseek
 def test_deepseek_has_no_embeddings_or_rerank_endpoint():
-    """**把「DeepSeek 没有向量/重排端点」钉成测试**（2026-11-14 实测 404）。
+    """**把「DeepSeek 没有向量/重排端点」钉成测试**（实测 404）。
 
     这条用例的价值是「事实有主」：配置里写 `EMBEDDING_PROVIDER=deepseek` 时
     报的是 404，很容易被当成 URL 写错。若哪天 DeepSeek 真上线了这两个端点，

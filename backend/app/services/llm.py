@@ -98,7 +98,7 @@ class LLM(Protocol):
 
     # 注：`stream()` 是**协议声明**，但当前生产链路并未真正增量输出——
     # 线性路径全程阻塞生成，Agent 路径的流式被缓冲后按终稿切片重放
-    # （`services/pipeline.py` 的 `_final` 分支）。真流式见 `doc/plan/01` §十 `C-13`（`A-22.4`）。
+    # （`services/pipeline.py` 的 `_final` 分支）。真流式（`C-13`）现状见 `doc/analysis/04-问答链路.md`。
     def stream(
         self,
         prompt: str,
@@ -828,7 +828,7 @@ class ZhipuLLM(DeepSeekLLM):
 
     ## 唯一差异：glm-4.5 系默认开思考
 
-    实测 2026-11-14：`glm-4.6` / `glm-4.5` / `glm-4.5-air` / `glm-4.5-flash`
+    实测：`glm-4.6` / `glm-4.5` / `glm-4.5-air` / `glm-4.5-flash`
     在 `max_tokens=120` 时思考 token 把预算吃光，`finish_reason=length`、正文为空。
     RAG 场景会拿到**空答案但不报错**，属于最难排查的失败模式，
     所以默认下发 `thinking: {"type": "disabled"}`；需要推理链时才显式打开

@@ -93,7 +93,7 @@ class TaskManager:
         # 并发提容（批次 3）：有界队列 + 背压。此前是无界队列——批量提交时任务
         # 无限堆积且无法拒绝；满时 submit 返回 False，API 层映射 503。
         #
-        # 2026-11-12（`A-21.1`）：队列实现统一到 `core/tasks.BackgroundQueue`
+        # `A-21.1`：队列实现统一到 `core/tasks.BackgroundQueue`
         # ——此前这里是**内联复制**的同一套有界队列逻辑，而 `BackgroundQueue`
         # 自己在生产路径上零调用点（两份实现 = 两份要维护的语义）。
         # 换过去还顺带补上一件一直缺的事：**worker 继承提交方的上下文**

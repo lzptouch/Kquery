@@ -20,7 +20,7 @@ _DSN_CREDENTIAL_RE = re.compile(r"://([^:/@]*):([^@]*)@")
 
 #: **只有对话补全**的生成 provider：没有 rerank / OCR 端点。
 #:
-#: 2026-11-14 实测修正：**MiniMax 另有 `embo-01` 向量接口**（`POST /v1/embeddings`，
+#: 实测修正：**MiniMax 另有 `embo-01` 向量接口**（`POST /v1/embeddings`，
 #: 1536 维，形状不是 OpenAI 的——字段是 `texts`/`type`），所以它**不再算**在
 #: 「不能做向量」的那一类里；但 rerank / OCR 仍然没有，`auto` 下必须回落 dashscope。
 #: DeepSeek 三条都没有（`/v1/embeddings`、`/beta/embeddings`、`/v1/rerank` 全 404）。
@@ -108,7 +108,7 @@ class Settings(BaseSettings):
 
     # ---- 运行模式（dev | test | prod）----
     # prod = 生产：关闭交互式 API 文档（/docs / /redoc / /openapi.json）——
-    # 见 `doc/plan/01-工程基线与质量保障设计.md` §四 1（`A-04`）。
+    # 设计项 `A-04`（生产禁用交互式文档）。
     # 必须是**显式配置**：不能用「日志是不是 json」这类隐式信号判断「是不是生产」，
     # 否则「生产忘了配」= 生产照样开着文档。
     app_env: str = "dev"
@@ -140,7 +140,7 @@ class Settings(BaseSettings):
     minimax_base_url: str = "https://api.minimax.chat/v1"
 
     # ---- 智谱（bigmodel.cn，OpenAI 兼容；三条通道齐全）----
-    # 实测 2026-11-14：
+    # 实测：
     #   `POST {base}/chat/completions` → glm-4.6 / glm-4.5 / glm-4-air / glm-4-flash 均通；
     #   `POST {base}/embeddings`       → `embedding-3`，**2048 维**，OpenAI 形状；
     #   `POST {base}/rerank`           → `results[].relevance_score`，与 OpenAI 兼容重排同形。
@@ -187,7 +187,7 @@ class Settings(BaseSettings):
     temperature: float = 0.0  # RAG 场景固定 0，事实性优先
 
     # ---- RAG 参数----
-    # 出厂默认 800/100（2026-11-13，`MP-05`）：原 300/50 是「能跑通」的值，
+    # 出厂默认 800/100（`MP-05`）：原 300/50 是「能跑通」的值，
     # 不是量出来的值——按 `doc/analysis/检索策略推荐表.md` 的口径，300 字会把
     # 一个完整论证切断在块边界上，答案只能拼凑。显式配置 `CHUNK_SIZE` 的部署
     # 不受此变更影响（环境变量优先）。
@@ -255,7 +255,7 @@ class Settings(BaseSettings):
     # ---- CRAG 校验与幻觉自检 ----
     crag_enabled: bool = True
     # 阈值必须按自有评测集的分数分布标定（ 的红线）。
-    # 本系统标定口径（2026-10-02 混合语料实测）：
+    # 本系统标定口径（混合语料实测）：
     #   干净 Markdown 的相关检索 Top-2 均分 ≈ 0.45~0.78；
     #   OCR 教材扫描件的相关检索 Top-2 均分 ≈ 0.18~0.25（版面噪声压缩分数）；
     #   无关问题 ≈ 0.05~0.08。
@@ -346,7 +346,7 @@ class Settings(BaseSettings):
     # legacy = 与现行 `PROMPT_TEMPLATE` 逐字节一致（默认）；
     # structured = 五个来源各自成段（记忆段带「供参考，不必盲从」边界声明）。
     # 默认保持 legacy：切换渲染结构会改变答案质量，必须由 judge 前后对比数据驱动，
-    # 而不是靠改代码默认值（见 doc/plan/02 §2.1 第 7 条）。
+    # 而不是靠改代码默认值（A/B 产物：`tests/data/eval/partition_ab.json`）。
     context_partition_render: str = "legacy"
     # ---- 结构化日志 ----
     log_level: str = "INFO"
@@ -403,7 +403,7 @@ class Settings(BaseSettings):
     image_caption_model: str = "qwen-vl-max"  # 图像描述模型（换版本需全量重编码）
 
     # ---- 企业护栏 ----
-    # 认证与授权能力已下线（2026-11-12）：注册 / 登录 / 口令 / JWT / 静态凭证 /
+    # 认证与授权能力已下线：注册 / 登录 / 口令 / JWT / 静态凭证 /
     # 用户目录，以及文档级 ACL / 知识库授权名单 / 角色门禁 / 权限矩阵。
     # 相关配置项（auth_* / acl_enabled / kb_enabled）一并移除。
     #
@@ -425,11 +425,15 @@ class Settings(BaseSettings):
 
     # ---- 存储 ----
     data_dir: Path = REPO_DIR / "data"
-    # 向量库选型：milvus（生产，standalone / 测试 lite 文件）| faiss（本地文件）
+    # 向量库选型：milvus（Milvus 服务，standalone / 集群）| faiss（本地文件）
     vector_store: str = "milvus"
     # 注意：环境变量名用 KQUERY_ 前缀——MILVUS_URI 与 pymilvus 内部变量冲突
     milvus_uri: str = Field(default="http://localhost:19530", validation_alias="KQUERY_MILVUS_URI")
     milvus_collection: str = "kquery_chunks"
+    # 一致性级别：Bounded（默认，延迟更低，写入到可见有毫秒级延迟）|
+    # Strong（写入立即可见，代价是每次查询都等最新时间戳）。
+    # 只在**新建集合**时生效；既有集合要改需 drop 后由启动流程重建。
+    milvus_consistency_level: str = "Bounded"
 
     # ---- 租户----
     default_tenant_id: str = "default"
@@ -763,7 +767,7 @@ class Settings(BaseSettings):
         summary = {
             "model_provider": self.model_provider,
             "resolved_provider": self.resolved_provider,
-            # 三个 provider 各自独立（2026-11-13）：生成 / 向量 / 重排
+            # 三个 provider 各自独立：生成 / 向量 / 重排
             # 「实际用的哪个」必须一眼可见——DeepSeek 没有 embeddings 端点，
             # auto 模式会回落到 dashscope，不看摘要会以为「配了但没生效」。
             "embedding_provider": self.embedding_provider,
@@ -1085,6 +1089,12 @@ class Settings(BaseSettings):
             )
         if self.vector_store not in {"milvus", "faiss"}:
             add("vector_store", f"非法取值 {self.vector_store}", "只能取 milvus | faiss")
+        if self.milvus_consistency_level not in {"Strong", "Bounded", "Session", "Eventually"}:
+            add(
+                "milvus_consistency_level",
+                f"非法取值 {self.milvus_consistency_level}",
+                "只能取 Strong | Bounded | Session | Eventually",
+            )
         if self.top_k <= 0:
             add("top_k", "top_k 必须为正整数", "推荐 4")
         if self.chunk_overlap >= self.chunk_size:

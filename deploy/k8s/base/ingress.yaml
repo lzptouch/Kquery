@@ -20,7 +20,7 @@ spec:
       http:
         paths:
           # 前端静态资源与后端 API 走同一个 host：前端 nginx 配置已按
-          # /api 前缀分流（frontend/nginx.conf 的 location 清单）
+          # /api 前缀分流（deploy/docker/frontend.nginx.conf 的 location 清单）
           - path: /
             pathType: Prefix
             backend:

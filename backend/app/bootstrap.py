@@ -316,7 +316,7 @@ def create_app() -> FastAPI:
         "生效配置: %s",
         json.dumps(settings.effective_summary(), ensure_ascii=False, sort_keys=True),
     )
-    # 「配了但没生效」的提示（2026-11-13）：例如 MODEL_PROVIDER=deepseek 时，
+    # 「配了但没生效」的提示：例如 MODEL_PROVIDER=deepseek 时，
     # 向量与重排实际回落到 dashscope（DeepSeek 没有那两个端点）——
     # 不说出来，运维会以为「换了模型，检索也换了」。
     for note in settings.provider_notes():

@@ -1,0 +1,61 @@
+# ============================================================
+# 镜像构建上下文排除规则
+#
+# 前后端镜像都从**仓库根**构建（见 deploy/docker/*.Dockerfile）：
+#   docker build -f deploy/docker/backend.Dockerfile  -t kquery/backend  .
+#   docker build -f deploy/docker/frontend.Dockerfile -t kquery/frontend .
+# 因此这里要同时排除两个技术栈的本地状态。
+#
+# 原则：镜像必须能复现构建，不能夹带「这台机器上才有」的东西。
+# ============================================================
+
+# ---------- 版本控制与 CI ----------
+.git
+.gitignore
+.github
+
+# ---------- Python 本地环境与产物 ----------
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/htmlcov
+**/coverage.xml
+
+# ---------- 前端本地环境与产物 ----------
+**/node_modules
+frontend/dist
+**/*.tsbuildinfo
+
+# ---------- 运行时数据（容器里是挂载卷，不是镜像内容） ----------
+data
+backend/data
+deploy/milvus/volumes
+deploy/nginx/logs
+deploy/k8s
+deploy/milvus
+deploy/nginx
+deploy/prometheus-rules.yaml
+
+# ---------- 凭据 ----------
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+
+# ---------- 测试与文档（镜像不需要） ----------
+tests
+doc
+wiki
+**/*.md
+**/*.log
+
+# ---------- 其它 ----------
+.playwright-cli
+.DS_Store

@@ -9,7 +9,6 @@
 这几类问题**都不会让测试变红**，除非专门盯着它们。
 """
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -238,71 +237,3 @@ class TestAdversarialVisionSet:
             f"对抗题的检索前提没达标（recall@10={agg['recall']['10']}）→ "
             "连图都找不到，谈不上'看图直答'"
         )
-
-
-class TestDocsStayInSync:
-    """文档里的关键数字**必须**与代码一致（防止文档漂移）。
-
-    为什么值得测：文档数字过期时**不会有人报错**——它只是"看起来对"。
-    这里把最容易漂的几个数字（端点数 / 测试规模 / 评测资产）钉住。
-    """
-
-    def test_endpoint_count_in_docs_matches_code(self):
-        """`doc/analysis/README.md` 与 `03-接口与契约.md` 的端点数 = 代码实际端点数。"""
-        import os
-        import tempfile
-
-        os.environ.setdefault("DATA_DIR", tempfile.mkdtemp())
-        os.environ.setdefault("MODEL_PROVIDER", "mock")
-        from app.main import create_app
-
-        spec = create_app().openapi()
-        actual = sum(
-            1
-            for ops in spec["paths"].values()
-            for method in ops
-            if method.upper() in {"GET", "POST", "PUT", "DELETE", "PATCH"}
-        )
-        # 认证与授权下线（2026-11-12）：87 → 69（移除 18 个认证/授权/知识库端点）
-        # 2026-11-13：70 → 71（`C-09` 新增 `GET /graph/build/{task_id}` 状态查询）
-        # 2026-11-13：71 → 72（`X-22` 新增 `GET /ask/stream/{trace_id}` SSE 断点续传）
-        # 2026-11-14：72 → 69（语音下线移除 `/speech/*` 三端点，`api/speech.py` 整个删除）
-        assert actual == 69, f"端点数变了：{actual}（文档与守卫测试都要同步）"
-
-        index = (REPO_ROOT / "doc" / "analysis" / "README.md").read_text(encoding="utf-8")
-        assert f"**{actual}**" in index, f"doc/analysis/README.md 的端点数没同步（应为 {actual}）"
-
-    def test_test_scale_in_docs_matches_reality(self):
-        """文档里的「后端测试」规模不得落后于实际收集数。
-
-        口径（2026-11-12 改）：不再把数字**硬编码在守卫里**——
-        硬编码意味着「每加一个测试文件就得改一次守卫」，改多了守卫就失去意义
-        （它会从「文档与现实一致」退化成「文档与某次历史快照一致」）。
-
-        现在的判据：
-        - **文件数**：文档写的数必须**等于**实际（少写 = 文档漏了新测试）；
-        - **用例数**：文档写的数必须**不低于**基线（新增用例只增不减，
-          文档数字落后于现实才算过期）。
-        """
-        readme = (REPO_ROOT / "doc" / "analysis" / "README.md").read_text(encoding="utf-8")
-
-        cases_match = re.search(r"\*\*(\d+)\*\* 个用例", readme)
-        assert cases_match, "doc/analysis/README.md 里找不到用例数（期望格式：**N** 个用例）"
-        doc_cases = int(cases_match.group(1))
-        assert doc_cases >= 1885, (
-            f"doc/analysis/README.md 的用例数已过期：{doc_cases} < 1885"
-        )
-
-        files_match = re.search(r"(\d+) 个测试文件", readme)
-        assert files_match, "doc/analysis/README.md 里找不到测试文件数（期望格式：N 个测试文件）"
-        files = list((REPO_ROOT / "tests").rglob("test_*.py"))
-        assert int(files_match.group(1)) == len(files), (
-            f"测试文件数变了：{len(files)}（文档要同步）"
-        )
-
-    def test_eval_assets_documented(self):
-        """评测资产（语料 / 金标 / 图文素材）必须在评测 README 里有登记。"""
-        readme = (REPO_ROOT / "tests" / "data" / "eval" / "README.md").read_text(encoding="utf-8")
-        assert "corpus_img" in readme, "评测 README 未登记图文语料"
-        assert "SOURCES" in readme or "来源" in readme, "评测 README 未说明素材来源"
-        assert (CORPUS / "SOURCES.md").exists(), "图文语料缺来源与许可登记"

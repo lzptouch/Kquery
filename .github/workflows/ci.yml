@@ -43,10 +43,26 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - name: Install (milvus-lite on Linux)
+      - name: Install (dev deps)
         run: uv sync --project backend --frozen --group dev
+      - name: Start Milvus (etcd + standalone)
+        # 复用部署编排起依赖，避免 CI 与真实部署跑在不同形态的向量库上。
+        # 测试连的是宿主 19531（compose 里为避开本机端口占用改过映射）。
+        run: |
+          docker compose -f deploy/docker/docker-compose.yml up -d etcd milvus
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:9092/healthz >/dev/null 2>&1; then
+              echo "milvus ready after $((i * 10))s"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "milvus 未在 10 分钟内就绪" >&2
+          docker compose -f deploy/docker/docker-compose.yml logs milvus | tail -50
+          exit 1
       - name: pytest with coverage
-        # Linux 走真实 Milvus Lite（Windows 才回退 FAISS，见 tests/conftest.py）
+        env:
+          KQUERY_MILVUS_URI: http://127.0.0.1:19531
         run: uv run --project backend --group dev python -m pytest --cov --cov-report=xml --cov-report=term
       - name: Upload coverage
         uses: actions/upload-artifact@v4
@@ -169,10 +185,11 @@ jobs:
       - name: 锁文件一致性（锁文件与 pyproject 不匹配 → 依赖不可复现）
         run: uv lock --check --project backend
       - name: 构建后端镜像
-        run: docker build -f backend/Dockerfile -t kquery/backend:ci backend
+        # 构建上下文是仓库根：Dockerfile 统一在 deploy/docker/
+        run: docker build -f deploy/docker/backend.Dockerfile -t kquery/backend:ci .
       - name: 镜像冒烟（探针端点可用 + 非 root）
         run: |
-          docker run -d --name kq -p 8100:8100 \
+          docker run -d --name kq -p 8100:8000 \
             -e DATA_DIR=/data -e MODEL_PROVIDER=mock \
             kquery/backend:ci
           for i in $(seq 1 30); do
@@ -197,7 +214,7 @@ jobs:
       - run: uv run --project backend --group dev python scripts/check_doc_refs.py
 
   # 前端护栏（B0）：此前 CI 只跑后端 3 个 job，前端 TS 错误与单测失败无人拦截。
-  # node 版本与 frontend/.nvmrc、frontend/Dockerfile 保持一致（22）。
+  # node 版本与 frontend/.nvmrc、deploy/docker/frontend.Dockerfile 保持一致（22）。
   frontend-build:
     name: frontend (build + unit)
     runs-on: ubuntu-latest

@@ -198,9 +198,8 @@ class MilvusVectorStore:
     ) -> list[tuple[Chunk, float]]:
         """向量检索。
 
-        Milvus 支持表达式过滤，因此把 ACL 允许清单**下推到召回阶段**——
-        不可见文档根本不参与 top-k 竞争，从根上消除「后过滤吃掉名额」。
-        清单过大时 `to_milvus_expr` 会自行降级为 tenant 粗过滤（表达式长度上限）。
+        Milvus 支持表达式过滤，因此把 `tenant_id` / `doc_id` 条件**下推到召回阶段**——
+        不满足条件的块根本不参与 top-k 竞争，从根上消除「后过滤吃掉名额」。
         """
         if filters is not None:
             expr = filters.to_milvus_expr()

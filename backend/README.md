@@ -62,6 +62,5 @@ uv run --project backend pytest tests/unit -q
 | `GET /health` `GET /healthz` `GET /readyz` | 健康与就绪探针 |
 | `POST /ask` `POST /ask/stream` | 同步 / SSE 流式问答（`answer + evidence[] + trace_id`） |
 | `/knowledge/*` | 上传、列表、重建、删除、任务进度 |
-| `/quickask/*` | 快问会话 |
 | `/graph/*` | 图谱查询与浏览 |
 | `/metrics` | Prometheus 指标（需 `X-Metrics-Token`） |

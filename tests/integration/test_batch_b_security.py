@@ -14,11 +14,9 @@
 """
 import os
 import re
-import sqlite3
 import tempfile
 from contextlib import contextmanager
 
-import pytest
 from fastapi.testclient import TestClient
 
 #: 试图用请求头切换租户/用户/角色的"越权"请求头。认证已下线后它们**必须被忽略**。
@@ -157,54 +155,6 @@ class TestCacheIsolation:
         assert k_alice == k_alice2, "同用户同问题缓存键必须稳定（否则命中率归零）"
 
 
-
-class TestSqlTenantIsolation:
-    """sql_search 必须按租户隔离。"""
-
-    @pytest.fixture()
-    def biz_db(self, tmp_path):
-        db = tmp_path / "biz.db"
-        conn = sqlite3.connect(db)
-        conn.execute("CREATE TABLE sales (id INTEGER, tenant_id TEXT, amount REAL)")
-        conn.executemany(
-            "INSERT INTO sales VALUES (?, ?, ?)",
-            [(1, "t1", 100.0), (2, "t2", 200.0), (3, "t1", 150.0)],
-        )
-        conn.execute("CREATE TABLE secret (id INTEGER, data TEXT)")  # 无租户列
-        conn.execute("INSERT INTO secret VALUES (1, 'classified')")
-        conn.commit()
-        conn.close()
-        return str(db)
-
-    def test_tenant_cannot_read_other_tenant_rows(self, biz_db):
-        from app.services.agent.tools import SqlSearchTool
-        tool = SqlSearchTool(biz_db, tenant_column="tenant_id")
-        r = tool.run("SELECT * FROM sales", "t1")
-        assert r.items, r.error
-        contents = " ".join(it["content"] for it in r.items)
-        assert "200" not in contents, "租户 t1 不应看到 t2 的行"
-        assert "100" in contents and "150" in contents
-
-    def test_table_without_tenant_column_is_hidden(self, biz_db):
-        from app.services.agent.tools import SqlSearchTool
-        tool = SqlSearchTool(biz_db, tenant_column="tenant_id")
-        r = tool.run("SELECT * FROM secret", "t1")
-        assert r.error and "secret" in r.error
-
-    def test_join_rejected_in_tenant_mode(self, biz_db):
-        from app.services.agent.tools import SqlSearchTool
-        tool = SqlSearchTool(biz_db, tenant_column="tenant_id")
-        r = tool.run("SELECT * FROM sales a JOIN sales b ON a.id = b.id", "t1")
-        assert r.error and "单表" in r.error
-
-    def test_limit_is_enforced(self, biz_db):
-        from app.services.agent.tools import SqlSearchTool
-        tool = SqlSearchTool(biz_db, max_rows=2)
-        r = tool.run("SELECT * FROM sales LIMIT 100000", "t1")
-        # 强制 LIMIT（兑现注释承诺）：调用方写 LIMIT 100000 也不得多于 max_rows
-        assert r.truncated_from <= 3 or len(r.items) >= 1
-        contents = " ".join(it["content"] for it in r.items)
-        assert contents.count("tenant_id=") <= 2
 
 
 class TestIndexVersionFilter:
@@ -424,116 +374,6 @@ class TestAgentPrometheusMetrics:
         )
         assert r.status_code == 200
         assert "rag_agent_runs_total" in self._scrape(client)
-
-
-class TestHitlEndpoints:
-    """HITL 端点必须注册且做归属校验（跨主体 run_id 一律 404）。"""
-
-    def test_endpoints_registered(self, client):
-        spec = client.app.openapi()["paths"]
-        assert "/ask/runs/{run_id}/resume" in spec
-        assert "/ask/runs/{run_id}/interrupt" in spec
-        assert "post" in spec["/ask/runs/{run_id}/resume"]
-        assert "get" in spec["/ask/runs/{run_id}/interrupt"]
-
-    def test_resume_rejects_foreign_run_id(self, client):
-        """跨用户 run_id 必须 404（不用 403，避免存在性探测）。"""
-        r = client.post(
-            "/ask/runs/other-tenant:other-user:s1:1/resume",
-            json={"action": "force_answer"},
-        )
-        assert r.status_code == 404, f"跨主体 run_id 应 404，实得 {r.status_code}"
-
-    def test_interrupt_status_rejects_foreign_run_id(self, client):
-        r = client.get(
-            "/ask/runs/other-tenant:other-user:s1:1/interrupt",
-        )
-        assert r.status_code == 404
-
-    def test_interrupt_status_for_unstarted_run_is_not_awaiting(self, client):
-        """未挂起的 run 返回 awaiting=False（而不是报错），前端可安全轮询。"""
-        r = client.get(
-            "/ask/runs/default:local:nonexistent:1/interrupt",
-        )
-        assert r.status_code == 200
-        assert r.json()["data"]["awaiting"] is False
-
-    def test_hitl_disabled_by_default(self, client):
-        """默认关闭：HITL 对用户是打断，需前端配合才能开，不能后端单方面打开。"""
-        assert client.app.state.settings.agent_hitl_enabled is False
-
-
-    def test_approve_endpoint_registered(self, client):
-        """写类工具审批端点必须注册（否则 HITL 只能读不能批）。"""
-        spec = client.app.openapi()["paths"]
-        assert "/ask/runs/{run_id}/approve" in spec
-        assert "post" in spec["/ask/runs/{run_id}/approve"]
-
-    def test_approve_rejects_foreign_run_id(self, client):
-        """跨用户 run_id 必须 404（与 resume/interrupt 同纪律）。"""
-        r = client.post(
-            "/ask/runs/other-tenant:other-user:s1:1/approve",
-            json={"tools": ["http_request"]},
-        )
-        assert r.status_code == 404, f"跨主体 run_id 应 404，实得 {r.status_code}"
-
-    def test_approve_requires_tool_list(self, client):
-        r = client.post(
-            "/ask/runs/default:local:s1:1/approve",
-            json={"tools": []},
-        )
-        assert r.status_code == 400
-
-    def test_approve_unknown_tool_is_rejected(self, client):
-        """未知工具名必须报错，而不是静默生效（否则前端以为批了其实没批）。"""
-        _register_write_tool(client)
-        r = client.post(
-            "/ask/runs/default:local:s1:1/approve",
-            json={"tools": ["not_a_tool"]},
-        )
-        assert r.status_code == 400
-
-    def test_approve_read_only_tool_is_rejected(self, client):
-        """只读工具不需要审批，也不能被"批准"（审批只对写类工具有意义）。"""
-        _register_write_tool(client)
-        r = client.post(
-            "/ask/runs/default:local:s1:1/approve",
-            json={"tools": ["vector_search"]},
-        )
-        assert r.status_code == 400
-
-    def test_approve_registers_write_tool(self, client):
-        _register_write_tool(client)
-        r = client.post(
-            "/ask/runs/default:local:s1:1/approve",
-            json={"tools": ["http_request"]},
-        )
-        assert r.status_code == 200
-        assert "http_request" in r.json()["data"]["approved_tools"]
-
-    def test_approve_without_write_tools_is_rejected(self, client):
-        """注册表里没有写类工具时必须明确报错，不能"假装批了"。"""
-        r = client.post(
-            "/ask/runs/default:local:s1:1/approve",
-            json={"tools": ["http_request"]},
-        )
-        assert r.status_code == 400
-
-
-def _register_write_tool(client) -> None:
-    """往运行中的注册表塞一个写类工具（默认部署不注册写工具）。"""
-    from app.services.agent.tools import ToolResult
-
-    class _WriteTool:
-        name = "http_request"
-        description = "写类工具（测试用）"
-
-        def run(self, query: str, tenant_id: str, **kwargs) -> ToolResult:
-            return ToolResult(items=[])
-
-    registry = client.app.state.agent_runner._registry
-    if registry is not None and "http_request" not in [e.get("name") for e in registry.catalog()]:
-        registry.register(_WriteTool())
 
 
 class TestIndexAliasEndpoints:

@@ -8,7 +8,6 @@
 """
 import ast
 import hashlib
-import json
 import operator
 import threading
 import time
@@ -33,7 +32,6 @@ TOOL_TOP_K_MAX = 50  # top_k 硬上限（与 arguments_model 的 le=50 保持一
 # ---- 失败分类（有限枚举，进指标 label；禁止放 tenant/user 等高基数维度）----
 ERR_NONE = ""                    # 无错误
 ERR_CANCELLED = "cancelled"      # 运行已被取消
-ERR_APPROVAL = "approval_required"  # 写工具待人工审批
 ERR_PARAM = "param_invalid"      # 入参校验失败（模型可自愈的一类）
 ERR_TRIPPED = "tripped"          # 工具被健康熔断摘除
 ERR_TIMEOUT = "timeout"          # 单步超时
@@ -233,220 +231,6 @@ class ImageSearchTool:
         return ToolResult(items=items, elapsed_ms=int((time.monotonic() - started) * 1000))
 
 
-class SqlSearchTool:
-    """只读业务库查询。
-
-    安全边界（三条，缺一条就不能上生产）：
-    1. **只允许 SELECT / WITH**——AST 解析而非字符串匹配，`WHERE 1=1; DROP TABLE`
-       这类靠字符串前缀拦不住；
-    2. **强制 LIMIT**且不可被查询里的 LIMIT 覆盖；
-    3. 结果行转文本后才进上下文，不把整表灌进提示词。
-
-    未配置 `sql_dsn` 时不注册——工具目录里出现一个必然失败的工具，
-    会诱导 Planner 规划出注定失败的步骤。
-    """
-
-    name = "sql_search"
-    description = (
-        "以只读 SQL 查询业务库中的结构化数据（适用：'XX 部门今年的订单量'、"
-        "'XX 产品的库存'等库里有现成表/字段的统计类问题）"
-    )
-
-    _ALLOWED_HEADS = {"select", "with"}
-
-    def __init__(self, dsn: str, readonly: bool = True, max_rows: int = 50,
-                 tenant_column: str | None = None) -> None:
-        self._dsn = dsn
-        self._readonly = readonly
-        self._max_rows = max(1, max_rows)
-        # 租户隔离列：配置后强制「单表查询 + 表白名单 + 谓词包装」。
-        # 不设则保持兼容（但生产启用 sql_search 应配置，否则跨租户越权）。
-        self._tenant_column = tenant_column or None
-
-    @classmethod
-    def _validate(cls, sql: str) -> str:
-        stripped = sql.strip().rstrip(";")
-        if not stripped:
-            raise InvalidInputError("SQL 为空")
-        try:
-            parsed = __import__("sqlparse").parse(stripped)  # 可选依赖
-        except Exception:  # noqa: BLE001 - 无 sqlparse 时退回保守解析
-            head = stripped.split(None, 1)[0].lower()
-            if head not in cls._ALLOWED_HEADS:
-                raise InvalidInputError("只允许 SELECT / WITH 语句")
-            if ";" in stripped:
-                raise InvalidInputError("不允许多语句执行")
-            return stripped
-        if len(parsed) > 1:
-            raise InvalidInputError("不允许多语句执行")
-        if parsed[0].get_type() != "SELECT":
-            raise InvalidInputError("只允许 SELECT / WITH 语句")
-        stripped = str(parsed[0]).strip().rstrip(";")
-        return stripped
-
-    def _force_limit(self, sql: str) -> str:
-        """强制行数上限（兑现 _validate 注释承诺）：剥掉调用方写的 LIMIT，统一追加。
-
-        此前 _validate 只 rstrip(";") 而未真正追加 LIMIT，调用方写 LIMIT 100000 即可绕过——
-        唯一防线是 fetchmany 在 Python 侧截断，全表仍会被扫描读出。
-        """
-        import re as _re
-        stripped = _re.sub(r"\s+LIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*;?\s*$", "", sql, flags=_re.IGNORECASE)
-        return f"{stripped} LIMIT {self._max_rows}"
-
-    @staticmethod
-    def _single_table_name(sql: str) -> str | None:
-        """租户模式专用：仅当是单表 SELECT 时返回表名，否则 None。
-
-        拒绝 JOIN / UNION / 子查询 / 集合运算——子查询包装对它们存在绕过（JOIN 的
-        租户列歧义会把外层过滤引到错误的表上），因此租户隔离只允许单表查询。
-        """
-        import re as _re
-        upper = f" {sql.upper()} "
-        for kw in (" JOIN ", " UNION ", "(SELECT", " INTERSECT ", " EXCEPT "):
-            if kw in upper:
-                return None
-        m = _re.search(r"\bFROM\s+([A-Za-z_][A-Za-z0-9_.`]*)", sql, _re.IGNORECASE)
-        if not m:
-            return None
-        return m.group(1).strip("`").split(".")[-1]
-
-    def _tenant_scoped_tables(self, conn) -> set[str]:
-        """探测业务库中含租户隔离列的表（白名单）。"""
-        scoped: set[str] = set()
-        for (tname,) in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')"):
-            try:
-                cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tname})")}
-            except Exception:  # noqa: BLE001 - 工具注册项解析失败：跳过该项
-                logger.debug("工具注册项解析失败：跳过该项")
-                continue
-            if self._tenant_column in cols:
-                scoped.add(tname)
-        return scoped
-
-    def run(self, query: str, tenant_id: str) -> ToolResult:
-        started = time.monotonic()
-        import sqlite3
-
-        try:
-            sql = self._force_limit(self._validate(query))
-            conn = sqlite3.connect(f"file:{self._dsn}?mode=ro", uri=True)
-            try:
-                conn.row_factory = sqlite3.Row
-                params: tuple = ()
-                if self._tenant_column:
-                    table = self._single_table_name(sql)
-                    if table is None:
-                        return ToolResult(
-                            elapsed_ms=int((time.monotonic() - started) * 1000),
-                            error="租户隔离模式仅支持单表查询（不允许 JOIN / 子查询 / 集合运算）",
-                        )
-                    if table not in self._tenant_scoped_tables(conn):
-                        return ToolResult(
-                            elapsed_ms=int((time.monotonic() - started) * 1000),
-                            error=f"表 '{table}' 不含租户隔离列 '{self._tenant_column}'，对 Agent 不可见",
-                        )
-                    # 外层包装强制过滤：无论内层 WHERE 怎么写，只放行 tenant_id = 当前租户的行
-                    sql = f"SELECT * FROM ({sql}) AS _kquery_tenant_scope WHERE {self._tenant_column} = ?"
-                    params = (tenant_id,)
-                rows = conn.execute(sql, params).fetchmany(self._max_rows + 1)
-            finally:
-                conn.close()
-            total = len(rows)
-            rows = rows[: self._max_rows]
-            if not rows:
-                return ToolResult(
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
-                    error="查询无结果（0 行）",
-                )
-            columns = list(rows[0].keys())
-            table = "\n".join(
-                " | ".join(f"{c}={r[c]}" for c in columns) for r in rows
-            )
-            content = f"SQL 结果（{len(rows)} 行，{total} 行截断）：\n{table}"
-            return ToolResult(
-                items=[{
-                    "chunk_id": stable_ref_id("sql", sql),
-                    "content": content,
-                    "score": 1.0,
-                    "source": "业务库",
-                    "doc_id": "__sql__",
-                    "source_route": "sql",
-                }],
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                truncated_from=total,
-            )
-        except Exception as exc:  # noqa: BLE001 - SQL 工具失败写进 ToolResult.error：调用方可见
-            return ToolResult(
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                error=f"SQL 查询失败: {exc}",
-                error_class=ERR_EXCEPTION,
-            )
-
-
-class WebSearchTool:
-    """联网搜索。
-
-    只在配置了 `web_search_endpoint` 时注册。结果一律带来源 URL 与抓取时间——
-    联网内容的时效性必须让读者看见，否则等于把过期信息当权威。
-    """
-
-    name = "web_search"
-    description = (
-        "联网检索公开信息（适用：'最新'/'今天'/'当前'这类必须看时效的问题，"
-        "以及知识库未收录的外部事实）"
-    )
-
-    def __init__(self, endpoint: str, api_key: str = "", timeout_s: float = 10.0, max_rows: int = 5) -> None:
-        self._endpoint = endpoint
-        self._api_key = api_key
-        self._timeout = timeout_s
-        self._max_rows = max(1, max_rows)
-
-    def run(self, query: str, tenant_id: str) -> ToolResult:
-        started = time.monotonic()
-        try:
-            import urllib.parse
-            import urllib.request
-
-            url = f"{self._endpoint}?{urllib.parse.urlencode({'q': query, 'limit': self._max_rows})}"
-            request = urllib.request.Request(url)
-            if self._api_key:
-                request.add_header("Authorization", f"Bearer {self._api_key}")
-            with urllib.request.urlopen(request, timeout=self._timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-            raw_items = payload.get("items") or payload.get("results") or []
-            items = []
-            for idx, hit in enumerate(raw_items[: self._max_rows], start=1):
-                title = hit.get("title") or f"结果{idx}"
-                link = hit.get("url") or hit.get("link") or ""
-                snippet = hit.get("content") or hit.get("snippet") or hit.get("summary") or ""
-                items.append({
-                    "chunk_id": f"web#{idx}:{link or title}",
-                    # 来源与时间进正文：让模型在答案里能引用出处，也让读者看到时效
-                    "content": f"[{title}]({link})\n{snippet}".strip(),
-                    "score": 1.0,
-                    "source": f"联网检索 · {title}" + (f" · {link}" if link else ""),
-                    "doc_id": "__web__",
-                    "source_route": "web",
-                })
-            if not items:
-                return ToolResult(
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
-                    error="联网检索无结果（0 条）",
-                )
-            return ToolResult(
-                items=items,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                truncated_from=len(raw_items),
-            )
-        except Exception as exc:  # noqa: BLE001 - 联网检索失败写进 ToolResult.error：调用方可见
-            return ToolResult(
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                error=f"联网检索失败: {exc}",
-            )
-
-
 # 工具危险级。`write` 级工具在执行前必须经人工审批——
 # 只读工具出错最多是答错，写工具出错会改到外部系统（发请求、写文件、改库）。
 DANGER_SAFE = "safe"
@@ -459,10 +243,7 @@ _DANGER_BY_NAME: dict[str, str] = {
     "vector_search": DANGER_READ_ONLY,
     "graph_search": DANGER_READ_ONLY,
     "image_search": DANGER_READ_ONLY,
-    "sql_search": DANGER_READ_ONLY,
-    "sql_schema": DANGER_READ_ONLY,
     "list_documents": DANGER_READ_ONLY,
-    "web_search": DANGER_READ_ONLY,  # 只读检索（非 GET 类外部写操作见 http_request）
     "http_request": DANGER_WRITE,
     "python_sandbox": DANGER_WRITE,
     # MCP 外部工具一律按 write 处理：来源不可控，不能默认可信
@@ -727,13 +508,11 @@ class ToolRegistry:
         query: str,
         tenant_id: str,
         run_id: str = "",
-        approved: dict | None = None,
         arguments: dict | None = None,
     ) -> tuple[ToolResult, bool, str]:
         """带第三层熔断（单步超时）的工具执行。返回 (result, hallucinated, actual_tool_name)。
 
-        - `run_id`：用于检查取消标志与危险工具审批
-        - `approved`：已批准的 `{工具名: True}` 集合；`write` 级工具未批准时**不执行**
+        - `run_id`：用于检查取消标志
         """
         tool, hallucinated = self.resolve(name)
 
@@ -741,22 +520,6 @@ class ToolRegistry:
         if run_id and self.is_cancelled(run_id):
             return (
                 ToolResult(error="运行已被取消", error_class=ERR_CANCELLED),
-                hallucinated,
-                tool.name,
-            )
-
-        # 写类工具必须先审批。返回结构化错误而不是抛异常——
-        # Agent 要读到"需要审批"这个事实并继续用别的工具，而不是整条链断掉。
-        danger = self.danger_of(tool)
-        if danger == DANGER_WRITE and not (approved or {}).get(tool.name):
-            return (
-                ToolResult(
-                    error=(
-                        f"工具 {tool.name} 属于写操作，需人工审批后执行"
-                        f"（danger={danger}）"
-                    ),
-                    error_class=ERR_APPROVAL,
-                ),
                 hallucinated,
                 tool.name,
             )

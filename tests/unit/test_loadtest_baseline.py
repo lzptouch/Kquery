@@ -1,4 +1,4 @@
-"""压测基线留档（`C-02` / `C-03`）。
+"""压测基线留档。
 
 ## 三条验收
 
@@ -73,10 +73,9 @@ def test_document_states_append_not_overwrite():
     assert "追加不覆盖" in doc or "不覆盖" in doc
 
 
-def test_document_has_legacy_and_v2_rows():
-    """旧口径与新口径**分段标注**（不可比的历史数字不能混在一张表里比）。"""
+def test_document_has_baseline_table():
+    """基线表存在，且表头是「日期」开头的 10 列。"""
     doc = BASELINE_DOC.read_text(encoding="utf-8")
-    assert "批次 1 前" in doc, "旧口径数字必须标注为「批次 1 前」"
     assert re.search(r"\|\s*日期\s*\|", doc), "缺少基线表"
 
 

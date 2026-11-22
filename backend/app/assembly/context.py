@@ -31,14 +31,12 @@ if TYPE_CHECKING:  # 破环 / 仅类型检查
 
     from app.core.config import Settings
     from app.core.metrics import MetricsStore, PromMetrics
-    from app.core.shared_state import SharedState
     from app.services.agent.memory import LongTermMemory
     from app.services.agent.runner import AgentRunner
     from app.services.agent.sessions import SessionStore
     from app.services.agent.tools import ToolRegistry
     from app.services.config_store import RetrievalConfigStore
     from app.services.docstore import DocStore
-    from app.services.external_state import ExternalDocStore
     from app.services.graph.builder import GraphBuilder
     from app.services.graph.images import ImageIndex
     from app.services.graph.query import GraphQueryService
@@ -78,10 +76,6 @@ class Assembly:
     agent_llm: Any
     ocr_engine: Any
     # —— 运行时（runtime.build_runtime）——
-    shared_state: SharedState
-    session_docs: ExternalDocStore | None
-    config_docs: ExternalDocStore | None
-    task_docs: ExternalDocStore | None
     config_store: RetrievalConfigStore
     cache: Any
     limiter: Any

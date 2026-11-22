@@ -12,7 +12,7 @@ class TestAskIdempotency:
     def test_duplicate_inflight_returns_409(self, client):
         """已有同问题在飞 → 立刻 409，不排队、不重复计费。"""
         idem = client.app.state.idempotency
-        key = content_key("default", "保修多久？", "", "")
+        key = content_key("default", "保修多久？", "")
         assert idem.acquire(key) is True  # 模拟另一个请求正在处理
         try:
             resp = client.post("/ask", json={"question": "保修多久？"})

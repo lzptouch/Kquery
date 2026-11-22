@@ -15,7 +15,6 @@ from app.core.config import Settings
 from app.services.upstream import (
     Bulkhead,
     configure_bulkheads,
-    bulkhead,
     bulkheads_stats,
 )
 
@@ -61,64 +60,3 @@ def test_multimodal_channel_registered():
     assert "multimodal" in stats, f"多模态通道未注册：{sorted(stats)}"
     assert stats["multimodal"]["max_permits"] == 2
     _reset_registry()
-
-
-def test_degrade_level_two_on_slow_upstream():
-    """上游 P95 超阈值 → 降级级别 2（`C-10`）。"""
-    from app.services.pipeline import RagPipeline
-
-    settings = Settings(_env_file=None)
-    settings.degrade_ladder_enabled = True
-    settings.degrade_upstream_slow_ms = 8000
-
-    pipeline = object.__new__(RagPipeline)
-    pipeline._settings = settings
-
-    _reset_registry()
-    settings.upstream_llm_permits = 2
-    configure_bulkheads(settings)
-
-    # 正常速度 → 不降级
-    bh = bulkhead("llm")
-    bh._latencies.extend([100.0] * 10)
-    assert pipeline._degrade_level() == 0
-
-    # 变慢 → 级别 2
-    bh._latencies.extend([20000.0] * 10)
-    assert pipeline._degrade_level() == 2
-    _reset_registry()
-
-
-def test_degrade_level_two_requires_enough_samples():
-    """样本不足时不据此降级（刚启动窗口是空的，P95=0 会被误读成「很快」）。"""
-    from app.services.pipeline import RagPipeline
-
-    settings = Settings(_env_file=None)
-    settings.degrade_ladder_enabled = True
-    settings.degrade_upstream_slow_ms = 10
-
-    pipeline = object.__new__(RagPipeline)
-    pipeline._settings = settings
-
-    _reset_registry()
-    settings.upstream_llm_permits = 2
-    configure_bulkheads(settings)
-
-    bh = bulkhead("llm")
-    bh._latencies.extend([99999.0, 99999.0])  # 只有 2 个样本
-    assert pipeline._degrade_level() == 0
-    _reset_registry()
-
-
-def test_degrade_ladder_disabled_by_default():
-    """降级阶梯默认关闭（阈值未标定前不能开）。"""
-    settings = Settings(_env_file=None)
-    assert settings.degrade_ladder_enabled is False
-
-
-def test_slow_threshold_is_recalibrated():
-    """阈值必须重新标定：正常单次 LLM 调用 3~8s，2000ms 开着就会一直降级。"""
-    settings = Settings(_env_file=None)
-    assert settings.degrade_upstream_slow_ms >= 8000, (
-        "上游慢阈值偏小：正常单次 LLM 调用就 3~8s，阈值低于 8000ms 会一直降级"
-    )

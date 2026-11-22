@@ -68,14 +68,6 @@ def test_cache_key_separates_tenant():
     assert a != b
 
 
-def test_cache_key_separates_doc_scope():
-    # F4 快问：问题文本一样但检索范围不同 → 不能互相命中
-    cfg = RetrievalConfig()
-    full = cache_stage.cache_key(_pip(), "这个文件讲了什么", "t1", cfg)
-    scoped = cache_stage.cache_key(_pip(), "这个文件讲了什么", "t1", cfg, doc_id="doc-1")
-    assert full != scoped
-
-
 def test_cache_key_is_stable_for_same_inputs():
     cfg = RetrievalConfig()
     assert cache_stage.cache_key(_pip(), "问题", "t1", cfg) == cache_stage.cache_key(

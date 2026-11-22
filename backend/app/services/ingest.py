@@ -19,7 +19,6 @@ from pathlib import Path
 
 from app.core.tasks import BackgroundQueue
 from app.core.envelope import ApiError, ErrCode
-from app.services.external_state import ExternalDocStore
 from app.domain.schemas import (
     CANCELLABLE_STAGES,
     FILE_CHUNKING,
@@ -72,13 +71,10 @@ class TaskManager:
         ingest_dir: Path,
         post_index: PostIndexHook | None = None,
         workers: int = 2,
-        docs: "ExternalDocStore | None" = None,
         retention_s: int = 1800,
     ) -> None:
         self._knowledge = knowledge
         self._tasks_file = tasks_file
-        # 任务状态外置（批次 4）：多副本时任务列表/进度要一致
-        self._docs = docs
         self._ingest_dir = ingest_dir  # 文件路径按 data/ingest/<task_id>/<filename> 约定推导
         self._lock = threading.Lock()
         self._tasks: dict[str, IngestTask] = {}
@@ -118,36 +114,7 @@ class TaskManager:
 
     # ---- 持久化 ----
 
-    _TASK_INDEX = "tasks"
-
-    def _external(self) -> bool:
-        return self._docs is not None
-
-    def _load_external(self) -> None:
-        assert self._docs is not None
-        for doc in self._docs.list_docs(self._TASK_INDEX, limit=500):
-            try:
-                task = IngestTask.model_validate(doc)
-            except Exception:  # noqa: BLE001 - 入库任务解析失败：跳过该条
-                logger.debug("入库任务解析失败：跳过该条")
-                continue
-            # 服务重启时仍在执行中的任务：标记失败（诚实失败，不留假进度）
-            interrupted = False
-            for f in task.files:
-                if f.status in (FILE_PARSING, FILE_CHUNKING, FILE_INDEXING, FILE_QUEUED) \
-                        and task.status == TASK_RUNNING:
-                    f.status = FILE_FAILED
-                    f.error_stage = f.stage
-                    f.error_reason = "服务重启导致任务中断，可重试"
-                    interrupted = True
-            if interrupted:
-                task.status = TASK_PARTIAL_FAILED
-            self._tasks[task.task_id] = task
-
     def _load(self) -> None:
-        if self._external():
-            self._load_external()
-            return
         if not self._tasks_file.exists():
             return
         try:
@@ -169,16 +136,6 @@ class TaskManager:
             logger.warning("任务文件损坏（忽略并重置）: %s", exc)
 
     def _save(self) -> None:
-        if self._external():
-            assert self._docs is not None
-            for task in self._tasks.values():
-                self._docs.put(
-                    task.task_id,
-                    task.model_dump(),
-                    index=self._TASK_INDEX,
-                    score=_task_score(task),
-                )
-            return
         self._tasks_file.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._tasks_file.with_suffix(".tmp")
         tmp.write_text(

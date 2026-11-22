@@ -54,12 +54,6 @@ spec:
               value: dashscope
             - name: VECTOR_STORE
               value: milvus
-            - name: REDIS_URL
-              valueFrom:
-                secretKeyRef:
-                  name: kquery-secrets
-                  key: redis-url
-                  optional: true
             - name: METRICS_TOKEN
               valueFrom:
                 secretKeyRef:

@@ -1,17 +1,17 @@
-"""Kquery 基线压测 v2（异步版；对应设计项 C-02 / C-03，基线留档见 doc/analysis/并发容量基线.md）。
+"""Kquery 基线压测 v2（异步版；结果追加方式见 `doc/analysis/并发容量基线.md` §三）。
 
 与 v1 的区别：httpx.AsyncClient 真实持有连接（urllib 线程模型测不了"500 条 SSE 长连接"）。
 
 场景：
 1. healthz 探针阶梯（1→10→30 并发，测框架上限）
-2. /knowledge/files 列表阶梯（鉴权读路径）
+2. /knowledge/files 列表阶梯（读路径）
 3. /ask 定速（限流以内，测真实问答延迟与缓存行为）
 4. /ask 超流（验证 60/min 闸门与 429 快速失败，以及背压语义）
 5. /ask/stream 连接保持（N 条 SSE 同时打开，验证异步桥接后连接不占线程）
 
 运行：
     cd backend && uv run python ../scripts/load_test.py \
-        --api http://localhost:8100 --password Admin12345 --connections 100
+        --api http://localhost:8100 --connections 100
 """
 import argparse
 import asyncio
@@ -188,7 +188,7 @@ async def amain(args) -> int:
     failed = 0
 
     async with httpx.AsyncClient(base_url=args.api, headers=headers, limits=limits) as client:
-        # `C-02`：单场景模式——只跑一次并输出**基线表的一行**。
+        # 单场景模式——只跑一次并输出**基线表的一行**。
         if args.markdown_row:
             stat = await bench(
                 f"ask ×{args.concurrency}", args.concurrency, args.duration, make_ask(client)
@@ -244,7 +244,7 @@ def markdown_row(
     stat: Stat,
     note: str = "",
 ) -> str:
-    """把一次压测产出成**基线表的一行**（`C-02`）。
+    """把一次压测产出成**基线表的一行**。
 
     ## 为什么要脚本产出
 
@@ -271,10 +271,9 @@ def markdown_row(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", default="http://localhost:8100")
-    parser.add_argument("--password", default="Admin12345")
     parser.add_argument("--duration", type=float, default=8.0)
     parser.add_argument("--connections", type=int, default=100)
-    # `C-02`：基线留档——把结果产出成基线表的一行（追加，不覆盖）
+    # 基线留档——把结果产出成基线表的一行（追加，不覆盖）
     parser.add_argument(
         "--markdown-row", action="store_true",
         help="只输出 Markdown 行（供追加到 doc/analysis/并发容量基线.md）",

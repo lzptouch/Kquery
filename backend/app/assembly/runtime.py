@@ -1,17 +1,9 @@
-"""运行时装配：进程参数 / 指标 / 共享状态 / 限流 / 缓存 / 执行器（`A-12`）。
+"""运行时装配：进程参数 / 指标 / 限流 / 缓存 / 执行器（`A-12`）。
 
 ## 装配顺序为什么在这些地方较真
 
 - **指标必须最先**：模型层（`LLMRouter` 的降级计数）、流水线、中间件都要往里记数；
-- **共享状态必须早于缓存 / 限流 / 幂等 / 状态外置**：它们是同一份门面的四个消费者，
-  重建一次就会出现「两份 Redis 连接池、两份进程内兜底字典」；
 - **执行器必须早于流水线与 Agent**：限流拒绝（`C-11`）要靠执行器的队列深度。
-
-## 门面单实例纪律
-
-`SharedState` 在本进程内**只允许一个实例**。早先 `main.py` 里建了两次
-（一次给会话/配置/入库任务，一次给快问/缓存/限流），于是两者观测到的
-「Redis 是否可用」可以是不同答案。现在只在 `build_runtime()` 里建一次。
 """
 from __future__ import annotations
 
@@ -21,10 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 from app.assembly.context import Assembly
 from app.core.logging_setup import get_logger
 from app.core.metrics import MetricsStore, PromMetrics
-from app.core.shared_state import SharedState
 from app.services.cache import build_cache
 from app.services.config_store import RetrievalConfigStore
-from app.services.external_state import ExternalDocStore
 from app.services.idempotency import IdempotencyStore
 from app.services.metrics_query import PrometheusClient
 from app.services.pipeline_executor import PipelineExecutor
@@ -116,49 +106,29 @@ def build_metrics(asm: Assembly) -> None:
 
 
 def build_runtime(asm: Assembly) -> None:
-    """共享状态 / 配置存储 / 幂等 / 缓存 / 限流 / 执行器 / 灰度控制器。"""
+    """配置存储 / 幂等 / 缓存 / 限流 / 执行器 / 灰度控制器。"""
     settings = asm.settings
     app = asm.app
     prom = asm.prom
     metrics_store = asm.metrics_store
 
-    # F6：共享状态门面（Redis 不可用时自动降级为进程内）
-    # 必须在缓存/限流/配额之前建好——它们都要用它做多副本共享。
-    # 状态外置（批次 4）也依赖它：会话/检索配置/入库任务存在共享状态里，
-    # 多副本才能看到同一份（此前是本地文件 → 切副本就"状态不见了"）。
-    shared_state = SharedState(settings.redis_url, settings.redis_key_prefix)
-    asm.shared_state = shared_state
-    app.state.shared_state = shared_state
-    # **只在配置了 Redis 时才外置**：没配 Redis 就是单副本语义，
-    # 本地文件更合适（可检查、可备份、进程重启不丢）。
-    # 配了 Redis 但连不上 → SharedState 自动降级到进程内（Fail-Open），
-    # 此时状态外置仍在（只是不再跨副本），degraded 状态可观测。
-    _use_external = bool(settings.redis_url.strip())
-    asm.session_docs = ExternalDocStore(shared_state, "session") if _use_external else None
-    asm.config_docs = ExternalDocStore(shared_state, "retrieval") if _use_external else None
-    asm.task_docs = ExternalDocStore(shared_state, "ingest") if _use_external else None
-
     config_store = RetrievalConfigStore(
         settings.data_dir / "retrieval-config.json",
         apply_delay_s=settings.retrieval_config_apply_delay_s,
         settings=settings,
-        docs=asm.config_docs,
     )
     asm.config_store = config_store
     app.state.config_store = config_store
-    # 幂等（在飞去重 + 结果重放）：与限流/缓存共用同一份共享状态，
-    # 因此 Redis 可用时天然跨副本生效（前端自动重试不会重复计费）。
-    app.state.idempotency = IdempotencyStore(shared_state)
+    # 幂等（在飞去重 + 结果重放）：进程内存储（单副本语义）
+    app.state.idempotency = IdempotencyStore()
     cache = build_cache(
-        provider=settings.cache_backend,
         settings=settings,
         embeddings=asm.embeddings,
         tenant_id=settings.default_tenant_id,
-        state=shared_state,
     )
     asm.cache = cache
     app.state.cache = cache
-    limiter = build_limiter(state=shared_state)
+    limiter = build_limiter()
     asm.limiter = limiter
     app.state.limiter = limiter
     # 多副本下的指标真相源：Prometheus（每副本一份 → 抓取聚合）。

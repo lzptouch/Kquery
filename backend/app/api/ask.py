@@ -11,10 +11,8 @@ import asyncio
 import threading
 import time
 from collections.abc import Iterator
-from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.core.config import Settings
@@ -55,25 +53,7 @@ def _sse(event: str, data: dict) -> str:
 
 
 def _use_agent(req: AskRequest, settings: Settings) -> bool:
-    # 快问（doc_id）强制走线性路径：Agent 路径的检索没有接 doc_id 过滤，
-    # 放行会变成"限定单文档的提问却检索了全库"。
-    if req.doc_id:
-        return False
     return settings.agent_enabled and (req.mode == "agent" or req.session_id is not None)
-
-
-def _assert_quick_doc(request: Request, req: AskRequest, principal: Principal) -> None:
-    """快问的 doc_id 必须属于当前主体（否则等于越权访问他人临时文档）。
-
-    同时校验**会话维度**：绑定到某个会话的临时文档，只能在该会话里提问
-    （对齐 doc-qa 的"会话内快速解析"语义）。未绑定会话的文档不受此限。
-    """
-    if not req.doc_id:
-        return
-    service = getattr(request.app.state, "quickask", None)
-    if service is None:
-        raise ApiError(ErrCode.QUICK_DOC_EXPIRED, "快问功能不可用", http_status=404)
-    service.get_meta(req.doc_id, principal, session_id=req.session_id)
 
 
 def _agent_identity(req: AskRequest, principal: Principal) -> tuple[str, str, str]:
@@ -207,7 +187,7 @@ async def ask(
     # ① 在飞去重（按问题内容）：前端在 429/503 后会自动重试一次，
     #    同一问题会被算两次钱，还可能拿到两份不一致的答案。
     #    拿到占位就执行，否则立刻 409——不排队（排队等于"再等一轮"，更贵更慢）。
-    inflight_key = content_key(tenant, req.question, session_id or "", req.doc_id or "")
+    inflight_key = content_key(tenant, req.question, session_id or "")
     # ② 幂等键（结果重放）：调用方显式声明"这是同一次提交"，成功后可直接回放。
     replay_key = (request.headers.get("Idempotency-Key") or "").strip()
     replay_scope = f"{tenant}:{replay_key}" if replay_key else ""
@@ -228,7 +208,6 @@ async def ask(
             ErrCode.REQUEST_IN_PROGRESS, "同一问题正在处理中，请稍候再试", http_status=409
         )
     try:
-        _assert_quick_doc(request, req, principal)
         if _use_agent(req, settings):
             runner: AgentRunner = request.app.state.agent_runner
 
@@ -274,7 +253,7 @@ async def ask(
         try:
             result = await executor.run_async(
                 scoped.ask, req.question, tenant, trace_id, req.top_k,
-                doc_id=req.doc_id, deadline=deadline, cancel=cancel,
+                deadline=deadline, cancel=cancel,
             )
         finally:
             watcher.cancel()
@@ -559,8 +538,6 @@ async def ask_stream(
     trace_id = get_trace_id()
     set_trace_id(trace_id)
     _validate_question(req)
-    # F4 快问：doc_id 必须属于当前主体/会话（否则等于越权访问他人临时文档）
-    _assert_quick_doc(request, req, principal)
     executor: PipelineExecutor = request.app.state.pipeline_executor
     use_agent = _use_agent(req, settings)
     runner: AgentRunner | None = request.app.state.agent_runner if use_agent else None
@@ -574,7 +551,7 @@ async def ask_stream(
     # 在飞去重：前端在 SSE 失败后会自动重试一次 → 同一问题被算两次钱。
     # SSE 尤其危险——两次都"成功"，用户只会觉得答得慢，不会察觉被算了两次。
     idem: IdempotencyStore = request.app.state.idempotency
-    inflight_key = content_key(tenant, req.question, session_id or "", req.doc_id or "")
+    inflight_key = content_key(tenant, req.question, session_id or "")
     if not idem.acquire(inflight_key):
         raise ApiError(
             ErrCode.REQUEST_IN_PROGRESS, "同一问题正在处理中，请稍候再试", http_status=409
@@ -601,10 +578,9 @@ async def ask_stream(
                 # F5：首轮自动命名（流式结束后补写标题）
                 _auto_title(request, principal, session_id, req.question, last_answer)
             else:
-                # F4 快问：doc_id 限定检索范围（只查这一个临时文档）
                 yield from scoped.ask_stream(
                     req.question, tenant, trace_id, req.top_k,
-                    doc_id=req.doc_id, deadline=deadline, cancel=cancel,
+                    deadline=deadline, cancel=cancel,
                 )
         finally:
             # 流结束（含中断/异常）都要释放在飞占位，
@@ -693,146 +669,6 @@ async def resume_stream(
             "X-SSE-Resume": "enabled",
         },
     )
-
-
-# ----------  · 人在环（HITL）----------
-
-
-class ResumeRequest(BaseModel):
-    """人工介入决策。
-
-    - `hint`：补充线索，注入下一次生成
-    - `force_answer`：知悉证据不足并授权作答（标 incomplete）
-    - `stop`：终止本次运行
-    - `approve` / `reject`：批准（或拒绝）待审批的写类工具（`value` = 工具名）
-    """
-
-    action: Literal["hint", "force_answer", "stop", "approve", "reject"] = "force_answer"
-    value: str = ""
-
-
-@router.get("/ask/runs/{run_id}/interrupt", response_model=Envelope)
-def get_interrupt(
-    run_id: str,
-    request: Request,
-    principal: Principal = Depends(get_principal),
-    settings: Settings = Depends(get_app_settings),
-) -> Envelope:
-    """查询某个 run 是否停在人工介入点（前端刷新后据此恢复"待补充"卡片）。"""
-    trace_id = get_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    runner: AgentRunner = request.app.state.agent_runner
-    _assert_run_owner(run_id, principal, settings)
-    state = runner.interrupt_state(run_id)
-    return ok_envelope(state, trace_id, elapsed_ms_since(started))
-
-
-class ApproveRequest(BaseModel):
-    """写类工具的审批请求。
-
-    - `tools`：要批准（或撤销）的工具名列表
-    - `approved`：True=批准，False=撤销
-    """
-
-    tools: list[str] = Field(default_factory=list)
-    approved: bool = True
-
-
-@router.post("/ask/runs/{run_id}/approve", response_model=Envelope,
-             dependencies=[Depends(enforce_rate_limit)])
-def approve_run(
-    run_id: str,
-    req: ApproveRequest,
-    request: Request,
-    principal: Principal = Depends(get_principal),
-    settings: Settings = Depends(get_app_settings),
-) -> Envelope:
-    """批准（或撤销）某个 run 的写类工具。
-
-    写类工具（http_request / python_sandbox / mcp 等）默认**不执行**：
-    图节点在执行前会挂起（`reason=tool_approval_required`），
-    前端拿到待批清单后调用本端点登记授权，再调用 `/resume` 继续。
-
-    本端点是**预审批**入口：授权对该 run 内的后续同工具步骤持续有效，
-    不必每次都打断。
-    """
-    trace_id = get_trace_id()
-    set_trace_id(trace_id)
-    started = now_ms()
-    runner: AgentRunner = request.app.state.agent_runner
-    _assert_run_owner(run_id, principal, settings)
-
-    requested = [str(t).strip() for t in (req.tools or []) if str(t).strip()]
-    if not requested:
-        raise ApiError(ErrCode.INVALID_INPUT, "未指定要审批的工具", http_status=400)
-    write_tools = set(runner.write_tools())
-    if not write_tools:
-        # 注册表里没有写类工具 → 本次没有任何东西可批。
-        # 明确报错而不是"假装批了"：静默成功会让前端以为审批已生效。
-        raise ApiError(
-            ErrCode.INVALID_INPUT, "当前没有可审批的写类工具", http_status=400
-        )
-    all_tools = set(runner.all_tools())
-    unknown = [t for t in requested if t not in all_tools]
-    not_write = [t for t in requested if t in all_tools and t not in write_tools]
-    accepted = [t for t in requested if t in write_tools]
-    if not accepted:
-        detail = "、".join(unknown + not_write)
-        raise ApiError(
-            ErrCode.INVALID_INPUT,
-            f"不是可审批的写类工具：{detail}",
-            http_status=400,
-        )
-    state = runner.approve_tools(run_id, accepted, approved=req.approved)
-    logger.info(
-        "写类工具审批 run_id=%s tools=%s approved=%s", run_id, accepted, req.approved
-    )
-    return ok_envelope(
-        {
-            "run_id": run_id,
-            "approved_tools": sorted(state),
-            "rejected_tools": unknown + not_write,
-        },
-        trace_id,
-        elapsed_ms_since(started),
-    )
-
-
-@router.post("/ask/runs/{run_id}/resume", dependencies=[Depends(enforce_rate_limit)])
-async def resume_run(
-    run_id: str,
-    req: ResumeRequest,
-    request: Request,
-    principal: Principal = Depends(get_principal),
-    settings: Settings = Depends(get_app_settings),
-) -> StreamingResponse:
-    """唤醒挂起的 run，继续把事件流跑完（SSE，与 `/ask/stream` 同构）。"""
-    trace_id = get_trace_id()
-    set_trace_id(trace_id)
-    executor: PipelineExecutor = request.app.state.pipeline_executor
-    runner: AgentRunner = request.app.state.agent_runner
-    tenant, user, _ = _agent_identity(AskRequest(question="-"), principal)
-    _assert_run_owner(run_id, principal, settings)
-    decision = {"action": req.action, "value": req.value}
-    if req.action in ("approve", "reject") and req.value.strip():
-        # 审批决策同时登记到 runner：既让本次恢复带上授权，
-        # 也让"同一 run 内后续同工具步骤"不再重复打断。
-        runner.approve_tools(run_id, [req.value.strip()], approved=(req.action == "approve"))
-
-    def factory() -> Iterator[tuple[str, dict]]:
-        for event, payload in runner.resume(
-            run_id,
-            decision,
-            doc_name_resolver=request.app.state.knowledge.filename_of,
-            trace_id=trace_id,
-        ):
-            if event == "_final":
-                yield "done", {**payload, "trace_id": trace_id}
-            else:
-                yield event, payload
-
-    return _stream_response(executor, factory, trace_id, on_value_error=True)
 
 
 def _assert_run_owner(run_id: str, principal: Principal, settings: Settings) -> None:

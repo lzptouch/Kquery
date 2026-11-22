@@ -58,7 +58,6 @@ class ToolContext:
     user_id: str = "anon"
     run_id: str = ""
     trace_id: str = ""
-    approved_tools: dict[str, bool] = field(default_factory=dict)
     extra: dict = field(default_factory=dict)
 
 

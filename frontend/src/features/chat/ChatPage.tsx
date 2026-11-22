@@ -14,13 +14,9 @@ import {
   renameSession,
 } from "../../lib/api-client";
 import { askStream } from "../../lib/sse-client";
-import { approveRun, resumeRun } from "../../lib/api-client";
-import type { AwaitingHumanPayload } from "../../lib/hitl";
-import { ToolApprovalCard } from "./components/ToolApprovalCard";
 import { ChatInput, type ChatInputHandle } from "./components/ChatInput";
 import { Markdown } from "./components/Markdown";
 import { MessageBubble } from "./components/MessageBubble";
-import { QuickAttachPanel, type QuickDoc } from "./components/QuickAttachPanel";
 import { SessionSidebar } from "./components/SessionSidebar";
 import { dropFailedTurn, turnsToMessages } from "./message-ops";
 import type {
@@ -54,8 +50,6 @@ export function ChatPage() {
   const [highlight, setHighlight] = useState<{ messageId: string; rank: number } | null>(null);
   const [preview, setPreview] = useState<Evidence | null>(null);
   const [rateLimit, setRateLimit] = useState<RateLimitState | null>(null);
-  // 人在环：待人工决策的挂起点（写类工具待批 / 补充线索）
-  const [pendingApproval, setPendingApproval] = useState<AwaitingHumanPayload | null>(null);
   // ---- 会话状态 ----
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSession, setActiveSession] = useState<string | null>(null);
@@ -66,9 +60,6 @@ export function ChatPage() {
   const [showJumpToBottom, setShowJumpToBottom] = useState(false);
   /** 当前渲染的消息条数（从末尾往前数）；「显示更早」按页递增 */
   const [visibleCount, setVisibleCount] = useState(MESSAGE_PAGE_SIZE);
-  // ---- F4 快问：当前临时文档（提问时随请求带上 doc_id）----
-  const [quickDoc, setQuickDoc] = useState<QuickDoc | null>(null);
-  const [attachOpen, setAttachOpen] = useState(false);
   const inputRef = useRef<ChatInputHandle>(null);
 
   const patchMessage = useCallback((id: string, patch: Partial<ChatMessage>) => {
@@ -268,17 +259,6 @@ export function ChatPage() {
           patchMessage(assistantId, {
             verdict: "refused", refusalReason: reason, confidence: 0,
           }),
-        // 人在环：后端在**执行写类工具之前**挂起 → 这里渲染审批卡片。
-        // 副作用此刻还没发生，用户点"允许"才会真的执行。
-        onAwaitingHuman: (payload) => {
-          setPendingApproval(payload);
-          patchMessage(assistantId, { streaming: false, incomplete: true });
-          pushNode({
-            kind: "reflect",
-            title: "⏸ 等待人工决策",
-            detail: payload.tool ? `待批准工具：${payload.tool}` : (payload.reason ?? ""),
-          });
-        },
         // F5：推荐追问（后端在 done 之前发出）
         onFollowups: ({ items }) =>
           patchMessage(assistantId, { followups: items ?? [] }),
@@ -316,9 +296,9 @@ export function ChatPage() {
             patchMessage(assistantId, { streaming: false, error, traceId: undefined });
           }
         },
-      }, { sessionId, mode: "agent", docId: quickDoc?.docId ?? null }).finally(() => setStreaming(false));
+      }, { sessionId, mode: "agent" }).finally(() => setStreaming(false));
     },
-    [streaming, patchMessage, ensureSession, activeSession, refreshSessions, quickDoc],
+    [streaming, patchMessage, ensureSession, activeSession, refreshSessions],
   );
 
   const stop = useCallback(() => {
@@ -464,54 +444,14 @@ export function ChatPage() {
           </button>
         )}
 
-        {pendingApproval ? (
-          <div className="chat-approval-slot">
-            <ToolApprovalCard
-              payload={pendingApproval}
-              onDecide={async (action, value) => {
-                const runId = pendingApproval.run_id;
-                if (!runId) throw new Error("缺少 run_id，无法恢复");
-                await resumeRun(runId, action, value);
-                setPendingApproval(null);
-              }}
-              onApproveAll={async (tool) => {
-                const runId = pendingApproval.run_id;
-                if (!runId) throw new Error("缺少 run_id，无法授权");
-                await approveRun(runId, [tool], true);
-              }}
-            />
-          </div>
-        ) : null}
-
         <div className="chat-input-area">
-          {attachOpen && (
-            <QuickAttachPanel
-              current={quickDoc}
-              onAttach={(doc) => {
-                setQuickDoc(doc);
-                setAttachOpen(false);
-              }}
-              onDetach={() => setQuickDoc(null)}
-              onClose={() => setAttachOpen(false)}
-              sessionId={activeSession}
-            />
-          )}
           <ChatInput
             ref={inputRef}
             disabled={false}
             streaming={streaming}
             onSend={(q) => void send(q)}
             onStop={stop}
-            onAttach={() => setAttachOpen((v) => !v)}
           />
-          {quickDoc && !attachOpen && (
-            <div className="quick-attach-bar trace-id">
-              附件提问中：{quickDoc.filename}（{quickDoc.chunks} 片段）
-              <button type="button" className="btn-text" onClick={() => setQuickDoc(null)}>
-                取消
-              </button>
-            </div>
-          )}
         </div>
       </div>
 

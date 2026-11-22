@@ -9,9 +9,9 @@
 import json
 import queue
 import threading
-from pathlib import Path
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Iterator
 
 from langgraph.graph.state import CompiledStateGraph
@@ -26,10 +26,8 @@ from app.services.agent.budget import (
 )
 from app.services.agent.checkpointer import thread_id_for
 from app.services.agent.cost import get_ledger
-from app.services.agent.react import ReActThinker
 from app.services.agent.sessions import SessionStore
 from app.services.agent.state import initial_state
-from app.services.agent.tools import DANGER_WRITE
 from app.services.pipeline import (
     GENERAL_KNOWLEDGE_PROMPT,
     NO_INFO_ANSWER,
@@ -38,7 +36,6 @@ from app.services.pipeline import (
     build_evidence_block,
 )
 from app.services.validation.history import CRAG_KIND
-from app.core.errors import ConfigError
 from app.core.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -215,7 +212,7 @@ class AgentRunner:
         history_store=None,  # ValidationHistoryStore：CRAG 轮次落库
         score_top_n: int = 2,  # 证据充分度聚合的 Top-N（与 crag_score_top_n 对齐）
         settings=None,  # Settings：读取三预算配置，可缺省（测试用默认预算）
-        checkpointer=None,  # BaseCheckpointSaver：HITL 挂起与续跑的前提
+        checkpointer=None,  # BaseCheckpointSaver：断点续跑的前提
         prom=None,  # PromMetrics：Agent 路径埋点，可缺省（测试）
         llm=None,  # LLM：仅用于读取 last_usage 做 token 埋点，不参与生成（图闭包持有）
         self_checker=None,  # HallucinationChecker：逐句自检
@@ -231,9 +228,6 @@ class AgentRunner:
         self._history = history_store
         self._score_top_n = max(1, score_top_n)
         self._settings = settings
-        # 按 agent_mode 决定是否启用 ReAct（None = 走既有计划式路径）
-        mode = str(getattr(settings, "agent_mode", "plan_execute") or "plan_execute").lower()
-        self._thinker = ReActThinker(llm) if (mode == "react" and llm is not None) else None
         self._registry = registry
         self._memory = memory
         self._checkpointer = checkpointer
@@ -249,11 +243,6 @@ class AgentRunner:
         # 改为固定池 + 许可闸门；池必须与工具池分离（图线程等待工具 future，同池死锁）。
         self._executor = executor or ThreadPoolExecutor(max_workers=8, thread_name_prefix="agent-run")
         self._permits = threading.Semaphore(max(1, int(run_permits)))
-        # 写类工具的人工审批（run_id → {工具名: True}）。
-        # 生命周期跨"中断 → resume"：run 挂起时审批必须留着，否则恢复后又要重批。
-        self._approved_lock = threading.Lock()
-        self._approved_tools: dict[str, dict[str, bool]] = {}
-
     # ---- 对外主入口：事件流 ----
 
     def run(self, *args, **kwargs) -> Iterator[tuple[str, dict]]:
@@ -343,25 +332,6 @@ class AgentRunner:
         else:
             thread_id = f"trace:{trace_id}" if trace_id else None
 
-        # 只有同时具备 checkpointer 与 thread_id 时才允许挂起——interrupt()
-        # 没有 checkpointer 会直接抛错。条件性判定（低置信/拒答/全工具失败）在
-        # answer 节点内做，这里只负责"是否具备挂起能力 + 阈值"。
-        hitl_cfg = None
-        # 仅在**有 session_id** 时启用：run_id 由 session_id 派生，才带得动
-        # `{tenant}:{user}:` 前缀做归属校验；无 session 的 run 无法被安全地 resume。
-        if (
-            self._checkpointer is not None
-            and thread_id
-            and session_id
-            and self._settings is not None
-        ):
-            if bool(getattr(self._settings, "agent_hitl_enabled", False)):
-                hitl_cfg = {
-                    "score_threshold": float(
-                        getattr(self._settings, "agent_hitl_score_threshold", 0.5)
-                    )
-                }
-
         def work() -> None:
             try:
                 config = {
@@ -369,26 +339,8 @@ class AgentRunner:
                         "emit": emit,
                         # 预算账本注入图，tool_node 每轮调用前检查
                         "budget": budget,
-                        # HITL 配置（None = 不挂起）
-                        "hitl": hitl_cfg,
-                        # 独立校验器（None = 跳过校验，行为同改造前）
-                        "verifier": (
-                            self._self_checker
-                            if (self._settings is not None
-                                and getattr(self._settings, "agent_verify_enabled", False))
-                            else None
-                        ),
                         # 长期记忆提示（注入规划/思考的提示词）
                         "memory_hint": self._memory_hint(tenant_id),
-                        # react 模式注入 thinker（None = 走 plan_execute）
-                        "thinker": self._thinker,
-                        "tool_catalog": (
-                            self._registry.catalog() if self._registry is not None else []
-                        ),
-                        "max_verify_rounds": int(
-                            getattr(self._settings, "agent_max_verify_rounds", 1)
-                            if self._settings else 1
-                        ),
                         # `ST-03`：上下文预算（Agent 证据此前**无上限**）与父块查找
                         "context_token_budget": int(
                             getattr(self._settings, "context_token_budget", 0) or 0
@@ -406,8 +358,6 @@ class AgentRunner:
                 }
                 if thread_id:
                     config["configurable"]["thread_id"] = thread_id
-                # 预审批（用户在中断前就授权过的写类工具）
-                config["configurable"]["approved_tools"] = self.approved_tools(thread_id or "")
                 # M5：资产目录（VLM 直答据此定位原图文件）
                 assets_dir = self._assets_dir()
                 if assets_dir:
@@ -431,8 +381,6 @@ class AgentRunner:
 
         final_state: dict | None = None
         buffered_tokens: list[str] = []
-        interrupted = False  # 图是否停在 interrupt() 上等人
-        hitl_payload: dict = {}
         # deadline 兜底。此前 events.get() 无 timeout，上游 LLM 卡死
         # 会让请求线程永久挂起。这里给一个硬上限：到期即放弃等待，
         # 走降级作答——预算控制的目的是保护资源，不是无限期占着连接。
@@ -452,18 +400,6 @@ class AgentRunner:
             event, payload = item
             if event == "_state":
                 final_state = payload
-                # 图在 answer 节点内 interrupt() → invoke 返回的 dict 带
-                # `__interrupt__`。此时**不能**当正常结果处理：没有 final_answer，
-                # 必须让调用方知道"这是在等人"，否则前端只会看到一个空答案。
-                pending = payload.get("__interrupt__") if isinstance(payload, dict) else None
-                if pending:
-                    interrupt_payload = (
-                        pending[0].value if hasattr(pending[0], "value") else dict(pending[0])
-                    )
-                    interrupted = True
-                    hitl_payload = interrupt_payload
-                    yield "awaiting_human", {**interrupt_payload, "run_id": thread_id or ""}
-                    continue
                 continue
             if event == "_error":
                 raise payload
@@ -541,30 +477,6 @@ class AgentRunner:
                     action=str(payload.get("next_action", "unknown"))
                 ).inc()
             yield event, payload
-
-        # 中断时短路——没有答案可扫描/自检/落快照，
-        # 直接把"待人工"作为终态返回（快照留到 resume 后的那一轮再写）。
-        if interrupted:
-            result = {
-                "answer": "",
-                "evidence": [],
-                "verdict": "awaiting_human",
-                "trace_id": trace_id,
-                "elapsed_ms": int((time.monotonic() - started) * 1000),
-                "awaiting_human": True,
-                "run_id": thread_id or "",
-                "hitl": hitl_payload,
-                "budget": budget.snapshot(),
-            }
-            yield "confidence", {
-                "verdict": "awaiting_human", "score": None,
-                "unsupported_claims_count": 0, "regenerated": False,
-                "unvalidated": True, "removed_claims": [],
-                "confidence": None, "self_check": None,
-                "budget": budget.snapshot(),
-            }
-            yield "_final", result
-            return
 
         # ---- 答案定稿（输出侧）----
         raw_answer = (final_state or {}).get("final_answer", "")
@@ -804,47 +716,6 @@ class AgentRunner:
         except Exception as exc:  # noqa: BLE001 - 记忆写入绝不阻断主流程
             logger.debug("长期记忆提炼失败（忽略）: %s", exc)
 
-    # ---- 人在环：写类工具审批 ----
-
-    def approve_tools(
-        self, run_id: str, tools: list[str], approved: bool = True
-    ) -> dict[str, bool]:
-        """登记（或撤销）某 run 的写类工具审批，返回该 run 当前的审批集合。
-
-        这是"预审批"入口：用户可以在看到待批之前就授权某类工具，
-        避免每次都打断。真正的逐次审批发生在图节点的 `interrupt()` 上。
-        """
-        with self._approved_lock:
-            current = self._approved_tools.setdefault(run_id, {})
-            for name in tools or []:
-                name = str(name).strip()
-                if not name:
-                    continue
-                if approved:
-                    current[name] = True
-                else:
-                    current.pop(name, None)
-            if not current:
-                self._approved_tools.pop(run_id, None)
-            return dict(current)
-
-    def approved_tools(self, run_id: str) -> dict[str, bool]:
-        """取某 run 的预审批集合（供图执行时注入 configurable）。"""
-        if not run_id:
-            return {}
-        with self._approved_lock:
-            return dict(self._approved_tools.get(run_id) or {})
-
-    def all_tools(self) -> list[str]:
-        """注册表里的全部工具名（审批接口用来区分"未知工具"与"不是写类工具"）。"""
-        if self._registry is None:
-            return []
-        try:
-            return [e.get("name", "") for e in self._registry.catalog()]
-        except Exception:  # noqa: BLE001 - 会话列表读取失败：按空列表处理
-            logger.debug("会话列表读取失败：按空列表处理")
-            return []
-
     def _assets_dir(self):
         """资产目录（图像原文件所在处）；没有设置就不启用 VLM 直答。"""
         settings = getattr(self, "_settings", None)
@@ -852,238 +723,6 @@ class AgentRunner:
         if data_dir is None:
             return None
         return Path(data_dir) / "assets"
-
-    def write_tools(self) -> list[str]:
-        """注册表里的写类工具名（供审批接口校验参数，别让前端传错名字静默失效）。"""
-        if self._registry is None:
-            return []
-        try:
-            entries = self._registry.catalog()
-        except Exception:  # noqa: BLE001 - 会话读取失败：按空列表处理
-            logger.debug("会话读取失败：按空列表处理")
-            return []
-        return [e.get("name", "") for e in entries if e.get("danger") == DANGER_WRITE]
-
-    def clear_approvals(self, run_id: str) -> None:
-        """清理某 run 的审批（run 结束/取消后调用，避免审批集合无界增长）。"""
-        if not run_id:
-            return
-        with self._approved_lock:
-            self._approved_tools.pop(run_id, None)
-
-    # ---- 人在环 ----
-
-    def interrupt_state(self, run_id: str) -> dict:
-        """查询某个 run 是否停在人工介入点（供前端刷新后恢复现场）。
-
-        checkpointer 不可用时一律返回未挂起——不假装有能力。
-        """
-        if self._checkpointer is None or not run_id:
-            return {"awaiting": False, "next": [], "payload": {}}
-        try:
-            snapshot = self._graph.get_state({"configurable": {"thread_id": run_id}})
-        except Exception as exc:  # noqa: BLE001 - 查询中断状态失败 run_id=%s
-            logger.warning("查询中断状态失败 run_id=%s: %s", run_id, exc)
-            return {"awaiting": False, "next": [], "payload": {}}
-        pending = getattr(snapshot, "next", ()) or ()
-        payload: dict = {}
-        for task in getattr(snapshot, "tasks", ()) or ():
-            itrs = getattr(task, "interrupts", ()) or ()
-            if itrs:
-                payload = itrs[0].value if hasattr(itrs[0], "value") else dict(itrs[0])
-                break
-        return {"awaiting": bool(pending), "next": list(pending), "payload": payload}
-
-    def resume(self, *args, **kwargs) -> Iterator[tuple[str, dict]]:
-        """带并发闸门的 resume：与 run 共用许可池（同上限口径）。"""
-        if not self._permits.acquire(blocking=False):
-            raise ApiError(
-                ErrCode.RATE_LIMITED, "Agent 并发已达上限，请稍后重试",
-                http_status=429, retry_after=5,
-            )
-        try:
-            yield from self._resume_events(*args, **kwargs)
-        finally:
-            self._permits.release()
-
-    def _resume_events(
-        self,
-        run_id: str,
-        decision,
-        doc_name_resolver=None,
-        trace_id: str = "",
-    ) -> Iterator[tuple[str, dict]]:
-        """用 `Command(resume=decision)` 唤醒挂起的 run，并产出后续事件流。
-
-        与 `run()` 同为事件生成器，调用方（`/ask/runs/{id}/resume`）可复用同一套
-        消费代码。刻意不重跑会话那套前置逻辑——那些在第一段已经做过，
-        重复执行会产生重复的副作用。
-        """
-        from langgraph.types import Command
-
-        if self._checkpointer is None or not run_id:
-            raise ConfigError("未启用 checkpointer，无法恢复运行")
-
-        events: queue.Queue = queue.Queue()
-        started = time.monotonic()
-        doc_name_resolver = doc_name_resolver or (lambda doc_id: doc_id)
-
-        # 从 checkpoint 恢复预算计数：不恢复的话用户反复 resume 即可绕过 token 预算
-        budget = self._restore_budget(run_id)
-        # 租户同样从 checkpoint 的 state 取（resume 路径不带 principal）
-        tenant_id = self._restore_tenant(run_id)
-        hitl_cfg = None
-        if self._settings is not None and bool(getattr(self._settings, "agent_hitl_enabled", False)):
-            hitl_cfg = {
-                "score_threshold": float(
-                    getattr(self._settings, "agent_hitl_score_threshold", 0.5)
-                )
-            }
-
-        def emit(event: str, payload: dict) -> None:
-            events.put((event, payload))
-
-        def work() -> None:
-            try:
-                config = {
-                    "configurable": {
-                        "emit": emit,
-                        "budget": budget,
-                        "hitl": hitl_cfg,
-                        "thread_id": run_id,
-                        # 预审批 + 审批决策：resume 时把用户刚批的工具带上，
-                        # 否则恢复后写工具仍会被"需审批"挡住。
-                        "approved_tools": self.approved_tools(run_id),
-                        "tool_fallbacks": tool_fallbacks(self._settings),
-                    }
-                }
-                events.put(("_state", self._graph.invoke(Command(resume=decision), config=config)))
-            except Exception as exc:  # noqa: BLE001 - Agent 恢复执行异常 run_id=%s
-                logger.exception("Agent 恢复执行异常 run_id=%s", run_id)
-                events.put(("_error", exc))
-            finally:
-                events.put(_DONE)
-
-        self._executor.submit(work)
-
-        final_state: dict | None = None
-        buffered: list[str] = []
-        hitl_payload: dict = {}
-        interrupted_again = False
-        while True:
-            try:
-                item = events.get(timeout=0.5)
-            except queue.Empty:
-                if budget.deadline_ms and budget.elapsed_ms >= budget.deadline_ms:
-                    final_state = _deadline_fallback_state("", "", budget)
-                    break
-                continue
-            if item is _DONE:
-                break
-            event, payload = item
-            if event == "_state":
-                final_state = payload
-                pending = payload.get("__interrupt__") if isinstance(payload, dict) else None
-                if pending:
-                    interrupted_again = True
-                    hitl_payload = (
-                        pending[0].value if hasattr(pending[0], "value") else dict(pending[0])
-                    )
-                    yield "awaiting_human", {**hitl_payload, "run_id": run_id}
-                continue
-            if event == "_error":
-                raise payload
-            if event == "usage":
-                # 真实 LLM 用量（与主路径同口径）：有真实值就不再叠加常量估算
-                tokens = int(payload.get("tokens") or 0)
-                if tokens > 0:
-                    usage_cost = estimate_cost_yuan(
-                        tokens, self._prices, self._model_name
-                    )
-                    budget.settle_tokens(tokens, usage_cost)
-                    if tenant_id:
-                        get_ledger().record(
-                            trace_id, tenant_id, str(payload.get("phase") or "think"),
-                            self._model_name, tokens, usage_cost,
-                            priced=self._model_name in self._prices,
-                        )
-                continue
-            if event == "tool_end" and budget is not None:
-                budget.settle_tokens(
-                    ESTIMATED_TOKENS_PER_TOOL_CALL,
-                    estimate_cost_yuan(
-                        ESTIMATED_TOKENS_PER_TOOL_CALL, self._prices, self._model_name
-                    ),
-                )
-            if event == "token":
-                buffered.append(payload.get("content", ""))
-                continue
-            yield event, payload
-
-        if interrupted_again:
-            yield "_final", {
-                "answer": "",
-                "evidence": [],
-                "verdict": "awaiting_human",
-                "trace_id": trace_id,
-                "awaiting_human": True,
-                "run_id": run_id,
-                "hitl": hitl_payload,
-                "budget": budget.snapshot(),
-            }
-            return
-
-        state = final_state or {}
-        answer = state.get("final_answer", "")
-        if answer and buffered:
-            for i in range(0, len(answer), 24):
-                yield "token", {"content": answer[i : i + 24]}
-
-        result = self._build_result(
-            state, state.get("question", ""), doc_name_resolver,
-            int((time.monotonic() - started) * 1000), trace_id,
-        )
-        result["budget"] = budget.snapshot()
-        yield "retrieval_stats", result["retrieval"]
-        yield "confidence", {
-            "verdict": result["verdict"], "score": result["confidence"],
-            "unsupported_claims_count": result["unsupported_claims_count"],
-            "regenerated": result["regenerated"], "unvalidated": True,
-            "removed_claims": [], "confidence": None, "self_check": None,
-            "budget": budget.snapshot(),
-        }
-        result["resumed"] = True
-        yield "_final", result
-
-    def _restore_tenant(self, run_id: str) -> str:
-        """从 checkpoint 的 state 取回租户（resume 路径没有 principal 参数）。"""
-        try:
-            snapshot = self._graph.get_state({"configurable": {"thread_id": run_id}})
-            return str((getattr(snapshot, "values", None) or {}).get("tenant_id") or "")
-        except Exception:  # noqa: BLE001 - 记忆读取失败：按空文本处理
-            logger.debug("记忆读取失败：按空文本处理")
-            return ""
-
-    def _restore_budget(self, run_id: str):
-        """从 checkpoint 恢复预算计数（缺失时退化为新账本）。"""
-        budget = (
-            budget_from_settings(self._settings, "") if self._settings else AgentBudget()
-        )
-        try:
-            snapshot = self._graph.get_state({"configurable": {"thread_id": run_id}})
-            saved = (getattr(snapshot, "values", None) or {}).get("budget") or {}
-        except Exception:  # noqa: BLE001 - 记忆快照读取失败：按空快照处理
-            logger.debug("记忆快照读取失败：按空快照处理")
-            saved = {}
-        if saved:
-            budget.tokens_used = int(saved.get("tokens_used", 0) or 0)
-            budget.cost_used = float(saved.get("cost_used_yuan", 0.0) or 0.0)
-            # 恢复时**继承已消耗的时间**：新建账本会把 deadline 重新计时，
-            # 用户反复 resume 就能无限延长整体时限——预算与 token 一样必须单调。
-            elapsed_ms = int(saved.get("elapsed_ms", 0) or 0)
-            if elapsed_ms > 0:
-                budget.started_at = time.monotonic() - elapsed_ms / 1000.0
-        return budget
 
     # ---- 结果归一 ----
 

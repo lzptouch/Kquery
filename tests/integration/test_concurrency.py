@@ -20,8 +20,7 @@ class TestApiContracts:
     def test_core_endpoints_registered(self, client):
         spec = client.app.openapi()["paths"]
         expected = [
-            "/ask", "/ask/stream", "/ask/runs/{run_id}/resume",
-            "/ask/runs/{run_id}/interrupt", "/ask/runs/{run_id}/cancel",
+            "/ask", "/ask/stream", "/ask/runs/{run_id}/cancel",
             "/ask/{trace_id}/cost",
             "/knowledge/ingest", "/knowledge/upload",
             "/graph/entities", "/graph/stats", "/graph/communities",

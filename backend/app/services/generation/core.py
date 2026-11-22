@@ -17,6 +17,7 @@
 `AskResult`，后者**逐条透传**。这样「阻塞返回的内容」与「流式返回的内容」
 在结构上不可能漂移（此前是两份实现，`C-13` 才收敛）。
 """
+import contextlib
 import threading
 import time
 from typing import Iterator
@@ -24,7 +25,6 @@ from typing import Iterator
 from ...core.deadline import Deadline
 from ...core.envelope import ApiError, ErrCode
 from ...core.logging_setup import get_logger
-from ...core.otel import span
 from ...domain.constants import NO_INFO_ANSWER, REFUSAL_TEXT
 from ...domain.schemas import AskResult, RetrievalConfig
 from ..llm import LLMError
@@ -70,7 +70,7 @@ def record(
 
 def core_events(
     pip, question: str, tenant_id: str, trace_id: str, config: RetrievalConfig,
-    doc_id: str | None = None, deadline: "Deadline | None" = None,
+    deadline: "Deadline | None" = None,
     stages: dict[str, int] | None = None,
     stream_tokens: bool = False, cancel: "threading.Event | None" = None,
 ) -> Iterator[tuple[str, dict]]:
@@ -103,24 +103,7 @@ def core_events(
             logger.info("客户端断开，中止阶段 %s trace_id=%s", stage, trace_id)
             raise PipelineCancelled(stage)
 
-    degrade = pip._degrade_level()
-    # 生效的降级级别（独立指标，`C-10`）：开关默认关闭时恒为 0，
-    # 打开后能直接看到「现在真的在降级，还是只是配了没触发」。
-    pip._prom.degrade_level.set(degrade)
-    if degrade >= 1:
-        # 降级阶梯（批次 4，默认关）：上游慢/熔断时跳过预处理（意图/改写/拆解
-        # 的多次 LLM 调用），用原查询直接检索——降级期保可用性，不保预处理质量。
-        analysis = {"degraded": ["preprocess_skipped"], "llm_calls": 0}
-        query_items = [("original", question)]
-        is_chitchat = False
-        pip._prom.shed_total.labels(reason="degrade_preprocess").inc()
-        if degrade >= 2:
-            # 级别 2（上游变慢）：连「额外改写」都不做——改写本身要调 LLM，
-            # 上游正慢的时候再发这些请求只会更慢（并挤占许可）。
-            analysis["degraded"].append("rewrite_skipped")
-            pip._prom.shed_total.labels(reason="degrade_rewrite").inc()
-    else:
-        analysis, query_items, is_chitchat = pip._preprocess(question, tenant_id)
+    analysis, query_items, is_chitchat = pip._preprocess(question, tenant_id)
     preprocess_calls = (analysis or {}).get("llm_calls", 0)
     llm_calls = preprocess_calls
     if analysis is not None:
@@ -164,21 +147,17 @@ def core_events(
     final_branch = "correct"
     unvalidated = False
     refusal_reason = REASON_NO_CONTENT
-    # 降级时 CRAG 轮次收缩为 1（不精炼不重检索）
-    max_rounds = 1 + (0 if degrade >= 1 else (pip._crag.max_iterations if pip._crag else 0))
+    max_rounds = 1 + (pip._crag.max_iterations if pip._crag else 0)
 
-    # 构造检索过滤条件并**下推**。此前 ACL 只在召回之后做后过滤，
-    # 不可见文档会占满 top-k 名额（用户有权看 7 份，却因 3 份不可见
-    # 排在前列而拿不到任何证据）。下推后 Milvus 在召回阶段就排除不可见文档，
-    # FAISS 则由迭代扩取兜住。
-    filters = pip._build_filters(tenant_id, doc_id)
+    # 认证与授权已下线：不再有文档级过滤条件，数据隔离由租户维度收敛
+    # （检索层按 tenant_id 过滤），filters 恒为 None。
+    filters = None
 
     for round_no in range(1, max_rounds + 1):
         # 阶段边界：每轮检索前检查——CRAG 多轮时，第一轮断开就不该再检索。
         _abort_stage(f"crag_round_{round_no}")
         # 检索阶段 span（含查询数、最终召回的统计在下面挂属性）
-        with span("retrieve", **{"kquery.queries": len(query_items),
-                                 "kquery.round": round_no}) as sp:
+        with contextlib.nullcontext():
             retrieve_started = time.perf_counter()
             try:
                 hybrid_result = pip._hybrid.search_multi(
@@ -202,8 +181,6 @@ def core_events(
             stages["retrieval"] = max(
                 0, int((time.perf_counter() - retrieve_started) * 1000) - stages["rerank"]
             )
-            sp.set_attribute("kquery.candidates", len(hybrid_result.candidates))
-            sp.set_attribute("kquery.reranked", bool(hybrid_result.reranked))
         pip._observe_retrieval(hybrid_result)
         # 阶段边界：检索与重排已经花掉了钱，断开后不必再跑 CRAG 评分/精炼。
         _abort_stage("retrieve")
@@ -319,7 +296,7 @@ def core_events(
     used_evidence = [e for e in evidence if e.used]
     evidence_block = build_evidence_block(used_evidence)
     # 生成阶段 span（含证据条数；首 token 延迟由 runner 侧记录）
-    with span("generate", **{"kquery.evidence": len(used_evidence)}) as sp:
+    with contextlib.nullcontext():
         llm_started = time.perf_counter()
         if stream_tokens:
             # `C-13` 真流式：逐块外发，首 token 不再等整段生成完成。
@@ -334,9 +311,6 @@ def core_events(
                     logger.info("客户端断开，中止生成 trace_id=%s", trace_id)
                     break
             stages["llm"] = int((time.perf_counter() - llm_started) * 1000)
-            usage = getattr(pip._llm, "last_usage", None)
-            if usage is not None:
-                sp.set_attribute("gen_ai.usage.total_tokens", int(getattr(usage, "total", 0) or 0))
             llm_calls += 1
             yield from pip._finalize_streamed_answer(
                 question, tenant_id, trace_id, analysis, hybrid_result,
@@ -359,9 +333,6 @@ def core_events(
             )
             return
         stages["llm"] = int((time.perf_counter() - llm_started) * 1000)
-        usage = getattr(pip._llm, "last_usage", None)
-        if usage is not None:
-            sp.set_attribute("gen_ai.usage.total_tokens", int(getattr(usage, "total", 0) or 0))
     llm_calls += 1
 
     # ---- 幻觉自检 + 受限重生成（只一次）----
@@ -559,7 +530,7 @@ def cached_result(pip, entry, hit_kind: str, question: str, tenant_id: str,
 
 def ask(
     pip, question: str, tenant_id: str, trace_id: str, top_k: int | None = None,
-    doc_id: str | None = None, deadline: "Deadline | None" = None,
+    deadline: "Deadline | None" = None,
     cancel: "threading.Event | None" = None,
 ) -> AskResult:
     """同步问答。
@@ -574,8 +545,8 @@ def ask(
     if top_k is not None:
         config = config.model_copy(update={"top_k": top_k})
     digest, signature = pip._cache_dims(config)
-    cache_key = pip._cache_key(question, tenant_id, config, doc_id)
-    scope = doc_id or ""
+    cache_key = pip._cache_key(question, tenant_id, config)
+    scope = ""
 
     stages: dict[str, int] = {}
     cache_started = time.perf_counter()
@@ -601,7 +572,7 @@ def ask(
     try:
         events = list(
             pip._core_events(
-                question, tenant_id, trace_id, config, doc_id,
+                question, tenant_id, trace_id, config,
                 deadline=deadline, stages=stages, cancel=cancel,
             )
         )
@@ -682,7 +653,7 @@ def cached_stream_events(pip, entry, hit_kind: str, question: str, tenant_id: st
 
 def ask_stream(
     pip, question: str, tenant_id: str, trace_id: str, top_k: int | None = None,
-    doc_id: str | None = None, deadline: "Deadline | None" = None,
+    deadline: "Deadline | None" = None,
     cancel: "threading.Event | None" = None,
 ) -> Iterator[tuple[str, dict]]:
     """流式问答（SSE 事件源）。
@@ -696,8 +667,8 @@ def ask_stream(
     if top_k is not None:
         config = config.model_copy(update={"top_k": top_k})
     digest, signature = pip._cache_dims(config)
-    cache_key = pip._cache_key(question, tenant_id, config, doc_id)
-    scope = doc_id or ""
+    cache_key = pip._cache_key(question, tenant_id, config)
+    scope = ""
 
     stages: dict[str, int] = {}
     cache_started = time.perf_counter()
@@ -725,7 +696,7 @@ def ask_stream(
         # 代价是**禁重生成**（方案 A）：自检只下调置信度，不重写答案。
         # `C-04`：把取消事件传进管线，客户端断开时**在阶段边界**提前收尾。
         for kind, payload in pip._core_events(
-            question, tenant_id, trace_id, config, doc_id,
+            question, tenant_id, trace_id, config,
             deadline=deadline, stages=stages,
             stream_tokens=True, cancel=cancel,
         ):

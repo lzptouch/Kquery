@@ -38,17 +38,12 @@ NON_ENVELOPE_200 = {
     ("GET", "/assets/{name}"),  # 图片等二进制资产
     ("GET", "/ask/stream/{trace_id}"),  # SSE 续传：成功即事件流
     ("POST", "/ask/stream"),  # SSE
-    ("POST", "/quickask/ask"),  # SSE
-    ("POST", "/ask/runs/{run_id}/resume"),  # SSE（唤醒挂起的 run）
 }
 
 #: 带路径参数的操作 → 必须做归属（租户/用户/run 前缀）校验。
 #: 全部逐个核对过；新增 `/{id}` 端点必须先在对应模块实现归属断言再登记到这里。
 PATH_PARAM_OPERATIONS = {
-    ("POST", "/ask/runs/{run_id}/approve"),  # _assert_run_owner（run_id 前缀）
     ("POST", "/ask/runs/{run_id}/cancel"),  # _assert_run_owner
-    ("GET", "/ask/runs/{run_id}/interrupt"),  # _assert_run_owner
-    ("POST", "/ask/runs/{run_id}/resume"),  # _assert_run_owner
     ("GET", "/ask/stream/{trace_id}"),  # 泵记录的 tenant/user 比对
     ("GET", "/ask/{trace_id}/cost"),  # CostLedger.for_trace(tenant_id)
     ("GET", "/assets/{name}"),  # ImageStore 按 tenant/asset_id 取
@@ -66,8 +61,6 @@ PATH_PARAM_OPERATIONS = {
     ("POST", "/knowledge/{doc_id}/offline"),  # _assert_doc_tenant
     ("POST", "/knowledge/{doc_id}/probe"),  # _assert_doc_tenant
     ("POST", "/knowledge/{doc_id}/reparse"),  # _assert_doc_tenant
-    ("GET", "/quickask/{doc_id}"),  # QuickAskService.get_meta(principal)
-    ("DELETE", "/quickask/{doc_id}"),  # QuickAskService.get_meta(principal)
     ("GET", "/sessions/{session_id}"),  # SessionStore.get(tenant, user)
     ("PATCH", "/sessions/{session_id}"),  # 同上
     ("DELETE", "/sessions/{session_id}"),  # 同上

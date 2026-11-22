@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 from app.services.agent.state import sanitize_snapshot
-from app.services.external_state import ExternalDocStore
 from app.core.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -38,37 +37,25 @@ LOCK_PRUNE_EVERY = 256  # 每 N 次取锁清一次，避免每请求 O(n) 扫描
 
 
 class SessionStore:
-    """会话存档。
+    """会话存档（本地 JSON 文件，单副本语义）。
 
-    `docs` 不为空时走**外置**路径（批次 4）：会话文档与索引存在共享状态里，
-    多副本共享同一份会话（此前是本地 JSON 文件 → 切副本就"会话不见了"）。
-    未配置 Redis 时仍走本地文件（单副本语义），行为与从前完全一致。
+    共享状态层已随「多副本共享语义」下线，多副本部署下各副本
+    只能看到自己写入的会话——这是已知边界。
     """
 
     def __init__(
         self,
         sessions_dir: Path,
         ttl_s: int = SESSION_TTL_S,
-        docs: "ExternalDocStore | None" = None,
     ) -> None:
         self._dir = sessions_dir
         self._dir.mkdir(parents=True, exist_ok=True)
         self._ttl = ttl_s
-        self._docs = docs
         self._locks: dict[str, threading.Lock] = {}
         # 每个锁最后一次被取用的时刻，供空闲回收判断（键 = session_id）
         self._locks_used_at: dict[str, float] = {}
         self._lock_calls = 0
         self._locks_guard = threading.Lock()
-
-    # ---- 外置路径的键 ----
-
-    @staticmethod
-    def _index_key(tenant_id: str, user_id: str) -> str:
-        return f"{tenant_id}:{user_id}"
-
-    def _external(self) -> bool:
-        return self._docs is not None
 
     # ---- 标识与归属 ----
 
@@ -151,36 +138,11 @@ class SessionStore:
             "updated_at": now,
             "expires_at": now + self._ttl,
         }
-        if self._external():
-            assert self._docs is not None
-            self._docs.put(
-                session_id,
-                session,
-                index=self._index_key(tenant_id, user_id),
-                score=now,
-                ttl_s=self._ttl,
-            )
-            return session
         self._atomic_write(self._path(session_id), json.dumps(session, ensure_ascii=False))
         return session
 
     def get(self, session_id: str, tenant_id: str, user_id: str) -> dict:
         self._check_owner(session_id, tenant_id, user_id)
-        if self._external():
-            assert self._docs is not None
-            session = self._docs.get(session_id)
-            if session is None:
-                # 按需载入：只在错误路径构造信封
-                from app.core.envelope import ApiError, ErrCode
-                raise ApiError(ErrCode.SESSION_NOT_FOUND, "会话不存在或已过期", http_status=404)
-            if session.get("expires_at", 0) < time.time():
-                self._docs.delete(
-                    session_id, index=self._index_key(tenant_id, user_id)
-                )
-                # 按需载入：只在错误路径构造信封
-                from app.core.envelope import ApiError, ErrCode
-                raise ApiError(ErrCode.SESSION_EXPIRED, "会话已过期，请开启新对话", http_status=410)
-            return session
         path = self._path(session_id)
         if not path.exists():
             # 按需载入：只在错误路径构造信封
@@ -207,21 +169,6 @@ class SessionStore:
         return session
 
     def list_sessions(self, tenant_id: str, user_id: str) -> list[dict]:
-        if self._external():
-            assert self._docs is not None
-            now = time.time()
-            out: list[dict] = []
-            for s in self._docs.list_docs(self._index_key(tenant_id, user_id)):
-                if s.get("expires_at", 0) < now:
-                    continue  # 过期会话惰性清理（文档由 TTL 兜底）
-                out.append({
-                    "session_id": s.get("session_id", ""),
-                    "title": s.get("title", "新对话"),
-                    "message_count": len(s.get("turns", [])) * 2,
-                    "updated_at": s.get("updated_at", 0),
-                })
-            out.sort(key=lambda x: x.get("updated_at", 0), reverse=True)
-            return out
         prefix = f"{tenant_id}_{user_id}_"
         sessions = []
         now = time.time()
@@ -248,17 +195,6 @@ class SessionStore:
             session = self.get(session_id, tenant_id, user_id)
             session["title"] = title.strip()[:50]
             session["updated_at"] = time.time()
-            if self._external():
-                assert self._docs is not None
-                self._docs.put(
-                    session_id,
-                    session,
-                    index=self._index_key(tenant_id, user_id),
-                    score=session["updated_at"],
-                    ttl_s=self._ttl,
-                    expect_version=self._docs.version_of(session_id) - 1,
-                )
-                return session
             self._atomic_write(self._path(session_id), json.dumps(session, ensure_ascii=False))
             return session
 
@@ -266,11 +202,7 @@ class SessionStore:
         """删除会话：快照与工具调用明细一并删除（不留残留原文）。"""
         with self._lock_for(session_id):
             self._check_owner(session_id, tenant_id, user_id)
-            if self._external():
-                assert self._docs is not None
-                self._docs.delete(session_id, index=self._index_key(tenant_id, user_id))
-            else:
-                self._path(session_id).unlink(missing_ok=True)
+            self._path(session_id).unlink(missing_ok=True)
         with self._locks_guard:
             self._locks.pop(session_id, None)
             self._locks_used_at.pop(session_id, None)
@@ -336,38 +268,6 @@ class SessionStore:
             # 首问生成会话标题
             if session.get("title") == "新对话" and question:
                 session["title"] = question[:24]
-            if self._external():
-                assert self._docs is not None
-                # 乐观并发：读到的版本若已被别人推进 → 本次放弃并重试一次。
-                # 会话是单用户串行使用的，冲突极罕见；但不检查就可能丢一轮对话。
-                for _attempt in range(3):
-                    version = self._docs.version_of(session_id)
-                    if self._docs.put(
-                        session_id,
-                        session,
-                        index=self._index_key(tenant_id, user_id),
-                        score=session["updated_at"],
-                        ttl_s=self._ttl,
-                        expect_version=version,
-                    ):
-                        break
-                    session = self.get(session_id, tenant_id, user_id)
-                    new_turn = session.get("turn", 0) + 1
-                    session["turn"] = new_turn
-                    self._append_turn(session, {
-                        "question": question, "answer": answer,
-                        "verdict": verdict, "turn": new_turn,
-                        "answer_source": answer_source, "trace_id": trace_id,
-                    })
-                    snapshot = dict(state)
-                    snapshot["evidence"] = state.get("evidence", [])[-EVIDENCE_CARRY_LIMIT:]
-                    snapshot["turn"] = new_turn
-                    session["snapshot"] = sanitize_snapshot(snapshot)
-                    session["updated_at"] = time.time()
-                    session["expires_at"] = time.time() + self._ttl
-                    if session.get("title") == "新对话" and question:
-                        session["title"] = question[:24]
-                return
             self._atomic_write(
                 self._path(session_id),
                 json.dumps(session, ensure_ascii=False, default=str),

@@ -57,30 +57,12 @@ def readyz(request: Request, response: Response) -> JSONResponse:
     store = getattr(request.app.state, "store", None)
     total = int(getattr(store, "total", 0) or 0)
     ready = store is not None
-    # 共享状态（Redis）不可达 → 限流额度按副本数放大、缓存跨副本失效：
-    # 这是"能接流量但语义已变"的状态，必须摘流（X-18）。
-    shared_ok = True
-    shared_detail: dict = {}
-    try:
-        shared = getattr(request.app.state, "shared_state", None)
-        if shared is not None:
-            # backend 取值：redis / local / local(redis-degraded)。
-            # 只有"Redis 配了但连不上"才算不健康——那时限流额度按副本数放大、
-            # 缓存跨副本失效，属于"能接流量但语义已变"，必须摘流。
-            # 压根没配 Redis（local）是**单副本语义**的已知状态，不摘流。
-            backend = shared.backend
-            shared_detail = {"shared_state": backend}
-            shared_ok = backend != "local(redis-degraded)"
-    except Exception:  # noqa: BLE001 - 探针不该因取状态失败而 500
-        shared_ok = False
-    ready = ready and shared_ok
     body = {
         "status": "ready" if ready else "not_ready",
         "index_chunks": total,
         # 空索引单独标注：可服务但答不出东西，与"未就绪"是两回事，
         # 值班同学看这一行就知道该不该去查数据而不是查服务
         "empty_index": ready and total == 0,
-        **shared_detail,
     }
     if ready and total == 0:
         logger.warning("就绪但索引为空：服务可接流量，检索会返回空结果")
@@ -115,8 +97,6 @@ def healthz(request: Request) -> JSONResponse:
         ("vector_store", lambda: {"chunks": int(getattr(state.store, "total", 0) or 0)}),
         ("bm25_index", lambda: {"chunks": int(getattr(state.bm25, "total", 0) or 0)}),
         ("graph_store", lambda: state.graph_store.stats()),
-        # /117：探针暴露当前后端，避免"以为在用 Redis 其实已降级"
-        ("shared_state", lambda: state.shared_state.snapshot()),
         ("long_term_memory", lambda: state.long_term_memory.stats()
          if state.long_term_memory else {"enabled": False}),
         ("parser_router", lambda: {"supported": sorted(state.parser_router.supported_extensions())}),

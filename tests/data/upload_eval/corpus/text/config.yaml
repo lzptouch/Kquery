@@ -1,0 +1,5 @@
+# 澄川生物科技生产环境配置
+env: production
+limits:
+  max_concurrent_tasks: 37   # 生产环境的最大并发任务数
+  queue_timeout_seconds: 120

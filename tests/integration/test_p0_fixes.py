@@ -4,28 +4,21 @@
 
 1.  错误码唯一性（IntEnum 别名导致按码分流失效）
 2.  错误路径 trace_id 与请求一致（用户复制到的追踪号必须能反查日志）
-3.  线性 /ask 路径的 ACL 与认证租户（此前固定 default_tenant_id 且无 ACL）
-4.  线性路径的审计与敏感词扫描（此前只挂 Agent 路径）
-5.  permission_denied 拒答分支（此前永久不可达）
-6.  Agent 路径产出 retrieval_stats / confidence / crag_branch（此前是死代码）
-7.  嵌套检索统计（文档要求 latency_ms / candidates 两组嵌套对象）
-8.  warn 信封 + 44xx 降级码
-9.  SELF_CHECK 字段与 CRAG 轮次落库
-10. reparse 版本化：旧块保留，历史引用不失效
-11. 索引发布闸门：向量条数必须等于块条数
-12. 入库质量红线：pages / short_chunks / quality_flags
-13. 文件 7 态状态机（FILE_PENDING / FILE_UPLOADING 此前零引用）
-14. 真滑动窗口配额 + token 维度
-15. JWT 认证档（alg=none 与算法混淆必须拒绝）
-16. 用户目录持久化（重启不丢）
-17. RRF k / 两级召回数 / 重排模型真正热更新
-18. 语义缓存近似命中 + 缓存故障无感降级
-19. 令牌桶按真实租户分桶
-20. 音频切分：静音点选择 + 时间戳全局平移 + 平台失败分类
-21. 评测 Coverage / code_version / 对比端点
-22. 权限矩阵端点
-23. sql_search 只读闸门 / web_search 未配置时不注册
-24. 启动期配置校验与探针分级
+3.  线性路径护栏（空问题拒绝；ACL 与 permission_denied 已随认证下线一并删除）
+4.  Agent 路径产出 retrieval_stats / confidence / crag_branch（此前是死代码）
+5.  嵌套检索统计（文档要求 latency_ms / candidates 两组嵌套对象）
+6.  warn 信封 + 44xx 降级码
+7.  SELF_CHECK 字段与 CRAG 轮次落库
+8.  reparse 版本化：旧块保留，历史引用不失效
+9.  索引发布闸门：向量条数必须等于块条数
+10. 入库质量红线：pages / short_chunks / quality_flags
+11. 文件 7 态状态机（FILE_PENDING / FILE_UPLOADING 此前零引用）
+12. RRF k / 两级召回数 / 重排模型真正热更新
+13. 语义缓存近似命中 + 缓存故障无感降级
+14. 令牌桶按真实租户分桶
+15. 工具注册：单步超时取配置、幻觉工具名兜底、可选工具无配置不注册
+16. 启动期配置校验与探针分级
+17. 身份固定：认证下线后 principal 恒为 default/local
 """
 from pathlib import Path
 
@@ -35,7 +28,6 @@ from app.core.config import Settings
 from app.core.envelope import ErrCode, validate_code_uniqueness
 from app.core.tracing import get_trace_id, new_trace_id, reset_trace_id, set_trace_id
 from app.domain.schemas import RetrievalConfig, RetrievalStats
-from app.core.errors import InvalidInputError
 from app.services.agent.tools import ToolRegistry
 from app.services.cache import InMemorySemanticCache, _cosine
 from app.core.identity import Principal
@@ -528,15 +520,6 @@ class TestRateLimitTenancy:
 
 
 class TestToolRegistry:
-    def test_sql_search_rejects_writes(self):
-        """只允许 SELECT/WITH 是硬边界，否则 Agent 一次幻觉就能 DROP 表。"""
-        from app.services.agent.tools import SqlSearchTool
-
-        assert SqlSearchTool._validate("SELECT 1") == "SELECT 1"
-        for bad in ("DELETE FROM t", "UPDATE t SET a=1", "DROP TABLE t", "SELECT 1; DROP TABLE t"):
-            with pytest.raises(InvalidInputError):
-                SqlSearchTool._validate(bad)
-
     def test_tool_timeout_comes_from_config(self):
         registry = ToolRegistry(timeout_s=7)
         assert registry._timeout_s == 7

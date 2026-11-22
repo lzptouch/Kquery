@@ -1,10 +1,7 @@
 """工具集扩展与可观测（/134/135）测试。"""
 import json
 import logging
-import sqlite3
 from datetime import date
-
-import pytest
 
 
 class TestDateTimeCalcTool:
@@ -57,49 +54,6 @@ class TestDateTimeCalcTool:
     def test_danger_is_safe(self):
         assert self._tool().danger == "safe"
 
-
-class TestSqlSchemaTool:
-    """sql_schema：让模型先看表再写 SQL，而不是猜表名。"""
-
-    @pytest.fixture()
-    def db(self, tmp_path):
-        path = tmp_path / "biz.db"
-        conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE sales (id INTEGER, tenant_id TEXT, amount REAL)")
-        conn.execute("INSERT INTO sales VALUES (1, 't1', 100.0), (2, 't2', 200.0)")
-        conn.execute("CREATE TABLE secret (id INTEGER, data TEXT)")  # 无租户列
-        conn.commit()
-        conn.close()
-        return str(path)
-
-    def test_returns_columns(self, db):
-        from app.services.agent.tools_extra import SqlSchemaTool
-
-        r = SqlSchemaTool(db, tenant_column="tenant_id").run("sales", "t1")
-        assert not r.error
-        text = r.items[0]["content"]
-        assert "sales" in text and "amount" in text
-
-    def test_hides_table_without_tenant_column(self, db):
-        """与  同一白名单口径：这个工具本身不能成为跨租户泄漏通道。"""
-        from app.services.agent.tools_extra import SqlSchemaTool
-
-        r = SqlSchemaTool(db, tenant_column="tenant_id").run("", "t1")
-        assert all("secret" not in i["content"] for i in r.items)
-
-    def test_samples_are_tenant_scoped(self, db):
-        """样例行只取当前租户——否则 schema 工具会直接泄漏他人数据。"""
-        from app.services.agent.tools_extra import SqlSchemaTool
-
-        r = SqlSchemaTool(db, tenant_column="tenant_id", sample_rows=5).run("sales", "t1")
-        text = " ".join(i["content"] for i in r.items)
-        assert "100.0" in text, "应能看到本租户样例"
-        assert "200.0" not in text, "不得看到其他租户的样例数据"
-
-    def test_danger_is_read_only(self, db):
-        from app.services.agent.tools_extra import SqlSchemaTool
-
-        assert SqlSchemaTool(db).danger == "read_only"
 
 
 class TestListDocumentsTool:

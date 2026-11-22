@@ -343,8 +343,6 @@ class AskRequest(BaseModel):
     session_id: str | None = None  # 携带则在会话上下文中提问（证据跨轮累积）
     mode: str = "auto"  # auto（默认线性）/ agent（状态机）
     user_id: str | None = None  # 归属判定（认证已下线，恒为固定身份 default/local）
-    # F4 快问：限定只检索该临时文档（不传 = 走全知识库）
-    doc_id: str | None = None
 
 
 class AskResult(BaseModel):

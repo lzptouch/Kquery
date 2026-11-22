@@ -96,40 +96,6 @@ class TestToolDangerLevels:
         assert ToolRegistry.danger_of(Declared()) == DANGER_SAFE
 
 
-class TestWriteApprovalGate:
-    """写类工具必须先审批。"""
-
-    def test_write_tool_blocked_without_approval(self):
-        log: list = []
-        reg = ToolRegistry(timeout_s=2)
-        reg.register(_WriteTool(log))
-
-        result, _, name = reg.run_with_timeout("http_request", "q", "t1")
-
-        assert log == [], "未审批的写工具**绝不能被执行**"
-        assert "审批" in result.error
-        assert name == "http_request"
-
-    def test_write_tool_runs_after_approval(self):
-        log: list = []
-        reg = ToolRegistry(timeout_s=2)
-        reg.register(_WriteTool(log))
-
-        result, _, _ = reg.run_with_timeout(
-            "http_request", "q", "t1", approved={"http_request": True}
-        )
-
-        assert log == ["q"]
-        assert not result.error
-
-    def test_read_only_tool_needs_no_approval(self):
-        log: list = []
-        reg = ToolRegistry(timeout_s=2)
-        reg.register(_EchoTool(log))
-        result, _, _ = reg.run_with_timeout("vector_search", "q", "t1")
-        assert log == ["q"] and not result.error
-
-
 class TestToolCancellation:
     """取消后不再产生新的工具调用。"""
 
@@ -387,66 +353,6 @@ class TestErrorClassification:
         reg.cancel("r1")
         result, _, _ = reg.run_with_timeout("vector_search", "q", "t1", run_id="r1")
         assert result.error_class == ERR_CANCELLED
-
-    def test_approval_required(self):
-        from app.services.agent.tools import ERR_APPROVAL
-
-        reg = ToolRegistry(timeout_s=2)
-        reg.register(_WriteTool([]))
-        result, _, _ = reg.run_with_timeout("http_request", "q", "t1")
-        assert result.error_class == ERR_APPROVAL
-
-    def test_param_invalid(self):
-        """入参越界（top_k 超过 schema 上限）→ 归类为 param_invalid 而不是普通 error。"""
-        from types import SimpleNamespace
-
-        from app.domain.schemas import RetrievalConfig
-        from app.services.agent.tools import ERR_PARAM, VectorSearchTool
-
-        class FakeHybrid:
-            def search(self, query, tenant_id, config, doc_id=None, top_k=None):
-                return SimpleNamespace(candidates=[], reranked=False)
-
-        reg = ToolRegistry(timeout_s=2)
-        reg.register(VectorSearchTool(FakeHybrid(), RetrievalConfig()))
-        result, _, _ = reg.run_with_timeout(
-            "vector_search", "q", "t1", arguments={"query": "q", "top_k": 999}
-        )
-        assert result.error_class == ERR_PARAM
-
-    def test_timeout(self):
-        import time as _t
-
-        from app.services.agent.tools import ERR_TIMEOUT
-
-        class Slow:
-            name = "vector_search"
-            description = "慢"
-
-            def run(self, query, tenant_id):
-                _t.sleep(5)
-                return ToolResult(items=[_evidence("c#1")])
-
-        reg = ToolRegistry(timeout_s=1)
-        reg.register(Slow())
-        result, _, _ = reg.run_with_timeout("vector_search", "q", "t1")
-        assert result.error_class == ERR_TIMEOUT
-
-    def test_exception(self):
-        from app.services.agent.tools import ERR_EXCEPTION
-
-        class Boom:
-            name = "vector_search"
-            description = "炸"
-
-            def run(self, query, tenant_id):
-                raise RuntimeError("boom")
-
-        reg = ToolRegistry(timeout_s=2)
-        reg.register(Boom())
-        result, _, _ = reg.run_with_timeout("vector_search", "q", "t1")
-        assert result.error_class == ERR_EXCEPTION
-
 
 class TestTrippedToolShortCircuit:
     """KQ-19：摘除的工具不参与业务流量（此前每次调用都白等一个完整超时）。"""

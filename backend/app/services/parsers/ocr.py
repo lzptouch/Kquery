@@ -102,6 +102,80 @@ class QwenVlOcr:
         raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, f"OCR 识别失败: {last_error}")
 
 
+class ZhipuOcrEngine:
+    """智谱 glm-4v 系视觉模型当 OCR 用（对话式多模态协议，OpenAI 兼容）。
+
+    与 `QwenVlOcr` 的差异：智谱没有专用 `/ocr` 协议，图片走 base64 data URL 进
+    chat/completions；表格/复杂版面结构保真度弱于 qwen-vl-ocr。**只在千问不可用
+    （如账号欠费）时显式 `OCR_PROVIDER=zhipu` 选用**，auto 不会回落到这里。
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str = "glm-4v-flash",
+        max_retries: int = 3,
+        timeout_s: float = 60.0,
+    ) -> None:
+        self._api_key = api_key
+        self._url = base_url.rstrip("/") + "/chat/completions"
+        self._model = model
+        self._max_retries = max_retries
+        self._timeout_s = timeout_s
+
+    def recognize(self, image_path: Path) -> str:
+        import base64
+        import json
+        import urllib.request
+
+        mime = "image/jpeg" if image_path.suffix.lower() in (".jpg", ".jpeg") else "image/png"
+        data_url = f"data:{mime};base64,{base64.b64encode(image_path.read_bytes()).decode()}"
+        payload = json.dumps({
+            "model": self._model,
+            "temperature": 0,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                    {"type": "text", "text": OCR_PROMPT},
+                ],
+            }],
+        }).encode("utf-8")
+
+        last_error: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                # `LM-03`：与 QwenVlOcr 同一条隔离仓
+                with bulkhead("multimodal").acquire(timeout_s=self._timeout_s):
+                    req = urllib.request.Request(
+                        self._url,
+                        data=payload,
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {self._api_key}",
+                        },
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req, timeout=self._timeout_s) as resp:
+                        body = json.loads(resp.read().decode("utf-8"))
+                return body["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")[:200]
+                last_error = RuntimeError(f"智谱视觉 API {exc.code}: {detail}")
+                # 非瞬断错误（鉴权/参数）不重试
+                if exc.code not in (429, 500, 502, 503, 504):
+                    break
+            except Exception as exc:  # noqa: BLE001 - 网络层异常按瞬断重试
+                last_error = exc
+            if attempt == self._max_retries - 1:
+                break
+            wait = 2**attempt
+            logger.warning("智谱 OCR 调用失败，%ds 后重试（%d/%d）: %s", wait, attempt + 1, self._max_retries, last_error)
+            time.sleep(wait)
+        raise ApiError(ErrCode.DOCUMENT_PARSE_FAILED, f"OCR 识别失败: {last_error}")
+
+
 class MockOcrEngine:
     """确定性假引擎：从文件名与大小派生可读文本。"""
 
@@ -184,10 +258,17 @@ class OcrParser:
 
 #: 允许的 OCR provider：云服务 API + 测试用 Mock。
 #: **没有本地/自部署模型选项**（见模块 docstring 的架构约束）。
-ALLOWED_OCR_PROVIDERS = ("dashscope", "mock")
+ALLOWED_OCR_PROVIDERS = ("dashscope", "zhipu", "mock")
 
 
-def build_ocr_engine(provider: str, api_key: str, max_retries: int = 3) -> OcrEngine:
+def build_ocr_engine(
+    provider: str,
+    api_key: str,
+    max_retries: int = 3,
+    *,
+    base_url: str = "",
+    model: str = "glm-4v-flash",
+) -> OcrEngine:
     """按 provider 构造 OCR 引擎。
 
     非云 provider（local / onnx / self-hosted / paddleocr …）**直接报错**，
@@ -196,6 +277,8 @@ def build_ocr_engine(provider: str, api_key: str, max_retries: int = 3) -> OcrEn
     """
     if provider == "dashscope":
         return QwenVlOcr(api_key=api_key, max_retries=max_retries)
+    if provider == "zhipu":
+        return ZhipuOcrEngine(api_key=api_key, base_url=base_url, model=model, max_retries=max_retries)
     if provider == "mock":
         logger.info("使用 MockOcrEngine（显式指定 mock）")
         return MockOcrEngine()

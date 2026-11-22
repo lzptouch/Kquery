@@ -28,7 +28,6 @@ PROBE_NAMES = {
     "vector_store",
     "bm25_index",
     "graph_store",
-    "shared_state",
     "long_term_memory",
     "parser_router",
     "provider",
@@ -58,7 +57,7 @@ def test_every_probe_has_error_code():
 def test_error_codes_are_distinct_per_dependency_class():
     """分项码必须真的分项（否则「按码差异化处置」是空话）。"""
     assert PROBE_ERROR_CODES["vector_store"] != PROBE_ERROR_CODES["graph_store"]
-    assert PROBE_ERROR_CODES["graph_store"] != PROBE_ERROR_CODES["shared_state"]
+    assert PROBE_ERROR_CODES["graph_store"] != PROBE_ERROR_CODES["long_term_memory"]
     # 文本检索链路（向量库 / BM25）可以同码——它们是同一类故障
     assert PROBE_ERROR_CODES["bm25_index"] == PROBE_ERROR_CODES["vector_store"]
 

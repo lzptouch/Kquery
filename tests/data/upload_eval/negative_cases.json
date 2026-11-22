@@ -1,0 +1,32 @@
+[
+  {
+    "file": "negative/legacy.xls",
+    "expect_code": 3101,
+    "hint_contains": ".xlsx"
+  },
+  {
+    "file": "negative/legacy.ppt",
+    "expect_code": 3101,
+    "hint_contains": ".pptx"
+  },
+  {
+    "file": "negative/song.mp3",
+    "expect_code": 3101,
+    "hint_contains": "语音转写"
+  },
+  {
+    "file": "negative/archive.zip",
+    "expect_code": 3101,
+    "hint_contains": ".zip"
+  },
+  {
+    "file": "negative/corrupt.pdf",
+    "expect_code": null,
+    "hint_contains": null
+  },
+  {
+    "file": "negative/legacy.doc",
+    "expect_code": null,
+    "hint_contains": null
+  }
+]

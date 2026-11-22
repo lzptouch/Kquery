@@ -84,18 +84,12 @@ export interface StreamHandlers {
   onReflect?: (data: { evidence_score: number; next_action: string; reason: string }) => void;
   onIteration?: (data: { current: number; max: number }) => void;
   onFuse?: (data: { reason: string; iteration: number }) => void;
-  // ---- 人在环（HITL）：写类工具待批 / 补充线索 ----
-  // **必须登记**：白名单外的 event 会被静默丢弃 → 后端挂起了、前端什么也没显示，
-  // 用户只会看到"卡住不动"，且没有任何线索可查。
-  onAwaitingHuman?: (data: import("./hitl").AwaitingHumanPayload) => void;
 }
 
 const KNOWN_EVENTS = new Set([
   "token", "evidence", "retrieval_stats", "query_analysis",
   "crag_branch", "refine", "confidence", "refused",
   "plan", "tool_start", "tool_end", "reflect", "iteration", "fuse", "replan",
-  // HITL：图在执行写类工具前挂起时发出（前端据此渲染审批卡片）
-  "awaiting_human",
   // F5：推荐追问。**必须登记**：白名单外的 event 会被直接丢弃且不报错，
   // 表现是"后端有发、前端没显示"，且没有任何线索可查。
   "followups",
@@ -123,7 +117,7 @@ export async function askStream(
   question: string,
   signal: AbortSignal,
   handlers: StreamHandlers,
-  options: { sessionId?: string | null; mode?: "auto" | "agent"; docId?: string | null } = {},
+  options: { sessionId?: string | null; mode?: "auto" | "agent" } = {},
 ): Promise<void> {
   // 内部 controller 收拢两条中断来源：调用方主动取消、空闲看门狗。
   // 直接用外部 signal 的话，看门狗只能靠 `Promise.race` 假取消——底层连接还开着。
@@ -156,8 +150,6 @@ export async function askStream(
         question,
         ...(options.sessionId ? { session_id: options.sessionId } : {}),
         ...(options.mode ? { mode: options.mode } : {}),
-        // F4 快问：只检索该临时文档（不传 = 全知识库）
-        ...(options.docId ? { doc_id: options.docId } : {}),
       }),
       signal: controller.signal,
     });
@@ -243,8 +235,6 @@ export async function askStream(
     else if (event === "reflect") handlers.onReflect?.(data as { evidence_score: number; next_action: string; reason: string });
     else if (event === "iteration") handlers.onIteration?.(data as { current: number; max: number });
     else if (event === "fuse") handlers.onFuse?.(data as { reason: string; iteration: number });
-    else if (event === "awaiting_human")
-      handlers.onAwaitingHuman?.(data as import("./hitl").AwaitingHumanPayload);
     else if (event === "done") {
       terminated = true;
       handlers.onDone(data as { trace_id: string; elapsed_ms: number; from_cache?: boolean; session_id?: string | null; agent?: import("../types").AgentTrace; incomplete?: boolean; fuse_reason?: string });

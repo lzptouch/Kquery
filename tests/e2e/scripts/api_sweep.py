@@ -80,12 +80,6 @@ class Fixtures:
                                          SAMPLE_MD.encode("utf-8"))
         return data_of(body).get("doc_id", "") if status == 200 else ""
 
-    def quick_doc(self) -> str:
-        name = self._name("扫描临时")
-        status, body = upload_multipart(self.base, "/quickask/upload", f"{name}.md",
-                                         SAMPLE_MD.encode("utf-8"))
-        return data_of(body).get("doc_id", "") if status == 200 else ""
-
     def session(self) -> str:
         status, body = call(self.base, "POST", "/sessions", body={"title": "扫描会话"})
         if status not in (200, 201):
@@ -188,8 +182,6 @@ PATH_DEFAULTS = {
 BODY_OVERRIDES: dict[tuple[str, str], dict | object] = {
     ("POST", "/ask"): {"question": "计费规则是什么？"},
     ("POST", "/ask/stream"): {"question": "计费规则是什么？"},
-    ("POST", "/quickask/ask"): lambda fx: {"question": "计费规则是什么？",
-                                       "doc_id": fx.get("quick_doc_id", "")},
     ("POST", "/sessions"): {"title": "扫描会话"},
     ("PATCH", "/sessions/{session_id}"): {"title": "扫描会话（改名）"},
     ("PUT", "/admin/users/{user_id}"): {"roles": ["sales"]},
@@ -201,7 +193,6 @@ BODY_OVERRIDES: dict[tuple[str, str], dict | object] = {
                                            "refusal_reason": "扫描用反馈",
                                            "user_note": "扫描",
                                            "trace_id": fx.get("trace_id", "")},
-    ("POST", "/ask/runs/{run_id}/resume"): {"action": "hint"},
     ("POST", "/media/index"): lambda fx: {"doc_id": fx.get("doc_id", "")},
     # rebuild_communities 会为每个社区调 LLM 生成摘要（分钟级）；
     # 扫描只验证端点活着，不需要等社区摘要
@@ -377,14 +368,9 @@ def main() -> int:
     print(f"\n\033[1m全端点扫描（{len(endpoints)} 个）\033[0m")
     for method, path, op in endpoints:
         fx: dict = {}
-        is_quickask = path.startswith("/quickask/")
 
         # ---------- 现场造资源 ----------
-        # 顺序有讲究：quickask 的 {doc_id} 指的是**临时文档**，
-        # 必须在通用替换之前单独处理，否则会被知识库 doc_id 顶掉。
-        if is_quickask and "{doc_id}" in path:
-            fx["quick_doc_id"] = fx_pool.quick_doc()
-        elif "{doc_id}" in path:
+        if "{doc_id}" in path:
             fx["doc_id"] = fx_pool.doc()
         if "{session_id}" in path:
             fx["session_id"] = fx_pool.session()
@@ -401,8 +387,6 @@ def main() -> int:
         if "{user_id}" in path:
             fx["user_id"] = fx_pool.user()
         # 覆盖表里用到、但路径里没出现的资源
-        if (method, path) == ("POST", "/quickask/ask"):
-            fx.setdefault("quick_doc_id", fx_pool.quick_doc())
         if (method, path) == ("POST", "/knowledge/retrieval-probe"):
             fx.setdefault("doc_id", fx_pool.doc())
         if (method, path) == ("POST", "/graph/build"):
@@ -413,8 +397,6 @@ def main() -> int:
             fx.setdefault("trace_id", fx_pool.trace())
 
         real_path = path
-        if is_quickask and "{doc_id}" in path:
-            real_path = real_path.replace("{doc_id}", fx.get("quick_doc_id", ""))
         for key, value in fx.items():
             real_path = real_path.replace("{" + key + "}", str(value))
         for key, value in PATH_DEFAULTS.items():
@@ -429,7 +411,7 @@ def main() -> int:
         # OpenAPI 里部分 multipart 端点没声明 requestBody（如 /knowledge/ingest），
         # 靠路径白名单兜底，否则会用 JSON 体去调文件上传端点
         MULTIPART_PATHS = {
-            "/knowledge/upload", "/knowledge/ingest", "/quickask/upload",
+            "/knowledge/upload", "/knowledge/ingest",
             "/speech/transcribe",
         }
         if "multipart/form-data" in content or path in MULTIPART_PATHS:

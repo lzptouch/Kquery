@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 
 class ErrCode(IntEnum):
-    """错误码区段（）：1xxx 认证 / 2xxx 输入 / 3xxx 资源 / 4xxx 检索生成 / 5xxx 服务端 / 6xxx 限流配额 / 8xxx 报告。
+    """错误码区段：1xxx 认证 / 2xxx 输入 / 3xxx 资源 / 4xxx 检索生成 / 5xxx 服务端 / 6xxx 限流配额。
 
     编号全局唯一——IntEnum 中重复数值会产生别名，导致"按码分流"失效
     （曾出现 TASK_NOT_FOUND 与 ASSET_NOT_FOUND 同为 3301 的事故）。
@@ -39,7 +39,6 @@ class ErrCode(IntEnum):
     INDEX_NOT_READY = 3001  # 索引为空：需要检索但无任何可检索内容
     DOCUMENT_NOT_FOUND = 3002
     DOCUMENT_PARSE_FAILED = 3003
-    QUICK_DOC_EXPIRED = 3004  # 快问临时文档已过期或已被删除（TTL 到期 / 主动删）
 
     # ---- 31xx~38xx 入库与解析----
     UNSUPPORTED_FILE_TYPE = 3101  # 文件格式不支持（向导已拦截，此处兜底）
@@ -101,7 +100,6 @@ class ErrCode(IntEnum):
     # 一个码只能让人知道「坏了」，分项码才能让人知道「该做什么」。
     VECTOR_STORE_UNAVAILABLE = 5202  # 向量库 / 文本索引不可用
     GRAPH_STORE_UNAVAILABLE = 5203  # 图存储不可用
-    SHARED_STATE_UNAVAILABLE = 5204  # 共享状态（Redis）不可用
     MEMORY_UNAVAILABLE = 5205  # 长期记忆不可用
     PARSER_UNAVAILABLE = 5206  # 解析器不可用
     PROVIDER_UNAVAILABLE = 5207  # 模型提供方不可用

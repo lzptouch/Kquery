@@ -56,13 +56,10 @@ def cache_key(
     question: str,
     tenant_id: str,
     config: RetrievalConfig,
-    doc_id: str | None = None,
 ) -> str:
     digest, _ = cache_dims(pip, config)
-    # F4 快问：scope 维度进键——快问与全库检索的问题文本可能完全一样，
-    # 不区分就会互相命中（跨范围串答案）。
     return make_cache_key(
-        tenant_id, question, model_version(pip, config), digest, scope=doc_id or ""
+        tenant_id, question, model_version(pip, config), digest, scope=""
     )
 
 

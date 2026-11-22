@@ -108,46 +108,38 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
         body = page_text(page)
         check("登录后进入对话页", len(body.strip()) > 50, f"正文长度 {len(body)}")
 
-        # ---------------------------------------------------------- 2. 快问附件
-        section("2. 快问临时文档（真实上传 + 附加）")
-        attach = page.locator('button[aria-label="附件提问"]')
-        check("附件提问按钮存在", attach.count() > 0, "未找到附件提问按钮")
-        attached = False
-        quick_md = "/tmp/kquery_e2e_quick.md"
-        with open(quick_md, "w", encoding="utf-8") as fh:
+        # ---------------------------------------------------------- 2. 样例文档入库
+        section("2. 样例文档入库（为后续提问准备语料）")
+        sample_md = "/tmp/kquery_e2e_sample.md"
+        with open(sample_md, "w", encoding="utf-8") as fh:
             fh.write(
-                "# 快问样例\n\n"
+                "# 样例文档\n\n"
                 "## 计费规则\n"
                 "Kquery 按**问答次数**计费，每问消耗一个额度。\n\n"
                 "## 支持格式\n"
                 "支持 **PDF**、Markdown、Excel、纯文本与代码文件。\n"
             )
-        if attach.count() > 0:
-            attach.first.click()
-            panel = page.locator('[role="dialog"][aria-label="附件提问"]')
-            check("快问面板已打开", panel.count() > 0, "未出现附件提问面板")
-            if panel.count() > 0:
-                file_input = panel.locator('input[type="file"]').first
-                check("面板里有文件选择控件", file_input.count() > 0, "未找到 input[type=file]")
-                accept = file_input.get_attribute("accept") or ""
-                check("上传白名单含 .xlsx（F3）", ".xlsx" in accept, f"accept={accept}")
-                check("上传白名单含 .md", ".md" in accept, f"accept={accept}")
-                file_input.set_input_files(quick_md)
-                for _ in range(60):
-                    page.wait_for_timeout(500)
-                    txt = page_text(page)
-                    if "已附加" in txt or "附件提问中" in txt:
-                        attached = True
-                        break
-                check("上传后快问文档已附加", attached,
-                      f"页面文本片段: {page_text(page)[-200:]}")
+        page.goto(f"{base}/knowledge", wait_until="networkidle", timeout=30000)
+        kb_input = page.locator('input[type="file"]').first
+        check("知识库页有文件上传控件", kb_input.count() > 0, "未找到 input[type=file]")
+        if kb_input.count() > 0:
+            kb_input.set_input_files(sample_md)
+            uploaded = False
+            for _ in range(60):
+                page.wait_for_timeout(500)
+                if any(k in page_text(page) for k in ("已索引", "索引", "成功", "解析")):
+                    uploaded = True
+                    break
+            check("样例文档入库完成", uploaded,
+                  f"页面文本片段: {page_text(page)[-200:]}")
+        page.goto(base, wait_until="networkidle", timeout=30000)
 
         # ---------------------------------------------------------- 3. 提问
         section("3. 提问与流式回答（真实输入 + 点击发送）")
         box = page.locator('textarea[aria-label="问题输入框"], textarea, input[type="text"]').first
         box.wait_for(state="visible", timeout=15000)
-        # 问题刻意与临时文档内容对齐：doc_id 唯一 → 缓存键唯一 → 不会命中语义缓存，
-        # 检索范围也锁定在这份文档，证据/追问/Markdown 三项都能稳定验到。
+        # 问题与样例文档内容对齐（计费规则 / 支持格式），保证有证据可引，
+        # 证据/追问/Markdown 三项都能稳定验到。
         question = "计费规则是什么？支持哪些文件格式？"
         box.fill(question)
         check("输入框接受了文本", box.input_value() == question, f"实际 {box.input_value()!r}")
@@ -222,7 +214,6 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
             else:
                 check("麦克风按钮可用（浏览器支持录音）", True, "")
 
-        # ---------------------------------------------------------- 6. 快问
         # ---------------------------------------------------------- 6.5 引文增强
         section("6.5 引文增强（参考卡片 / 搜索 / 导出 TXT）")
         summary = page.locator('[aria-label="参考"]').last
@@ -253,11 +244,11 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
             check("导出 TXT 触发下载", download.suggested_filename.endswith(".txt"),
                   download.suggested_filename)
 
-        section("7. 快问证据范围（F4）")
-        check("快问回答给出了证据卡", page.locator(".evidence-card").count() > 0,
+        section("7. 证据范围与渲染")
+        check("回答给出了证据卡", page.locator(".evidence-card").count() > 0,
               "无 .evidence-card")
         body_all = page_text(page)
-        check("快问答案引用了临时文档内容",
+        check("答案引用了样例文档内容",
               "计费" in body_all or "格式" in body_all, body_all[-300:])
         answer_html = page.evaluate("""() => {
           const cards = document.querySelectorAll('.answer-card');
@@ -273,12 +264,6 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
                   "答案里有 ** 标记但没有 <strong>")
         else:
             check("加粗语法被渲染成 <strong>（模型未回显标记，跳过）", True, "")
-        # 移除附件（释放临时文档）
-        detach = page.locator("button:has-text('移除'), button:has-text('删除')").first
-        if detach.count() > 0:
-            detach.click()
-            page.wait_for_timeout(1200)
-            check("可移除已附加的临时文档", True, "")
 
         # ---------------------------------------------------------- 7. 知识库
         section("8. 知识库上传与预览")
@@ -289,7 +274,7 @@ def run(base: str, headed: bool, user: str, password: str) -> int:
         if kb_file.count() > 0:
             accept = kb_file.get_attribute("accept") or ""
             check("知识库上传白名单含 .xlsx", ".xlsx" in accept, f"accept={accept}")
-            kb_file.set_input_files("/tmp/kquery_e2e_quick.md")
+            kb_file.set_input_files(sample_md)
             page.wait_for_timeout(4000)
             text = page_text(page)
             check("上传后页面给出反馈", any(k in text for k in ("索引", "成功", "已索引", "解析", "上传")),

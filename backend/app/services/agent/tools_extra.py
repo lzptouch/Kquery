@@ -14,11 +14,10 @@
 | `datetime_calc` | 「去年同期」「三个工作日后」这类日期推理无可依赖 |
 """
 import re
-import sqlite3
 import time
 from datetime import date, timedelta
 
-from app.services.agent.tools import TOOL_RESULT_CAP, ToolResult
+from app.services.agent.tools import ToolResult
 from app.core.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -111,75 +110,6 @@ class ListDocumentsTool:
             items=rows[: self._max_rows],
             elapsed_ms=int((time.monotonic() - started) * 1000),
             truncated_from=len(docs),
-        )
-
-
-class SqlSchemaTool:
-    """返回业务库表结构与样例行。
-
-    `sql_search` 之前完全依赖 LLM 猜表名与字段名——猜错就是一次失败的工具调用。
-    有 schema 之后模型可以"先看表再写 SQL"。
-
-    安全：**只返回含租户隔离列的表**（与  的白名单口径一致），
-    样例行也只取当前租户——否则这个工具本身就成了跨租户数据泄漏通道。
-    """
-
-    name = "sql_schema"
-    description = (
-        "查看业务库的表结构与样例行（适用：需要写 SQL 但不确定表名/字段名时）。"
-        "返回可用表清单及其列定义。"
-    )
-    danger = "read_only"
-
-    def __init__(self, dsn: str, tenant_column: str | None = None, sample_rows: int = 2) -> None:
-        self._dsn = dsn
-        self._tenant_column = tenant_column or None
-        self._sample_rows = max(0, sample_rows)
-
-    def run(self, query: str, tenant_id: str) -> ToolResult:
-        started = time.monotonic()
-        try:
-            conn = sqlite3.connect(f"file:{self._dsn}?mode=ro", uri=True)
-        except Exception as exc:  # noqa: BLE001 - 降级继续（异常已在本处被隔离，不影响对外语义）
-            return ToolResult(error=f"业务库不可用: {exc}")
-        try:
-            conn.row_factory = sqlite3.Row
-            tables = [
-                r[0] for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-                )
-            ]
-            keyword = (query or "").strip().lower()
-            items: list[dict] = []
-            for tname in tables:
-                cols = [r[1] for r in conn.execute(f"PRAGMA table_info({tname})")]
-                # 与  同一白名单口径：无租户列的表对 Agent 不可见
-                if self._tenant_column and self._tenant_column not in cols:
-                    continue
-                if keyword and keyword not in tname.lower() and not any(
-                    keyword in c.lower() for c in cols
-                ):
-                    continue
-                lines = [f"表 {tname}（列：{', '.join(cols)}）"]
-                if self._sample_rows:
-                    sql = f"SELECT * FROM {tname}"
-                    params: tuple = ()
-                    if self._tenant_column:
-                        sql += f" WHERE {self._tenant_column} = ?"
-                        params = (tenant_id,)
-                    sql += f" LIMIT {self._sample_rows}"
-                    for row in conn.execute(sql, params):
-                        pairs = ", ".join(
-                            f"{k}={row[k]}" for k in row.keys()
-                        )
-                        lines.append(f"  样例：{pairs}")
-                items.append({"content": "\n".join(lines), "source": tname, "score": 1.0})
-        finally:
-            conn.close()
-        return ToolResult(
-            items=items[:TOOL_RESULT_CAP],
-            elapsed_ms=int((time.monotonic() - started) * 1000),
-            truncated_from=len(items),
         )
 
 

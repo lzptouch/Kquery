@@ -129,7 +129,6 @@ class TestAnswerNodeDirectPath:
                     ],
                     "plan": [], "iteration": 0, "last_evidence_count": 1,
                     "fused": False, "skip_retrieval": False, "refusal": False,
-                    "approved_tools": [],
                 },
                 config={"configurable": {"thread_id": "t1", "assets_dir": assets}},
             )

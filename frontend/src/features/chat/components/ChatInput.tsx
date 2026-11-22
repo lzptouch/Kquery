@@ -1,11 +1,9 @@
 /** 问题输入框（阶段 1 §2.6）：自适应高度，Enter 发送 / Shift+Enter 换行，
  * 草稿本地存储防刷新丢失。
  *
- * F4 增量：
- * - **命令式写入**（`ref.setValue`）：允许外部程序化改写输入框内容。
- *   刻意不改造成"受控组件"——那样草稿本地存储就得挪到父组件，
- *   而草稿是既有能力，改动面大且与本次需求无关。
- * - 附件按钮从"永久 disabled"改为**可点击**（打开快问面板）。
+ * **命令式写入**（`ref.setValue`）：允许外部程序化改写输入框内容（推荐追问回填）。
+ * 刻意不改造成"受控组件"——那样草稿本地存储就得挪到父组件，
+ * 而草稿是既有能力，改动面大且与本次需求无关。
  */
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 
@@ -15,8 +13,6 @@ interface Props {
   onSend: (question: string) => void;
   onStop?: () => void;
   streaming?: boolean;
-  /** 点击附件按钮（快问） */
-  onAttach?: () => void;
 }
 
 export interface ChatInputHandle {
@@ -27,7 +23,7 @@ export interface ChatInputHandle {
 const DRAFT_KEY = "kquery.chat.draft";
 
 export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
-  { placeholder = "输入你的问题…", disabled, onSend, onStop, streaming, onAttach },
+  { placeholder = "输入你的问题…", disabled, onSend, onStop, streaming },
   ref,
 ) {
   const [value, setValue] = useState(() => localStorage.getItem(DRAFT_KEY) ?? "");
@@ -60,18 +56,6 @@ export const ChatInput = forwardRef<ChatInputHandle, Props>(function ChatInput(
 
   return (
     <div className="chat-input-box">
-      {onAttach && (
-        <button
-          type="button"
-          className="btn"
-          disabled={disabled || streaming}
-          onClick={onAttach}
-          title="上传单个文件并只针对它提问（不入知识库）"
-          aria-label="附件提问"
-        >
-          📎
-        </button>
-      )}
       <textarea
         ref={textareaRef}
         value={value}

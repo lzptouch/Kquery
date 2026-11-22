@@ -181,6 +181,9 @@ class Settings(BaseSettings):
     # 本地 OCR 要在镜像构建期烤权重或运行时从 HuggingFace 下载，
     # 内网环境两者都不可行，最终会变成"部署后 OCR 静默不可用"。
     ocr_provider: str = "auto"
+    # OCR_PROVIDER=zhipu 时使用的视觉模型（对话式多模态当 OCR 用，备选方案：
+    # 版面/表格结构保真弱于千问 qwen-vl-ocr；glm-4v-flash 为免费档）
+    ocr_zhipu_model: str = "glm-4v-flash"
     llm_model: str = "qwen-plus"
     embedding_model: str = "text-embedding-v3"
     embedding_dim: int = 1024
@@ -242,9 +245,6 @@ class Settings(BaseSettings):
     # 索引版本化：重新解析生成新版本而非覆盖，历史块保留供引用溯源
     index_version_keep: int = 3  # 保留的历史索引版本数（不含当前版；超出后按版本号从旧到新下线）
 
-    # 业务代码版本
-    code_version: str = ""  # 留空则评测侧读 KQUERY_CODE_VERSION → git 短 SHA → unknown
-
     # ---- Query 预处理 ----
     preprocess_enabled: bool = True
     intent_model: str = "qwen-turbo"  # 意图识别：高频轻量判定压到最低档（成本控制）
@@ -269,7 +269,7 @@ class Settings(BaseSettings):
 
     # ---- 通用知识兜底（TASK-新）：知识库未覆盖时由模型自身知识回答 ----
     # 原则：诚实但有用——承认知识库没有，同时不浪费用户一次提问。
-    # 红线：敏感词/HITL stop/预算耗尽的拒答不兜底（见 doc/analysis/通用知识兜底回答.md §4.2）。
+    # 红线：敏感词/预算耗尽的拒答不兜底（见 doc/analysis/通用知识兜底回答.md §4.2）。
     parametric_fallback_enabled: bool = True  # 总开关；False 恢复纯拒答行为
     # 判据口径与 reflect 的 ANSWER_THRESHOLD（reflector.py）一致：evidence_score < 阈值
     # 或零证据时走兜底。不要用 crag_correct_th（重排分口径，与综合分不可比较）。
@@ -283,10 +283,10 @@ class Settings(BaseSettings):
     agent_session_ttl_s: int = 30 * 86400  # 会话快照 30 天自动过期
     agent_tool_timeout_s: int = 30  # 单步工具超时（第三层熔断）
     agent_no_progress_limit: int = 3  # 无效进展熔断窗口
-    # ---- checkpointer（断点续跑 / 多轮状态继承 / 回放 / HITL 前提）----
+    # ---- checkpointer（断点续跑 / 多轮状态继承 / 回放）----
     # sqlite：单文件、事务安全、跨进程可读（推荐生产）
     # memory：进程内、不落盘（测试与单机轻量部署）
-    # none  ：显式关闭，等价于不启用续跑与 HITL
+    # none  ：显式关闭，等价于不启用续跑
     agent_checkpointer: str = "sqlite"
     agent_checkpoint_path: str = ""  # 空则用 {data_dir}/agent_checkpoints.db
     # ---- 三预算治理（0 = 不限）----
@@ -330,12 +330,6 @@ class Settings(BaseSettings):
     # 每千 token 单价（元），按模型名配置；缺省则成本记为 0 且前端标「未知」。
     # 显式配置而非内置：内置价格会过期，过期价格比没有价格更危险。
     agent_price_per_1k_json: str = '{"qwen-plus": 0.0008, "qwen-max": 0.02, "qwen-turbo": 0.0003}'
-    # ---- 人在环（HITL）----
-    # 默认关闭：HITL 对用户是**打断**，需要前端配合渲染"待补充"卡片才能用，
-    # 在后端单方面打开会让所有低置信问题都变成空答案。
-    # 启用前提：agent_checkpointer != none（否则无法挂起）。
-    agent_hitl_enabled: bool = False
-    agent_hitl_score_threshold: float = 0.5  # 低于此充分度触发人工介入
     # ---- 上下文组装治理 ----
     # 0 = 不限制（按条数控制）。默认给明确预算：条数相同不代表长度相同，
     # 一段 3000 字的表格块能直接撑爆上下文。
@@ -355,38 +349,18 @@ class Settings(BaseSettings):
     # ---- 答案校验节点 ----
     # 默认关闭：它多花一次 LLM 调用，且会把"先答后发"变成"可能答两次"。
     # 与 reflect 互补——reflect 评证据够不够，verify 评答案站不站得住。
-    # ---- ReAct 单步决策循环 ----
-    # 默认仍走 plan_execute：ReAct 每轮多一次 LLM 调用、行为变化大，
-    # 在检索评测集落地前贸然切换等于无法验证的改动。
-    agent_mode: str = "plan_execute"  # plan_execute | react
     # ---- 长期记忆 ----
     memory_enabled: bool = True
     memory_max_per_tenant: int = 500  # 上限：记忆不能无限增长（注入成本会失控）
-    # ---- 共享状态后端 ----
-    # 空 = 进程内（单副本）。多副本必须配 Redis，否则限流/配额实际额度 × 副本数
-    # Prometheus 查询 API（/admin/metrics/* 的数据源）。留空 = 读进程内 MetricsStore
-    # （单副本本地开发）。多副本部署必须配上，否则看板只反映某一个副本。
+    # ---- 指标数据源 ----
+    # Prometheus 查询 API（/admin/metrics/* 的数据源）。留空 = 读进程内 MetricsStore。
     prometheus_url: str = ""
-    redis_url: str = ""
-    redis_key_prefix: str = "kquery:"
-    # 语义缓存后端：auto（有 Redis 用 Redis）/ memory / redis
-    # redis 模式下 redis_url 为空 → 启动即失败（配置错误不该拖到运行期才暴露）
-    cache_backend: str = "auto"
     cache_max_entries: int = 10000
-    agent_verify_enabled: bool = False
-    agent_max_verify_rounds: int = 1  # 最多回退重做几轮（防"改了还是不通过"死循环）
 
     # ---- GraphRAG 与多模态 ----
     graph_enabled: bool = True
     # 图存储后端（sqlite = 增量持久化且原子；memory = 旧的内存 + JSON 全量落盘）
     graph_store_backend: str = "sqlite"
-    # ---- OpenTelemetry ----
-    # 默认关闭：未部署 collector 时开启只会白占内存与 CPU。
-    # 启用但未配 endpoint 会明确告警并降级为 NoOp（不阻断启动）。
-    otel_enabled: bool = False
-    otel_exporter_endpoint: str = ""  # 如 http://localhost:4318/v1/traces
-    otel_service_name: str = "kquery"
-    otel_sample_ratio: float = 1.0  # 无上游 trace 时的本地采样比例
     graph_path: str = ""  # 空则用 {data_dir}/graph/graph.json（sqlite 时自动换 .db 后缀）
     entity_sim_threshold: float = 0.85  # 实体消歧向量相似度阈值（经验值，需按数据调优）
     graph_bfs_depth: int = 2  # 遍历深度（≥3 噪声剧增）
@@ -411,17 +385,6 @@ class Settings(BaseSettings):
     # 缓存键 / 限流分桶），不是权限功能。身份固定见 `app/core/identity.py`。
     # 说明：应用侧配额（分钟/每日/token）、平台侧额度监控与敏感词扫描已下线，
     # 相关配置项与端点一并移除。突发保护仍由令牌桶限流承担（见 services/ratelimit.py）。
-
-    # ----  工具：业务库 / 联网检索（未配置 DSN 时工具不注册）----
-    sql_dsn: str = ""  # 只读业务库 DSN（sqlite/duckdb/postgres），空则不提供 sql_search
-    sql_readonly: bool = True  # 强制只读：禁止 INSERT/UPDATE/DELETE/DDL
-    sql_max_rows: int = 50
-    # 租户隔离列：配置后 sql_search 强制「单表查询 + 表白名单 + 谓词包装」。
-    # 空 = 不做租户过滤（仅限单租户业务库，多租户下启用 sql_search 必须配置）
-    sql_tenant_column: str = ""
-    web_search_endpoint: str = ""  # 联网搜索 HTTP 端点，空则不提供 web_search
-    web_search_api_key: str = ""
-    web_search_timeout_s: float = 10.0
 
     # ---- 存储 ----
     data_dir: Path = REPO_DIR / "data"
@@ -466,16 +429,6 @@ class Settings(BaseSettings):
     upstream_breaker_window: int = 20
     upstream_breaker_fail_ratio: float = 0.5
     upstream_breaker_open_s: float = 30.0
-    # 自适应并发（批次 4）：默认关闭，按 AIMD 在 [1, permits] 间伸缩
-    upstream_adaptive: bool = False
-    # 降级阶梯（批次 4）：默认关闭；开启后按水位收缩改写/CRAG 与低优先级流量
-    # 降级阶梯（`C-10`）：默认关闭。**开启前必须先标定阈值**——
-    # 误降级的代价（白白少一次改写）比迟降级（多等几秒）大得多。
-    degrade_ladder_enabled: bool = False
-    # 上游耗时 P95 阈值（毫秒）：超过则进入降级级别 2。
-    # 标定依据：正常单次 LLM 调用 3~8s，取实测 P95 的 2 倍 → 8000ms。
-    # 旧值 2000ms 偏小，**开着就会一直降级**（把正常调用当成慢调用）。
-    degrade_upstream_slow_ms: int = 8000
 
     # ---- 灰度自动回滚（`OP-02`）----
     # **保守默认：关**。灰度是人工开的，自动回滚也该由人工开——
@@ -504,13 +457,6 @@ class Settings(BaseSettings):
     # 入库任务在内存里的保留时长（秒，`A-06`）：任务进入终态后保留这么久
     # 供前端查看进度，之后从内存淘汰（否则任务表只增不减）。
     ingest_task_retention_s: int = 1800
-
-    # ---- F4 快问（单文档「上传即问」）----
-    # TTL 对齐 doc-qa（2 小时）：临时文档只服务当次问答，留太久会占存储。
-    quick_ask_ttl_s: int = 7200
-    # 同步 MVP 的规模上限：解析在请求内完成，超大文件会拖住请求线程。
-    quick_ask_max_pages: int = 20
-    quick_ask_max_mb: int = 20
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
@@ -709,7 +655,9 @@ class Settings(BaseSettings):
         """OCR 实际使用的 provider（只可能是云服务 API 或 mock）。
 
         `auto` 跟随 `model_provider`；显式指定 `dashscope` 时强制走云端
-        （此时必须有平台凭据，否则启动期校验会拦下）。
+        （此时必须有平台凭据，否则启动期校验会拦下）。显式指定 `zhipu` 时走
+        智谱视觉模型（`ocr_zhipu_model`）——对话式多模态当 OCR 用的备选方案
+        （版面/表格保真弱于 qwen-vl-ocr），供千问不可用（如账号欠费）时使用。
 
         **但生成 provider 是 deepseek / minimax 时不能跟着走**：这两家没有
         OCR 端点，`build_ocr_engine` 收到未知 provider 会**在启动期直接抛错**
@@ -787,20 +735,14 @@ class Settings(BaseSettings):
             "rerank_model": self.resolved_rerank_model,
             "vector_store": self.vector_store,
             "milvus_uri": self.milvus_uri,
-            "cache_backend": self.cache_backend,
-            "redis_url": self.redis_url,
             "metrics_token": self.metrics_token,
-            "web_search_api_key": self.web_search_api_key,
-            "agent_mode": self.agent_mode,
             "agent_checkpointer": self.agent_checkpointer,
-            "agent_hitl_enabled": self.agent_hitl_enabled,
             "crag_enabled": self.crag_enabled,
             "selfcheck_enabled": self.selfcheck_enabled,
             "graph_enabled": self.graph_enabled,
             "graph_store_backend": self.graph_store_backend,
             "image_vector_enabled": self.image_vector_enabled,
             "vlm_answer_enabled": self.vlm_answer_enabled,
-            "otel_enabled": self.otel_enabled,
             "ratelimit_capacity": self.ratelimit_capacity,
             "ratelimit_refill_per_min": self.ratelimit_refill_per_min,
             "pipeline_workers": self.pipeline_workers,
@@ -1021,13 +963,16 @@ class Settings(BaseSettings):
             base = getattr(self, key, "")
             if base and not base.startswith(("http://", "https://")):
                 add(key, f"非法取值 {base}", "必须以 http:// 或 https:// 开头")
-        if self.ocr_provider not in {"auto", "dashscope", "mock"}:
+        if self.ocr_provider not in {"auto", "dashscope", "zhipu", "mock"}:
             # 本地/自部署 OCR 模型不在允许范围内（架构约束：OCR 一律云服务 API）
             add("ocr_provider", f"非法取值 {self.ocr_provider}",
-                "OCR 只支持云服务 API：auto | dashscope | mock；不支持本地/自部署模型")
+                "OCR 只支持云服务 API：auto | dashscope | zhipu | mock；不支持本地/自部署模型")
         if self.ocr_provider == "dashscope" and not self.dashscope_api_key:
             add("dashscope_api_key", "ocr_provider=dashscope 但未提供平台凭证",
                 "补齐 KQUERY_DASHSCOPE_API_KEY，或显式设置 ocr_provider=mock")
+        if self.ocr_provider == "zhipu" and not self.zhipu_api_key:
+            add("zhipu_api_key", "ocr_provider=zhipu 但未提供智谱凭证",
+                "补齐 KQUERY_ZHIPU_API_KEY，或显式设置 ocr_provider=mock")
         if self.model_provider == "dashscope" and not self.dashscope_api_key:
             # 显式要求走平台却没给凭据：这是配置错误，不该静默降级成 mock
             add("dashscope_api_key", "model_provider=dashscope 但未提供平台凭证",
@@ -1120,17 +1065,11 @@ class Settings(BaseSettings):
                 "推荐 0.6（与 reflect 的 ANSWER_THRESHOLD 同口径）")
         if not 0.0 <= self.parametric_fallback_confidence <= 1.0:
             add("parametric_fallback_confidence", "兜底置信度必须落在 [0,1]", "推荐 0.3")
-        if self.cache_backend not in {"auto", "memory", "redis"}:
-            add("cache_backend", f"非法取值 {self.cache_backend}", "只能取 auto | memory | redis")
         if self.context_partition_render not in {"legacy", "structured"}:
             # 拼错的枚举值不能静默退回 legacy：那会让「我打开了结构分区」变成
             # 「其实没打开」，而前后对比数据会被归因错。
             add("context_partition_render", f"非法取值 {self.context_partition_render}",
                 "只能取 legacy | structured")
-        if self.cache_backend == "redis" and not self.redis_url.strip():
-            # 显式要求 Redis 模式却没给地址：这是配置错误，不该静默退回内存
-            add("redis_url", "cache_backend=redis 但未提供 redis_url",
-                "补齐 REDIS_URL，或显式设置 cache_backend=memory 承认单副本语义")
         if self.ask_deadline_ms <= 0:
             add("ask_deadline_ms", "请求级 deadline 必须为正整数", "推荐 120000（2 分钟）")
         # 超时预算链的**告警**（X-05 / X-20）：

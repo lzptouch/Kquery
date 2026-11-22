@@ -10,57 +10,10 @@
 from ...core.logging_setup import get_logger
 from ...domain.schemas import Evidence
 from ..context import assemble_context
-from ..retrieval.filters import RetrievalFilters
 from ..retrieval.hybrid import HybridResult
 from .evidence import build_candidates, evidence_for_assembled, rejected_evidence
 
 logger = get_logger(__name__)
-
-
-def degrade_level(pip) -> int:
-    """降级阶梯水位（默认 0=正常）。
-
-    | 级别 | 判据 | 动作 |
-    |---|---|---|
-    | 1 | 上游**熔断打开** | 收缩预处理与 CRAG 轮次 |
-    | 2 | 上游**耗时 P95 > 阈值**（`C-10`） | 同上，并额外关掉 HyDE / 额外改写 |
-
-    级别 2 是「事前」判据：熔断是事后（已经失败了 N 次才打开），
-    P95 是事前（上游正在变慢，但还没失败）——后者才是保住可用性的关键。
-
-    **默认关闭**（`degrade_ladder_enabled`）：阈值必须先标定，
-    否则会误降级（正常单次 LLM 调用就 3~8s，阈值定 2000ms 会一直降级）。
-    """
-    if not getattr(pip._settings, "degrade_ladder_enabled", False):
-        return 0
-    try:
-        # 按需载入：仅在特定路径用到
-        from ..upstream import bulkhead
-
-        if bulkhead("rerank").stats().get("state") == "open":
-            return 1
-    except Exception:  # noqa: BLE001 - 观测失败不降级
-        pass
-    # `C-10`：上游耗时 P95 超阈值 → 级别 2。
-    # 样本不足（<5）时不据此降级：刚启动时窗口是空的，
-    # 此时「P95=0」会被误读成「上游很快」。
-    try:
-        # 按需载入：仅在特定路径用到
-        from ..upstream import bulkhead
-
-        threshold_ms = float(getattr(pip._settings, "degrade_upstream_slow_ms", 0) or 0)
-        if threshold_ms > 0:
-            for name in ("llm", "embedding", "rerank"):
-                st = bulkhead(name).stats()
-                if st.get("latency_samples", 0) >= 5 and st.get("p95_ms", 0.0) > threshold_ms:
-                    logger.warning(
-                        "上游 %s 耗时 P95=%.0fms > 阈值 %.0fms：进入降级级别 2",
-                        name, st.get("p95_ms", 0.0), threshold_ms,
-                    )
-                    return 2
-    except Exception:  # noqa: BLE001 - 观测失败不降级
-        pass
-    return 0
 
 
 def preprocess(pip, question: str, tenant_id: str) -> tuple[dict | None, list[tuple[str, str]], bool]:
@@ -71,20 +24,6 @@ def preprocess(pip, question: str, tenant_id: str) -> tuple[dict | None, list[tu
     if pip._analysis_store is not None:
         pip._analysis_store.save(analysis_obj)
     return analysis_obj.model_dump(), query_items, not analysis_obj.needs_retrieval
-
-
-def build_filters(pip, tenant_id: str, doc_id: str | None = None):
-    """构造检索过滤条件（F4 快问）。
-
-    认证与授权已下线后**不再有文档级可见性过滤**：唯一保留的是
-    `doc_id`（快问单文档范围）与 `tenant_id`（数据隔离维度）。
-
-    **F4 关键修正（保留）**：`doc_id` 必须独立生效——否则"只检索这一个文件"
-    的要求会被整个丢掉，快问会检索全库，答案里混进无关文档的引用。
-    """
-    if doc_id:
-        return RetrievalFilters(tenant_id=tenant_id, doc_id=doc_id)
-    return None
 
 
 def to_evidence(pip, hybrid_result: HybridResult) -> list[Evidence]:

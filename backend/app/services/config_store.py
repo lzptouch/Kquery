@@ -21,7 +21,6 @@ import time
 from pathlib import Path
 
 from app.domain.schemas import RetrievalConfig
-from app.services.external_state import ExternalDocStore
 from app.core.errors import InvalidInputError
 from app.core.logging_setup import get_logger
 
@@ -48,11 +47,10 @@ def bucket_of(tenant_id: str, user_id: str = "", percent: int = 0) -> bool:
 
 
 class RetrievalConfigStore:
-    """运行时检索配置。
+    """运行时检索配置（本地 JSON 文件，单副本语义）。
 
-    `docs` 不为空时配置（含**灰度覆盖层**）存在共享状态里 → 多副本一致。
-    这条很关键：灰度"写在副本 A 的磁盘上、副本 B 看不到"会让实验数据无法归因。
-    未配置 Redis 时仍落本地文件（单副本语义），行为与从前一致。
+    共享状态层已随「多副本共享语义」下线，多副本部署下灰度覆盖层
+    各副本独立——这是已知边界。
     """
 
     def __init__(
@@ -60,12 +58,10 @@ class RetrievalConfigStore:
         path: Path,
         apply_delay_s: int = 300,
         settings=None,
-        docs: "ExternalDocStore | None" = None,
     ) -> None:
         self._path = path
         self._delay_s = apply_delay_s
         self._settings = settings
-        self._docs = docs
         self._lock = threading.RLock()  # view() 内会嵌套调用 get_active()
         self._active = self._defaults()
         self._pending: RetrievalConfig | None = None
@@ -99,92 +95,7 @@ class RetrievalConfigStore:
         """零值回落全局配置（存量 JSON 缺新字段时不会静默把召回数清零）。"""
         return config.with_fallbacks(self._settings) if self._settings else config
 
-    # ---- 外置路径的键 ----
-
-    _DOC_KEY = "config"
-    _SCOPE_INDEX = "scopes"
-
-    def _scope_key(self, scope: str) -> str:
-        """scope 的文档 id。
-
-        **直接用 scope 本身**（不再加 "scoped:" 前缀）：文档 id 会再被
-        ExternalDocStore 拼上顶层前缀，若这里再加一次前缀，
-        读回来时会被拼成 "retrieval:scoped:scoped:tenant:t1" → 永远读不到。
-        """
-        return scope
-
-    def _external(self) -> bool:
-        return self._docs is not None
-
-    def _load_external(self) -> None:
-        assert self._docs is not None
-        doc = self._docs.get(self._DOC_KEY)
-        if doc:
-            self._active = self._normalize(RetrievalConfig.model_validate(doc.get("active", {})))
-            if doc.get("pending"):
-                self._pending = self._normalize(
-                    RetrievalConfig.model_validate(doc["pending"])
-                )
-                self._effective_at = doc.get("effective_at")
-        self._load_external_scoped()
-
-    def _load_external_scoped(self) -> None:
-        """读共享状态里的灰度覆盖层（覆盖当前内存副本）。"""
-        assert self._docs is not None
-        scoped: dict[str, dict] = {}
-        for scope in self._docs.list_ids(self._SCOPE_INDEX):
-            item = self._docs.get(scope)
-            if not item:
-                continue
-            try:
-                scoped[scope] = {
-                    "config": self._normalize(
-                        RetrievalConfig.model_validate(item.get("config") or {})
-                    ),
-                    "enabled": bool(item.get("enabled", True)),
-                    "experiment_id": str(item.get("experiment_id") or ""),
-                }
-            except Exception:  # noqa: BLE001 - 灰度覆盖项解析失败：跳过该项
-                logger.debug("灰度覆盖项解析失败：跳过该项")
-                continue
-        self._scoped = scoped
-
-    def _refresh_external(self) -> None:
-        """外置模式：**每次读都刷新**（读穿透）。
-
-        只在启动时加载一次是不够的：副本 A 改了灰度作用域，副本 B 的内存快照
-        还是旧的 → 灰度"时灵时不灵"，实验数据无法归因。
-        """
-        if not self._external():
-            return
-        self._load_external_scoped()
-
-    def _save_external(self) -> None:
-        assert self._docs is not None
-        self._docs.put(
-            self._DOC_KEY,
-            {
-                "active": self._active.model_dump(),
-                "pending": self._pending.model_dump() if self._pending else None,
-                "effective_at": self._effective_at,
-            },
-        )
-        for scope, item in list(self._scoped.items()):
-            self._docs.put(
-                self._scope_key(scope),
-                {
-                    "config": item["config"].model_dump(),
-                    "enabled": item["enabled"],
-                    "experiment_id": item["experiment_id"],
-                },
-                index=self._SCOPE_INDEX,
-                score=0.0,
-            )
-
     def _load(self) -> None:
-        if self._external():
-            self._load_external()
-            return
         if not self._path.exists():
             return
         try:
@@ -214,9 +125,6 @@ class RetrievalConfigStore:
             self._scoped = {}
 
     def _save(self) -> None:
-        if self._external():
-            self._save_external()
-            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self._path.with_suffix(".tmp")
         tmp.write_text(
@@ -301,18 +209,6 @@ class RetrievalConfigStore:
                 "experiment_id": str(experiment_id or ""),
             }
             self._save()
-            if self._external():
-                assert self._docs is not None
-                self._docs.put(
-                    self._scope_key(scope),
-                    {
-                        "config": self._scoped[scope]["config"].model_dump(),
-                        "enabled": self._scoped[scope]["enabled"],
-                        "experiment_id": self._scoped[scope]["experiment_id"],
-                    },
-                    index=self._SCOPE_INDEX,
-                    score=0.0,
-                )
             return dict(self._scoped[scope]["config"].model_dump())
 
     def clear_scoped(self, scope: str) -> bool:
@@ -321,14 +217,10 @@ class RetrievalConfigStore:
             existed = self._scoped.pop(scope, None) is not None
             if existed:
                 self._save()
-                if self._external():
-                    assert self._docs is not None
-                    self._docs.delete(self._scope_key(scope), index=self._SCOPE_INDEX)
             return existed
 
     def scoped_view(self) -> list[dict]:
         """所有灰度覆盖的当前状态（管理端展示）。"""
-        self._refresh_external()
         with self._lock:
             return [
                 {
@@ -348,7 +240,6 @@ class RetrievalConfigStore:
         以更具体的那个为准。
         """
         base = self.get_active()
-        self._refresh_external()
         with self._lock:
             tenant_scope = f"{SCOPE_TENANT}{tenant_id or ''}"
             item = self._scoped.get(tenant_scope)

@@ -40,15 +40,12 @@ from app.services.agent.tools import (
     CalculatorTool,
     GraphSearchTool,
     ImageSearchTool,
-    SqlSearchTool,
     ToolRegistry,
     VectorSearchTool,
-    WebSearchTool,
 )
 from app.services.agent.tools_extra import (
     DateTimeCalcTool,
     ListDocumentsTool,
-    SqlSchemaTool,
 )
 from app.services.graph.build_tasks import GraphBuildTaskRegistry
 from app.services.graph.builder import GraphBuilder
@@ -64,7 +61,7 @@ logger = get_logger(__name__)
 
 
 def _build_tool_registry(asm: Assembly) -> ToolRegistry:
-    """建工具目录并注册与图谱无关的工具（检索 / 计算 / 列文档 / 日期 / SQL / 联网）。"""
+    """建工具目录并注册与图谱无关的工具（检索 / 计算 / 列文档 / 日期）。"""
     settings = asm.settings
     tool_registry = ToolRegistry(
         timeout_s=settings.agent_tool_timeout_s, executor=asm.agent_tool_pool
@@ -74,32 +71,6 @@ def _build_tool_registry(asm: Assembly) -> ToolRegistry:
     # 补"库里有什么"与日期推理两个能力盲区
     tool_registry.register(ListDocumentsTool(asm.knowledge))
     tool_registry.register(DateTimeCalcTool())
-    # 业务库 / 联网工具：未配置外部依赖时不注册——
-    # 目录里放一个必然失败的工具，会诱导 Planner 规划出注定失败的步骤
-    if settings.sql_dsn:
-        tool_registry.register(
-            SqlSearchTool(
-                settings.sql_dsn,
-                readonly=settings.sql_readonly,
-                max_rows=settings.sql_max_rows,
-                tenant_column=settings.sql_tenant_column or None,
-            )
-        )
-        # schema 与查询同源同租户口径：没有 schema 的 sql_search 只能靠模型猜表名
-        tool_registry.register(
-            SqlSchemaTool(
-                settings.sql_dsn,
-                tenant_column=settings.sql_tenant_column or None,
-            )
-        )
-    if settings.web_search_endpoint:
-        tool_registry.register(
-            WebSearchTool(
-                settings.web_search_endpoint,
-                api_key=settings.web_search_api_key,
-                timeout_s=settings.web_search_timeout_s,
-            )
-        )
     return tool_registry
 
 
@@ -263,7 +234,7 @@ def build_agent(asm: Assembly) -> None:
     else:
         planner = HeuristicPlanner(tool_registry)
         reflector = HeuristicReflector(correct_th=settings.crag_correct_th)
-    # checkpointer 是断点续跑 / 多轮状态继承 / 完整回放 / HITL 的前提。
+    # checkpointer 是断点续跑 / 多轮状态继承 / 完整回放的前提。
     # 不可用时返回 None（降级为不启用续跑），Agent 仍能正常跑。
     agent_checkpointer = build_checkpointer(settings, settings.data_dir)
     agent_graph = build_agent_graph(
@@ -281,16 +252,15 @@ def build_agent(asm: Assembly) -> None:
     )
     session_store = SessionStore(
         settings.data_dir / "sessions", ttl_s=settings.agent_session_ttl_s,
-        docs=asm.session_docs,
     )
     agent_runner = AgentRunner(
         agent_graph, session_store, asm.metrics_store, top_k=settings.top_k,
-        registry=tool_registry,  # ReAct 模式的工具目录来源
+        registry=tool_registry,  # 工具执行与取消标志
         crag_router=asm.pipeline._crag,
         history_store=asm.validation_history,
         score_top_n=settings.crag_score_top_n,
         settings=settings,  # 读取三预算配置
-        checkpointer=agent_checkpointer,  # HITL 挂起的前提
+        checkpointer=agent_checkpointer,  # 断点续跑的前提
         prom=asm.prom,  # Agent 路径埋点
         llm=llm,  # 仅用于 token 用量埋点
         # Agent 路径接上与线性路径同一套幻觉自检
@@ -320,8 +290,8 @@ def build_agent(asm: Assembly) -> None:
     app.state.long_term_memory = long_term_memory
 
     logger.info(
-        "共享状态后端=%s；长期记忆=%s",
-        asm.shared_state.backend, "on" if long_term_memory else "off",
+        "长期记忆=%s",
+        "on" if long_term_memory else "off",
     )
     # 检查点 TTL 清理（`A-22.6`）：`prune_checkpoints()` 此前**零调用点**——
     # 注释写着「sqlite 行数由 TTL 任务定期清理」，仓里却没有这个任务，

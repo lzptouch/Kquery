@@ -32,7 +32,6 @@ from pathlib import Path
 from app.core.envelope import ErrCode
 from app.core.identity import Principal
 from app.services.agent.cost import get_ledger
-from app.services.quickask import QUICK_PREFIX
 from app.services.query.schemas import QueryAnalysis
 
 #: 用于自报身份的请求头。全部应当在网关层被忽略（现在连网关都没有，直接忽略）。
@@ -159,40 +158,13 @@ class TestForeignDocument:
         assert service.get(doc_id).tenant_id == FOREIGN.tenant_id
 
 
-class TestForeignQuickAskDocument:
-    def test_status_and_delete_are_denied(self, client, tmp_path: Path):
-        service = client.app.state.quickask
-        doc_id = f"{QUICK_PREFIX}foreign0001"
-        foreign_file = tmp_path / "外部快问.md"
-        foreign_file.write_text("# 外部快问\n", encoding="utf-8")
-        service._remember(doc_id, FOREIGN, "外部快问.md", 1, foreign_file)
-
-        status = client.get(f"/quickask/{doc_id}")
-        assert status.status_code == 404
-        assert _code(status) == ErrCode.QUICK_DOC_EXPIRED
-        assert "外部快问" not in status.text
-
-        deleted = client.delete(f"/quickask/{doc_id}")
-        assert deleted.status_code == 404
-        assert _code(deleted) == ErrCode.QUICK_DOC_EXPIRED
-
-        # 未被误删：原主体仍能取到元信息
-        assert service.get_meta(doc_id, FOREIGN)["filename"] == "外部快问.md"
-
-
-class TestForeignHitlRun:
-    def test_all_run_operations_are_denied(self, client):
+class TestForeignRunAccess:
+    def test_cancel_is_denied(self, client):
         """run_id 前缀即归属凭证；跨主体一律 404/4301。"""
         run_id = f"{FOREIGN.tenant_id}:{FOREIGN.user_id}:1:0"
-        matrix = [
-            client.get(f"/ask/runs/{run_id}/interrupt"),
-            client.post(f"/ask/runs/{run_id}/cancel"),
-            client.post(f"/ask/runs/{run_id}/approve", json={"tools": ["http_request"], "approved": True}),
-            client.post(f"/ask/runs/{run_id}/resume", json={"action": "force_answer"}),
-        ]
-        for resp in matrix:
-            assert resp.status_code == 404, resp.text
-            assert _code(resp) == ErrCode.SESSION_NOT_FOUND
+        resp = client.post(f"/ask/runs/{run_id}/cancel")
+        assert resp.status_code == 404, resp.text
+        assert _code(resp) == ErrCode.SESSION_NOT_FOUND
 
 
 class TestForeignCostAndAnalysis:

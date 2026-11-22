@@ -31,7 +31,6 @@ PROBE_ERROR_CODES: dict[str, ErrCode] = {
     "vector_store": ErrCode.VECTOR_STORE_UNAVAILABLE,
     "bm25_index": ErrCode.VECTOR_STORE_UNAVAILABLE,
     "graph_store": ErrCode.GRAPH_STORE_UNAVAILABLE,
-    "shared_state": ErrCode.SHARED_STATE_UNAVAILABLE,
     "long_term_memory": ErrCode.MEMORY_UNAVAILABLE,
     "parser_router": ErrCode.PARSER_UNAVAILABLE,
     "provider": ErrCode.PROVIDER_UNAVAILABLE,

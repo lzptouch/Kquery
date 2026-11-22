@@ -13,7 +13,7 @@ dev 下探针请求落到 SPA 的 HTML —— **HTTP 200 但内容不是 JSON**�
 
 - vite：`proxy: { "/ask": apiProxy, "/knowledge": apiProxy, ... }` —— 16 个独立键；
 - nginx：两条正则 —— 运维端点 `^/(healthz|readyz|livez|health|metrics)$`
-  与 API 前缀 `^/(ask|knowledge|...|quickask)(/|$)`。
+  与 API 前缀 `^/(ask|knowledge|...|search)(/|$)`。
 
 所以守卫必须**解析正则**（把 `|` 拆成前缀集合），而不是按行比对文本。
 """
@@ -67,16 +67,9 @@ def test_probe_prefixes_present_in_both():
         assert prefix in _nginx_prefixes(), f"nginx 缺少探针前缀 {prefix}"
 
 
-def test_quickask_present_in_both():
-    """快问是后加的能力，两边都漏过（dev 能用、prod 404）。"""
-    for prefix in ("/quickask",):
-        assert prefix in _vite_prefixes(), f"vite 缺少 {prefix}"
-        assert prefix in _nginx_prefixes(), f"nginx 缺少 {prefix}"
-
-
 def test_guard_detects_mismatch():
     """守卫自身有效：构造一份少一个前缀的 nginx 配置，断言会被判不一致。"""
     vite = _vite_prefixes()
     nginx = _nginx_prefixes()
-    simulated = nginx - {"/quickask"}
+    simulated = nginx - {"/search"}
     assert vite != simulated, "守卫逻辑写错了：少一个前缀竟然判定为一致"

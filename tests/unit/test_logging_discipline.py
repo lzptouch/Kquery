@@ -75,12 +75,10 @@ def test_effective_summary_masks_everything_sensitive():
     settings = Settings(_env_file=None)
     settings.dashscope_api_key = "sk-real-key"
     settings.metrics_token = "tok-123"
-    settings.redis_url = "redis://u:pwd@host:6379"
     summary = settings.effective_summary()
 
     assert summary["dashscope_api_key"] == "***"
     assert summary["metrics_token"] == "***"
-    assert "pwd" not in summary["redis_url"]
     # 非敏感字段照常回显（这行日志的价值就在这里）
     assert summary["llm_model"]
     assert summary["vector_store"]

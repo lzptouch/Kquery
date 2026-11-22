@@ -1,0 +1,65 @@
+{
+  "mode": "l1",
+  "generated_at": "2026-11-22T21:34:27",
+  "corpus_sha256": "9c6eb7717e51",
+  "totals": {
+    "upload_success": 1.0,
+    "negative_upload_correct": 1.0,
+    "evidence_recall": 1.0,
+    "provenance_accuracy": 1.0,
+    "answer_recall": 1.0,
+    "positive_refused_rate": null,
+    "negative_correct": 1.0,
+    "citation_consistency": 1.0,
+    "counts": {
+      "positive_files": 20,
+      "negative_files": 6,
+      "fact_questions": 40,
+      "negative_questions": 5,
+      "skipped_questions": 0
+    }
+  },
+  "by_dir": {
+    "upload_success": {
+      "code": 1.0,
+      "excel": 1.0,
+      "html": 1.0,
+      "image": 1.0,
+      "markdown": 1.0,
+      "pdf": 1.0,
+      "ppt": 1.0,
+      "text": 1.0,
+      "word": 1.0
+    },
+    "evidence_recall": {
+      "code": 1.0,
+      "excel": 1.0,
+      "html": 1.0,
+      "image": 1.0,
+      "markdown": 1.0,
+      "pdf": 1.0,
+      "ppt": 1.0,
+      "text": 1.0,
+      "word": 1.0
+    },
+    "answer_recall": {
+      "code": 1.0,
+      "excel": 1.0,
+      "html": 1.0,
+      "image": 1.0,
+      "markdown": 1.0,
+      "pdf": 1.0,
+      "ppt": 1.0,
+      "text": 1.0,
+      "word": 1.0
+    }
+  },
+  "failures": {
+    "upload": [],
+    "negative_upload": [],
+    "evidence": [],
+    "provenance": [],
+    "answer": [],
+    "negative": []
+  }
+}

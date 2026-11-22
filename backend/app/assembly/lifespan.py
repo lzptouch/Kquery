@@ -15,7 +15,7 @@
 ## 关停是装配的逆序
 
 先停止接受新任务（执行器 shutdown 会等在飞请求），再关连接（checkpointer / 图存储 /
-向量库），最后 flush OTel span。顺序反了会看到「关连接时还有人在写」的报错。
+向量库）。顺序反了会看到「关连接时还有人在写」的报错。
 """
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from app.assembly.pipeline import build_pipeline
 from app.assembly.runtime import build_metrics, build_runtime, prepare_process
 from app.assembly.storage import build_storage
 from app.core.logging_setup import get_logger
-from app.core.otel import shutdown_otel
 from app.services.agent.checkpointer import close_checkpointer
 
 if TYPE_CHECKING:  # 仅类型检查
@@ -84,8 +83,6 @@ def shutdown(asm: Assembly) -> None:
     # 且连接会一直挂在进程里阻止 WAL 落盘。
     close_checkpointer(asm.agent_checkpointer)
     # 图存储的 sqlite 连接同理——不关会导致临时目录无法清理
-    # flush 未上报的 span（BatchSpanProcessor 有缓冲）
-    shutdown_otel()
     for closer in (
         lambda: asm.store.close(),
         # 内存实现无 close（接口未要求）；hasattr 兜一下，避免降级路径报错

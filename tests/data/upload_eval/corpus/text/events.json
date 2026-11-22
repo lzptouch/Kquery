@@ -1,0 +1,4 @@
+[
+  {"event_id": "E-7781", "severity": "P1", "note": "北辰仓储的温控传感器离线告警"},
+  {"event_id": "E-7782", "severity": "P3", "note": "例行磁盘清理完成"}
+]

@@ -259,7 +259,7 @@ def test_neighbors_respects_depth(depth):
 
 
 class TestCheckpointer:
-    """checkpointer 是断点续跑 / 多轮继承 / 回放 / HITL 的共同前提。
+    """checkpointer 是断点续跑 / 多轮继承 / 回放的共同前提。
 
      曾把它写进交付承诺，代码里长期是 `graph.compile()` 裸编译。
     """
@@ -338,18 +338,6 @@ class TestCheckpointer:
         close_checkpointer(saver)
         close_checkpointer(saver)  # 二次关闭不得抛异常
         close_checkpointer(None)
-
-    def test_compile_has_no_static_interrupt_before(self):
-        """护栏：不得用 compile(interrupt_before=...) 做条件性 HITL——那是静态中断。"""
-        import inspect
-
-        from app.services.agent import graph as graph_mod
-
-        src = inspect.getsource(graph_mod)
-        assert "interrupt_before" not in src.replace("# ", "").split('"""')[-1] or (
-            "interrupt_before" in src  # 只允许出现在注释里
-        ), "compile() 不得声明 interrupt_before（条件性中断须用节点内 interrupt()）"
-
 
 class TestAgentBudget:
     """三预算治理。此前只有"轮数"一个维度有上限，资源维度完全裸奔。"""
@@ -534,151 +522,3 @@ class TestChitchatShortCircuit:
         assert final.get("final_answer"), "闲聊应直接给出直答"
 
 
-class TestHitlWorkflow:
-    """人在环。此前完全没有 interrupt/审批/中断-恢复能力。"""
-
-    def _hitl_graph(self, tool_items, verdict_score=0.1):
-        from langgraph.checkpoint.memory import MemorySaver
-
-        registry = _make_registry(FakeSearchTool(tool_items))
-        planner = ScriptedPlanner([[{"description": "查", "tool": "vector_search"}]])
-        reflector = ScriptedReflector([
-            {"score": verdict_score, "next_action": "answer", "reason": "弱证据"}
-        ])
-        graph = build_agent_graph(
-            registry, planner, reflector, MockLLM(), agent_prompt_builder,
-            checkpointer=MemorySaver(),
-        )
-        return graph
-
-    def _hitl_cfg(self, threshold=0.5):
-        return {"score_threshold": threshold}
-
-    def test_low_confidence_triggers_interrupt(self):
-        from langgraph.graph.state import CompiledStateGraph  # noqa: F401
-
-        graph = self._hitl_graph([_evidence("c#1", 0.05)])
-        cfg = {
-            "configurable": {
-                "thread_id": "t1:u1:s1:1",
-                "hitl": self._hitl_cfg(0.5),
-            }
-        }
-        result = graph.invoke(initial_state("难问题", "t1"), config=cfg)
-        pending = result.get("__interrupt__")
-        assert pending, "低置信证据必须触发人工介入（否则 HITL 形同虚设）"
-        payload = pending[0].value
-        assert payload["reason"] == "low_confidence"
-        assert payload["actions"] == ["hint", "force_answer", "stop"]
-        assert "evidence_count" in payload and "evidence_score" in payload
-
-    def test_high_confidence_does_not_interrupt(self):
-        """关键：不能"每次都停"——那正是 interrupt_before 的错误用法。"""
-        graph = self._hitl_graph([_evidence("c#1", 0.95)], verdict_score=0.9)
-        cfg = {"configurable": {"thread_id": "t1:u1:s1:1", "hitl": self._hitl_cfg(0.5)}}
-        result = graph.invoke(initial_state("简单问题", "t1"), config=cfg)
-        assert not result.get("__interrupt__"), "高置信问题不应打断用户"
-        assert result.get("final_answer")
-
-    def test_hitl_disabled_never_interrupts(self):
-        """hitl=None（未启用/无 checkpointer/无 session）时必须完全无感。"""
-        graph = self._hitl_graph([_evidence("c#1", 0.05)])
-        result = graph.invoke(
-            initial_state("难问题", "t1"),
-            config={"configurable": {"thread_id": "t1:u1:s1:1", "hitl": None}},
-        )
-        assert not result.get("__interrupt__")
-
-    def test_resume_force_answer_produces_answer(self):
-        from langgraph.types import Command
-
-        graph = self._hitl_graph([_evidence("c#1", 0.05)])
-        cfg = {"configurable": {"thread_id": "t1:u1:s1:1", "hitl": self._hitl_cfg(0.5)}}
-        first = graph.invoke(initial_state("难问题", "t1"), config=cfg)
-        assert first.get("__interrupt__")
-
-        resumed = graph.invoke(
-            Command(resume={"action": "force_answer"}), config=cfg
-        )
-        assert resumed.get("final_answer"), "授权作答后必须给出答案（哪怕是弱证据）"
-
-    def test_resume_stop_cancels(self):
-        from langgraph.types import Command
-
-        graph = self._hitl_graph([_evidence("c#1", 0.05)])
-        cfg = {"configurable": {"thread_id": "t1:u1:s1:1", "hitl": self._hitl_cfg(0.5)}}
-        graph.invoke(initial_state("难问题", "t1"), config=cfg)
-        resumed = graph.invoke(Command(resume={"action": "stop"}), config=cfg)
-        assert resumed.get("status") == "cancelled"
-        assert resumed.get("refusal") is True
-        assert not resumed.get("final_answer"), "终止后不得产出答案"
-
-    def test_resume_hint_enters_prompt(self):
-        """hint 必须真的进入提示词（否则"提供线索"是空操作）。"""
-        from langgraph.types import Command
-
-        graph = self._hitl_graph([_evidence("c#1", 0.05)])
-        cfg = {"configurable": {"thread_id": "t1:u1:s1:1", "hitl": self._hitl_cfg(0.5)}}
-        graph.invoke(initial_state("难问题", "t1"), config=cfg)
-        resumed = graph.invoke(Command(resume={"action": "hint", "value": "去看附录"}), config=cfg)
-        assert resumed.get("final_answer")
-
-    def test_no_second_interrupt_after_resolve(self):
-        """防二次打断：已介入过的 run 不得再次挂起（否则用户被反复弹窗）。"""
-        from langgraph.types import Command
-
-        graph = self._hitl_graph([_evidence("c#1", 0.05)])
-        cfg = {"configurable": {"thread_id": "t1:u1:s1:1", "hitl": self._hitl_cfg(0.9)}}
-        graph.invoke(initial_state("难问题", "t1"), config=cfg)
-        resumed = graph.invoke(Command(resume={"action": "force_answer"}), config=cfg)
-        assert not resumed.get("__interrupt__"), "resume 后不得再次挂起"
-
-    def test_trigger_matrix(self):
-        """触发矩阵逐条核对（避免误触发导致问答变得难用）。"""
-        from app.services.agent.graph import hitl_trigger
-
-        cfg = {"score_threshold": 0.5}
-        # 闲聊不触发
-        assert hitl_trigger({"skip_retrieval": True, "evidence": []}, cfg) == ""
-        # 已介入过不再触发
-        assert hitl_trigger({"hitl_resolved": "hint", "evidence": []}, cfg) == ""
-        # 拒答（无证据）触发
-        assert hitl_trigger({"refusal": True, "evidence": []}, cfg) == "refused"
-        # 全工具失败触发
-        assert hitl_trigger({"evidence": [], "tool_errors": [{"e": 1}]}, cfg) == "all_tools_failed"
-        # 低置信（有证据）触发
-        assert hitl_trigger({"evidence": [_evidence("c#1")], "evidence_score": 0.1}, cfg) == "low_confidence"
-        # 预算耗尽且证据不足触发
-        assert hitl_trigger(
-            {"status": "budget_exhausted", "evidence": [_evidence("c#1")], "evidence_score": 0.9}, cfg
-        ) == "budget_exhausted"
-        # 高置信不触发
-        assert hitl_trigger({"evidence": [_evidence("c#1")], "evidence_score": 0.9}, cfg) == ""
-
-    def test_parse_decision_tolerates_garbage(self):
-        """非法决策一律降级为 force_answer——用户点了继续却拿不到答案最糟。"""
-        from app.services.agent.graph import _parse_hitl_decision
-
-        assert _parse_hitl_decision(None) == ("force_answer", "")
-        assert _parse_hitl_decision({}) == ("force_answer", "")
-        assert _parse_hitl_decision("随便输的") == ("hint", "随便输的")
-        assert _parse_hitl_decision({"action": "stop"}) == ("stop", "")
-        assert _parse_hitl_decision({"action": "hint"}) == ("force_answer", "")  # hint 无内容 → 降级
-        assert _parse_hitl_decision({"action": "hint", "value": "x"}) == ("hint", "x")
-        assert _parse_hitl_decision({"action": "未知动作"}) == ("force_answer", "")
-
-    def test_interrupt_state_reports_pending(self):
-        from langgraph.checkpoint.memory import MemorySaver
-
-        from app.services.agent.budget import AgentBudget
-
-        graph = self._hitl_graph([_evidence("c#1", 0.05)])
-        graph.invoke(
-            initial_state("难问题", "t1"),
-            config={"configurable": {"thread_id": "t1:u1:s1:1", "hitl": self._hitl_cfg(0.5)}},
-        )
-        snap = graph.get_state({"configurable": {"thread_id": "t1:u1:s1:1"}})
-        assert snap.next == ("answer",), "应停在 answer 节点等待人工"
-        assert snap.values.get("question") == "难问题"
-        assert isinstance(AgentBudget(), AgentBudget)  # 占位，确保导入可用
-        assert MemorySaver is not None

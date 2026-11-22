@@ -36,7 +36,6 @@ class Bulkhead:
         fail_ratio: float = 0.5,
         open_seconds: float = 30.0,
         half_open: int = 3,
-        adaptive: bool = False,
     ) -> None:
         self.name = name
         self._max_permits = max(1, int(permits))
@@ -45,7 +44,6 @@ class Bulkhead:
         self._fail_ratio = min(1.0, max(0.01, fail_ratio))
         self._open_seconds = max(1.0, open_seconds)
         self._half_open = max(1, half_open)
-        self._adaptive = adaptive
 
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
@@ -54,7 +52,6 @@ class Bulkhead:
         self._state = "closed"  # closed | open | half_open
         self._opened_at = 0.0
         self._half_open_ok = 0
-        self._success_streak = 0
         # 调用耗时滚动窗口（`C-10`）：降级判据需要「上游最近有多慢」，
         # 而不是「熔断开没开」——熔断是事后，P95 是事前。
         self._latencies: deque[float] = deque(maxlen=200)
@@ -82,16 +79,6 @@ class Bulkhead:
         self._calls += 1
         if not ok:
             self._failures += 1
-        # AIMD（仅开启时生效）
-        if self._adaptive:
-            if ok:
-                self._success_streak += 1
-                if self._success_streak >= 50:
-                    self._permits = min(float(self._max_permits), self._permits + 1)
-                    self._success_streak = 0
-            else:
-                self._success_streak = 0
-                self._permits = max(1.0, self._permits * 0.7)
         if self._state == "half_open":
             if ok:
                 self._half_open_ok += 1
@@ -219,7 +206,6 @@ _registry_lock = threading.Lock()
 def configure_bulkheads(settings) -> None:
     """按配置初始化隔离仓（lifespan 启动时调用一次）。"""
     global _registry
-    adaptive = bool(getattr(settings, "upstream_adaptive", False))
     window = int(getattr(settings, "upstream_breaker_window", 20))
     ratio = float(getattr(settings, "upstream_breaker_fail_ratio", 0.5))
     open_s = float(getattr(settings, "upstream_breaker_open_s", 30.0))
@@ -229,7 +215,6 @@ def configure_bulkheads(settings) -> None:
                 name,
                 permits=int(getattr(settings, f"upstream_{name}_permits", 0) or 0),
                 window=window, fail_ratio=ratio, open_seconds=open_s,
-                adaptive=adaptive,
             )
             # 通道清单：`multimodal` 是图像向量 / VLM 直答那一路
             # （`C-07`：此前只注册 4 条，多模态打满在指标上完全不可见）
@@ -238,9 +223,8 @@ def configure_bulkheads(settings) -> None:
         }
         if _registry:
             logger.info(
-                "上游隔离仓已启用：%s（adaptive=%s）",
+                "上游隔离仓已启用：%s",
                 ", ".join(f"{k}={v.stats()['max_permits']}" for k, v in _registry.items()),
-                adaptive,
             )
 
 

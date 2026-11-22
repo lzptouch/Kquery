@@ -161,12 +161,6 @@ def run(base: str, headed: bool, user: str = "admin", password: str = "") -> int
               f"实际：{str(health)[:140]}")
         by_name = {d.get("name"): d for d in (deps or [])}
 
-        check("探针含共享状态后端", "shared_state" in by_name,
-              f"实际探针：{sorted(by_name)}")
-        ss = by_name.get("shared_state") or {}
-        check("共享状态标明实际后端（防「以为在用 Redis 其实已降级」）",
-              bool(ss.get("backend")), f"shared_state={ss}")
-
         check("探针含长期记忆", "long_term_memory" in by_name,
               f"实际探针：{sorted(by_name)}")
         ltm = by_name.get("long_term_memory") or {}
@@ -194,8 +188,8 @@ def run(base: str, headed: bool, user: str = "admin", password: str = "") -> int
               if "latency_seconds{" in metrics_text else True,
               "latency 指标仍带 tenant label")
 
-        # ================================================== 3. 成本与 HITL
-        section("3. 单次成本与 HITL 端点")
+        # ================================================== 3. 单次成本
+        section("3. 单次成本端点")
 
         r = api(page, "/ask/trace-not-exist/cost")
         check("GET /ask/{trace}/cost 可用", r["status"] == 200, f"实际 {r['status']}")
@@ -203,10 +197,6 @@ def run(base: str, headed: bool, user: str = "admin", password: str = "") -> int
         check("未知 trace 返回空账单而非报错",
               cd.get("found") is False and cd.get("total_yuan") == 0.0,
               f"data={cd}")
-
-        r = api(page, "/ask/runs/other-tenant:other-user:s1:1/interrupt")
-        check("GET interrupt 对非本人 run 返回 404（防探测）", r["status"] == 404,
-              f"实际 {r['status']}")
 
         r = api(page, "/ask/runs/default:admin:s1:1/cancel", method="POST")
         check("POST cancel 端点存在且归属校验通过", r["status"] == 200,

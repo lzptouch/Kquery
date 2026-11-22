@@ -36,7 +36,6 @@ from app.api import graph as graph_api
 from app.api import ingest as ingest_api
 from app.api import knowledge as knowledge_api
 from app.api import probes as probes_api
-from app.api import quickask as quickask_api
 from app.api import sessions as sessions_api
 from app.assembly.lifespan import lifespan
 from app.core.config import get_settings
@@ -44,7 +43,6 @@ from app.core.envelope import ApiError, ErrCode, error_envelope, validate_code_u
 from app.core.errors import DomainError
 from app.core.identity import Principal
 from app.core.logging_setup import get_logger, setup_logging
-from app.core.otel import setup_otel
 from app.core.probes import env_of
 from app.core.tracing import (
     elapsed_ms_since,
@@ -282,7 +280,6 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(admin_api.router)
     app.include_router(sessions_api.router)
     app.include_router(graph_api.router)
-    app.include_router(quickask_api.router)
 
 
 def create_app() -> FastAPI:
@@ -297,9 +294,6 @@ def create_app() -> FastAPI:
         log_format=getattr(settings, "log_format", "text"),
         debug_sample_rate=float(getattr(settings, "log_debug_sample_rate", 0.1)),
     )
-
-    # OTel（未启用/未配置 endpoint 时静默降级为 NoOp）
-    setup_otel(settings)
 
     # 启动期配置校验：缺项直接拒绝启动，而不是让故障延后到运行期
     issues = settings.validate_startup()

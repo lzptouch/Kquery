@@ -125,9 +125,18 @@ def build_models(asm: Assembly) -> None:
 
     # OCR 一律云服务 API（见 parsers/ocr.py 的架构约束）；provider 单独解析，
     # 不用全局 provider：全局可能是 mock（测试），而 OCR 可以单独强制云端。
-    ocr_engine = build_ocr_engine(
-        settings.resolved_ocr_provider, settings.dashscope_api_key, settings.llm_max_retries
-    )
+    if settings.resolved_ocr_provider == "zhipu":
+        ocr_engine = build_ocr_engine(
+            "zhipu",
+            settings.zhipu_api_key,
+            settings.llm_max_retries,
+            base_url=settings.zhipu_base_url,
+            model=settings.ocr_zhipu_model,
+        )
+    else:
+        ocr_engine = build_ocr_engine(
+            settings.resolved_ocr_provider, settings.dashscope_api_key, settings.llm_max_retries
+        )
 
     asm.embeddings = embeddings
     asm.llm = llm

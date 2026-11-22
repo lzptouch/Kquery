@@ -37,18 +37,57 @@ def _pdf_text_for(chars_per_page: int, cjk: bool) -> str:
     return (seed * (chars_per_page // len(seed) + 2))[:chars_per_page]
 
 
-def make_text_pdf(pages: int = 1, chars_per_page: int = 120, cjk: bool = True) -> bytes:
-    """S1/S2：文字页 PDF。文本层字符数 ≥ 阈值 → 走文字路径（**不触发 OCR**）。"""
+def _insert_page_lines(page, lines: list[str], cjk: bool, fontsize: int = 11) -> None:
+    """逐行插入文本并自动换行（upload_eval 语料用：保证文本层字符数 ≥ 扫描页阈值）。"""
+    font = CJK_FONT if cjk else "helv"
+    max_chars = 38 if cjk else 80
+    wrapped: list[str] = []
+    for line in lines:
+        while len(line) > max_chars:
+            wrapped.append(line[:max_chars])
+            line = line[max_chars:]
+        wrapped.append(line)
+    for i, line in enumerate(wrapped):
+        page.insert_text((72, 72 + i * (fontsize + 6)), line, fontsize=fontsize, fontname=font)
+
+
+def _paginate_body(body: str, lines_per_page: int = 24) -> list[list[str]]:
+    """整段正文 → 逐页行列表（`\\f` 显式分页优先，否则按行数均分）。"""
+    if "\f" in body:
+        return [chunk.splitlines() for chunk in body.split("\f")]
+    lines = [ln for ln in body.splitlines()]
+    result: list[list[str]] = []
+    for i in range(0, len(lines), lines_per_page):
+        result.append(lines[i : i + lines_per_page])
+    return result or [[]]
+
+
+def make_text_pdf(
+    pages: int = 1,
+    chars_per_page: int = 120,
+    cjk: bool = True,
+    *,
+    body: str | None = None,
+) -> bytes:
+    """S1/S2：文字页 PDF。文本层字符数 ≥ 阈值 → 走文字路径（**不触发 OCR**）。
+
+    传 `body` 时用自定义正文（`\\f` 分页），此时忽略 `pages`/`chars_per_page`。
+    """
     import pymupdf
 
     doc = pymupdf.open()
-    for _ in range(pages):
-        page = doc.new_page()
-        text = _pdf_text_for(chars_per_page, cjk)
-        if cjk:
-            page.insert_text((72, 100), text, fontsize=11, fontname=CJK_FONT)
-        else:
-            page.insert_text((72, 100), text, fontsize=11)
+    if body is not None:
+        for lines in _paginate_body(body):
+            page = doc.new_page()
+            _insert_page_lines(page, lines, cjk)
+    else:
+        for _ in range(pages):
+            page = doc.new_page()
+            text = _pdf_text_for(chars_per_page, cjk)
+            if cjk:
+                page.insert_text((72, 100), text, fontsize=11, fontname=CJK_FONT)
+            else:
+                page.insert_text((72, 100), text, fontsize=11)
     buf = doc.tobytes()
     doc.close()
     return buf
@@ -67,36 +106,83 @@ def _png_bytes(width: int = 400, height: int = 300) -> bytes:
     return buf.getvalue()
 
 
-def make_scanned_pdf(pages: int = 1) -> bytes:
-    """S3/S4：扫描页 PDF —— **无文本层** → 触发逐页扫描判定 → OCR 路径。"""
+def _render_text_image(
+    lines: list[str], width: int = 640, height: int = 400, fmt: str = "PNG"
+) -> bytes:
+    """把多行文字渲染成位图（扫描页/图片语料用）。
+
+    优先加载系统中文字体（macOS 的 PingFang / STHeiti）；找不到则退回 PIL
+    默认位图字体——此时只保证 ASCII 内容可读，中文会渲染为方框。
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    font = None
+    for candidate in (
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ):
+        try:
+            font = ImageFont.truetype(candidate, 22)
+            break
+        except OSError:
+            continue
+    if font is None:
+        font = ImageFont.load_default()
+
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([16, 16, width - 16, height - 16], outline="black", width=2)
+    for i, line in enumerate(lines):
+        draw.text((36, 36 + i * 34), line, fill="black", font=font)
+    buf = io.BytesIO()
+    img.save(buf, format=fmt)
+    return buf.getvalue()
+
+
+def make_scanned_pdf(pages: int = 1, *, page_lines: list[list[str]] | None = None) -> bytes:
+    """S3/S4：扫描页 PDF —— **无文本层** → 触发逐页扫描判定 → OCR 路径。
+
+    传 `page_lines` 时每页渲染自定义文字（替代默认的 SCANNED PAGE CONTENT）。
+    """
     import pymupdf
 
-    png = _png_bytes()
     doc = pymupdf.open()
-    for _ in range(pages):
+    for i in range(pages):
+        if page_lines is not None:
+            png = _render_text_image(page_lines[i % len(page_lines)])
+        else:
+            png = _png_bytes()
         page = doc.new_page()
-        page.insert_image(pymupdf.Rect(50, 50, 300, 300), stream=png)
+        page.insert_image(pymupdf.Rect(50, 50, 540, 600), stream=png)
     buf = doc.tobytes()
     doc.close()
     return buf
 
 
-def make_mixed_pdf() -> bytes:
+def make_mixed_pdf(
+    *, text_body: str | None = None, scan_lines: list[str] | None = None
+) -> bytes:
     """S5：混合 PDF —— 第 1 页文字 + 第 2 页扫描 → 验证**逐页独立判定**。
 
     这是 PDF 解析最关键的行为：一篇里既有文字页又有扫描页时，
     只有扫描页才该走 OCR；整篇一刀切会让文字页的内容丢失或让扫描页拿不到文字。
+
+    `text_body` / `scan_lines` 用于 upload_eval 语料的自定义内容。
     """
     import pymupdf
 
-    png = _png_bytes()
     doc = pymupdf.open()
 
     page = doc.new_page()
-    page.insert_text((72, 100), _pdf_text_for(120, True), fontsize=11, fontname=CJK_FONT)
+    if text_body is not None:
+        _insert_page_lines(page, text_body.splitlines(), cjk=True)
+    else:
+        page.insert_text((72, 100), _pdf_text_for(120, True), fontsize=11, fontname=CJK_FONT)
 
     page2 = doc.new_page()
-    page2.insert_image(pymupdf.Rect(50, 50, 300, 300), stream=png)
+    png = _render_text_image(scan_lines) if scan_lines else _png_bytes()
+    page2.insert_image(pymupdf.Rect(50, 50, 540, 600), stream=png)
 
     buf = doc.tobytes()
     doc.close()
@@ -136,8 +222,17 @@ def make_empty_pdf() -> bytes:
     return buf
 
 
-def make_table_pdf(rows: int = 3, cols: int = 3) -> bytes:
-    """S9：带几何表格的 PDF —— 画网格线让 `find_tables()` 能识别。"""
+def make_table_pdf(
+    rows: int = 3,
+    cols: int = 3,
+    *,
+    cells: list[list[str]] | None = None,
+    note: str | None = None,
+) -> bytes:
+    """S9：带几何表格的 PDF —— 画网格线让 `find_tables()` 能识别。
+
+    `cells` 覆盖默认的 R{r}C{c} 内容（需 rows×cols 对齐）；`note` 覆盖页脚正文。
+    """
     import pymupdf
 
     doc = pymupdf.open()
@@ -147,9 +242,12 @@ def make_table_pdf(rows: int = 3, cols: int = 3) -> bytes:
         for c in range(cols):
             x, y = x0 + c * cell_w, y0 + r * cell_h
             page.draw_rect(pymupdf.Rect(x, y, x + cell_w, y + cell_h), color=(0, 0, 0), width=1)
-            page.insert_text((x + 8, y + 25), f"R{r}C{c}", fontsize=10)
+            text = cells[r][c] if cells else f"R{r}C{c}"
+            page.insert_text((x + 8, y + 25), text, fontsize=10, fontname=CJK_FONT)
     # 表格页还需要足够的正文字符量，否则整页会被判成扫描页
-    page.insert_text((60, y0 + rows * cell_h + 40), _pdf_text_for(120, False), fontsize=10)
+    footer = note if note is not None else _pdf_text_for(120, False)
+    font = CJK_FONT if any(ord(ch) > 127 for ch in footer) else "helv"
+    page.insert_text((60, y0 + rows * cell_h + 40), footer, fontsize=10, fontname=font)
     buf = doc.tobytes()
     doc.close()
     return buf
@@ -207,29 +305,46 @@ def make_pdf_with_embedded_image() -> bytes:
 # --------------------------------------------------------------------------
 
 
-def make_docx(with_table: bool = True, with_image: bool = False, headings: int = 2) -> bytes:
+def make_docx(
+    with_table: bool = True,
+    with_image: bool = False,
+    headings: int = 2,
+    *,
+    sections: list[tuple[str, str]] | None = None,
+    table_rows: list[list[str]] | None = None,
+) -> bytes:
     """DOCX-01/02/04：标题 + 段落（+ 表格，可选嵌入图）。
 
     默认**带表格**：C5「表格独立成块」是格式层价值最高的契约，
     每种有表格能力的格式，其"标准样本"都应该能走到这条路径，
     否则通用契约测试里这一条对所有格式都是空跑。
+
+    传 `sections`（标题, 正文）列表时用自定义章节；`table_rows` 覆盖默认表格内容。
     """
     from docx import Document
     from docx.shared import Inches
 
     doc = Document()
-    for i in range(headings):
-        doc.add_heading(f"第{i + 1}章 测试章节", level=1)
-        doc.add_paragraph(
-            f"这是第 {i + 1} 章的正文段落，包含可检索的特征串 DOCXPARAGRAPH{i + 1}，"
-            "用于验证段落被完整保留并进入检索索引。"
-        )
+    if sections is not None:
+        for heading, paragraph in sections:
+            doc.add_heading(heading, level=1)
+            for para in paragraph.split("\n"):
+                if para.strip():
+                    doc.add_paragraph(para)
+    else:
+        for i in range(headings):
+            doc.add_heading(f"第{i + 1}章 测试章节", level=1)
+            doc.add_paragraph(
+                f"这是第 {i + 1} 章的正文段落，包含可检索的特征串 DOCXPARAGRAPH{i + 1}，"
+                "用于验证段落被完整保留并进入检索索引。"
+            )
     if with_table:
-        table = doc.add_table(rows=3, cols=3)
+        grid = table_rows or [["R0C0", "R0C1", "R0C2"], ["R1C0", "R1C1", "R1C2"], ["R2C0", "R2C1", "R2C2"]]
+        table = doc.add_table(rows=len(grid), cols=len(grid[0]))
         table.style = "Table Grid"
-        for r in range(3):
-            for c in range(3):
-                table.cell(r, c).text = f"R{r}C{c}"
+        for r, row in enumerate(grid):
+            for c, value in enumerate(row):
+                table.cell(r, c).text = str(value)
     if with_image:
         from PIL import Image
 
@@ -277,25 +392,34 @@ def make_doc_like_binary() -> bytes:
 # --------------------------------------------------------------------------
 
 
-def make_xlsx(sheets: dict[str, list[list[str]]] | None = None) -> bytes:
-    """XLSX-01/02：默认单 sheet 3×3；传 sheets 则多 sheet 展开。"""
+def make_xlsx(
+    sheets: dict[str, list[list[str]]] | None = None, *, include_default: bool = True
+) -> bytes:
+    """XLSX-01/02：默认单 sheet 3×3；传 sheets 则多 sheet 展开。
+
+    `include_default=False` 时只保留传入的 sheets（upload_eval 语料用——
+    金标事实不需要默认的"套餐"页干扰检索）。
+    """
     from openpyxl import Workbook
 
-    wb = Workbook()
-    default = wb.active
-    default.title = "套餐"
-    for r, row in enumerate(
-        [["知识库套餐", "价格", "说明"], ["基础版", "99", "小规模"], ["专业版", "299", "企业级"]],
-        start=1,
-    ):
-        default.cell(row=r, column=1, value=row[0])
-        default.cell(row=r, column=2, value=row[1])
-        default.cell(row=r, column=3, value=row[2])
-    for title, rows in (sheets or {}).items():
-        ws = wb.create_sheet(title)
+    def _fill(ws, rows: list[list[str]]) -> None:
         for r, row in enumerate(rows, start=1):
             for c, value in enumerate(row, start=1):
                 ws.cell(row=r, column=c, value=value)
+
+    extra = dict(sheets or {})
+    wb = Workbook()
+    default = wb.active
+    if include_default or not extra:
+        default.title = "套餐"
+        _fill(default, [["知识库套餐", "价格", "说明"], ["基础版", "99", "小规模"], ["专业版", "299", "企业级"]])
+    else:
+        title, rows = next(iter(extra.items()))
+        default.title = title
+        _fill(default, rows)
+        extra.pop(title)
+    for title, rows in extra.items():
+        _fill(wb.create_sheet(title), rows)
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
@@ -337,29 +461,54 @@ def make_xlsx_with_long_cell() -> bytes:
 # --------------------------------------------------------------------------
 
 
-def make_pptx(with_table: bool = True, with_notes: bool = False, slides: int = 1) -> bytes:
+def make_pptx(
+    with_table: bool = True,
+    with_notes: bool = False,
+    slides: int = 1,
+    *,
+    sections: list[dict] | None = None,
+) -> bytes:
     """PPTX-01/02/03：逐页文本（+ 页内表格，可选备注页）。
 
     同 `make_docx`：标准样本默认带表格，让 C5 契约对 PPTX 真实生效。
+
+    传 `sections` 时用自定义页面：`{"title": str, "body": str, "table": [[...]]|None, "notes": str|None}`。
     """
     from pptx import Presentation
     from pptx.util import Inches
 
     prs = Presentation()
-    for i in range(slides):
-        slide = prs.slides.add_slide(prs.slide_layouts[5])
-        slide.shapes.title.text = f"演示文稿第 {i + 1} 页"
-        box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(6), Inches(1))
-        box.text_frame.text = (
-            f"这是第 {i + 1} 页的正文，特征串 PPTXSLIDE{i + 1}，用于验证逐页成段与可检索。"
-        )
-        if with_table:
-            shape = slide.shapes.add_table(3, 3, Inches(1), Inches(3), Inches(6), Inches(2))
-            for r in range(3):
-                for c in range(3):
-                    shape.table.cell(r, c).text = f"R{r}C{c}"
-        if with_notes:
-            slide.notes_slide.notes_text_frame.text = f"第 {i + 1} 页的备注内容"
+    if sections is not None:
+        for sec in sections:
+            slide = prs.slides.add_slide(prs.slide_layouts[5])
+            slide.shapes.title.text = sec["title"]
+            box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(6), Inches(1))
+            box.text_frame.text = sec["body"]
+            table_rows = sec.get("table")
+            if table_rows:
+                shape = slide.shapes.add_table(
+                    len(table_rows), len(table_rows[0]), Inches(1), Inches(3), Inches(6), Inches(2)
+                )
+                for r, row in enumerate(table_rows):
+                    for c, value in enumerate(row):
+                        shape.table.cell(r, c).text = str(value)
+            if sec.get("notes"):
+                slide.notes_slide.notes_text_frame.text = sec["notes"]
+    else:
+        for i in range(slides):
+            slide = prs.slides.add_slide(prs.slide_layouts[5])
+            slide.shapes.title.text = f"演示文稿第 {i + 1} 页"
+            box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(6), Inches(1))
+            box.text_frame.text = (
+                f"这是第 {i + 1} 页的正文，特征串 PPTXSLIDE{i + 1}，用于验证逐页成段与可检索。"
+            )
+            if with_table:
+                shape = slide.shapes.add_table(3, 3, Inches(1), Inches(3), Inches(6), Inches(2))
+                for r in range(3):
+                    for c in range(3):
+                        shape.table.cell(r, c).text = f"R{r}C{c}"
+            if with_notes:
+                slide.notes_slide.notes_text_frame.text = f"第 {i + 1} 页的备注内容"
 
     out = io.BytesIO()
     prs.save(out)
@@ -395,9 +544,9 @@ TEXT_SAMPLE = (
 )
 
 
-def make_text(encoding: str = "utf-8") -> bytes:
-    """TXT-01/02/03：UTF-8 / GBK / 非法字节三种编码。"""
-    return TEXT_SAMPLE.encode(encoding)
+def make_text(encoding: str = "utf-8", *, text: str | None = None) -> bytes:
+    """TXT-01/02/03：UTF-8 / GBK / 非法字节三种编码。`text` 覆盖默认样例。"""
+    return (text if text is not None else TEXT_SAMPLE).encode(encoding)
 
 
 def make_latin1_garbage() -> bytes:
@@ -410,8 +559,10 @@ def make_empty_text() -> bytes:
     return b""
 
 
-def make_markdown() -> bytes:
-    """MD-01：标题层级（# ~ ###）→ 大纲抽取。"""
+def make_markdown(*, body: str | None = None) -> bytes:
+    """MD-01：标题层级（# ~ ###）→ 大纲抽取。`body` 覆盖默认正文。"""
+    if body is not None:
+        return body.encode("utf-8")
     return (
         "# 第一章 总则\n\n"
         "正文段落，包含特征串 MARKDOWNSAMPLE。\n\n"
@@ -447,13 +598,20 @@ HTML_SAMPLE = """<!DOCTYPE html>
 """
 
 
-def make_html() -> bytes:
-    """HTML-01/02/03：含 script / style / 注释的 HTML。"""
+def make_html(*, body: str | None = None) -> bytes:
+    """HTML-01/02/03：含 script / style / 注释的 HTML。`body` 覆盖正文片段。"""
+    if body is not None:
+        return (
+            "<!DOCTYPE html>\n<html>\n<head><title>upload_eval</title></head>\n"
+            f"<body>\n{body}\n</body>\n</html>\n"
+        ).encode("utf-8")
     return HTML_SAMPLE.encode("utf-8")
 
 
-def make_code(ext: str) -> bytes:
-    """CODE-01/02：代码文件样本（按纯文本保留全文，不做符号解析）。"""
+def make_code(ext: str, *, body: str | None = None) -> bytes:
+    """CODE-01/02：代码文件样本（按纯文本保留全文，不做符号解析）。`body` 覆盖默认。"""
+    if body is not None:
+        return body.encode("utf-8")
     samples = {
         ".py": "def hello():\n    return 'PYCODE'\n",
         ".js": "function hello() { return 'JSCODE'; }\n",
@@ -493,8 +651,10 @@ def make_code(ext: str) -> bytes:
 # --------------------------------------------------------------------------
 
 
-def make_png() -> bytes:
-    """IMG：PNG 位图（走 OCR 路径）。"""
+def make_png(*, lines: list[str] | None = None) -> bytes:
+    """IMG：PNG 位图（走 OCR 路径）。`lines` 覆盖默认文字。"""
+    if lines is not None:
+        return _render_text_image(lines, fmt="PNG")
     from PIL import Image, ImageDraw
 
     img = Image.new("RGB", (320, 240), "white")
@@ -506,8 +666,10 @@ def make_png() -> bytes:
     return buf.getvalue()
 
 
-def make_jpg() -> bytes:
-    """IMG：JPEG 位图。"""
+def make_jpg(*, lines: list[str] | None = None) -> bytes:
+    """IMG：JPEG 位图。`lines` 覆盖默认文字。"""
+    if lines is not None:
+        return _render_text_image(lines, fmt="JPEG")
     from PIL import Image, ImageDraw
 
     img = Image.new("RGB", (320, 240), "white")

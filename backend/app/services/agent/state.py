@@ -95,25 +95,13 @@ class AgentState(TypedDict, total=False):
     final_answer: str
     answer_source: str  # 答案来源：evidence（有据）/ parametric（通用知识兜底）/ ""（拒答）
     skip_retrieval: bool  # 闲聊短路
-    hitl_resolved: str  # 人工介入结果（""/hint/force_answer/stop），防二次打断
-    # 已获人工批准的写类工具名。**必须声明**：LangGraph 只持久化 TypedDict 里
-    # 声明过的键，未声明的 key 会被静默丢弃（审批在中断点后就丢了）。
-    approved_tools: list[str]
-    budget: dict  # 预算快照（跨 HITL 中断点保持计数单调，防 resume 绕过）
-    verify_passed: bool  # 答案校验是否通过
-    verify_rounds: int  # 已校验轮数（受 max_verify_rounds 约束）
-    verify_notes: list[str]  # 未通过时带回的"无据陈述"线索
-    # ---- ReAct 循环 ----
-    # 注意这些字段**必须声明**：LangGraph 只持久化 TypedDict 里声明过的键，
-    # 未声明的 key 会被静默丢弃（表现为"节点明明 return 了，读状态时却没有"）。
-    react_rounds: int  # 已进行的 ReAct 轮数
-    react_degraded: Annotated[list[str], operator.add]  # 降级原因（追加合并）
-    last_thought: str  # 最近一次 think 的思考（供轨迹展示与排障）
-    answer_hint: str  # LLM 给出的作答指引
+    budget: dict  # 预算快照（跨 checkpointer 恢复保持计数单调）
     refusal: bool  # 证据不足拒答
 
 
-def initial_state(question: str, tenant_id: str, history: list[dict] | None = None) -> dict:
+def initial_state(
+    question: str, tenant_id: str, history: list[dict] | None = None
+) -> dict:
     """新一轮执行的初始状态 patch。"""
     return {
         "question": question,
@@ -145,7 +133,6 @@ def initial_state(question: str, tenant_id: str, history: list[dict] | None = No
         "answer_source": "",
         "skip_retrieval": False,
         "refusal": False,
-        "approved_tools": [],
     }
 
 

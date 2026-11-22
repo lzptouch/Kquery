@@ -52,8 +52,6 @@ SKIP = {
     ("POST", "/graph/build"),  # 触发图谱构建（耗时长且写数据）
     ("POST", "/knowledge/upload"),  # 文件上传（multipart）
     ("POST", "/knowledge/ingest"),
-    ("POST", "/quickask/upload"),
-    ("DELETE", "/quickask/{doc_id}"),
     ("DELETE", "/knowledge/files/{doc_id}"),
     ("POST", "/feedback/refusal"),
     ("PUT", "/admin/retrieval-config"),
@@ -68,8 +66,6 @@ SKIP = {
     ("POST", "/knowledge/tasks/{task_id}/retry"),
     ("POST", "/knowledge/tasks/{task_id}/cancel"),
     ("POST", "/graph/communities/build"),
-    ("POST", "/ask/runs/{run_id}/resume"),
-    ("POST", "/ask/runs/{run_id}/interrupt"),
 }
 
 
@@ -93,9 +89,9 @@ def _endpoints(app) -> list[tuple[str, str]]:
 def test_endpoint_count_matches_readme(client):
     """端点总数与 README 关键数字表一致（防新增端点忘记回填文档）。"""
     endpoints = _endpoints(client.app)
-    # 端点总数 = 69（10 个 router：业务 9 个共 64 + 探针 5；
+    # 端点总数 = 61（9 个 router：业务 8 个共 56 + 探针 5；
     # 注册清单见 backend/app/bootstrap.py 的 register_routes）。
-    assert len(endpoints) == 69, f"端点数变为 {len(endpoints)}，README §1.2 需同步更新"
+    assert len(endpoints) == 61, f"端点数变为 {len(endpoints)}，README §1.2 需同步更新"
 
 
 def test_all_endpoints_reachable_without_5xx(client):
@@ -113,9 +109,9 @@ def test_all_endpoints_reachable_without_5xx(client):
         if resp.status_code >= 500:
             failures.append(f"{method} {url} → {resp.status_code} {resp.text[:120]}")
     assert not failures, "以下端点返回 5xx：\n" + "\n".join(failures)
-    # 70 个端点里，有真实副作用的写端点单独有专项用例，其余在此巡检。
-    # 下限随端点下线同步下调（48 是当前实测值，保留余量以吸收后续端点增删）。
-    assert checked >= 45, f"巡检端点数过少（{checked}），枚举或跳过清单可能失效"
+    # 端点里有真实副作用的写端点单独有专项用例，其余在此巡检。
+    # 下限随端点下线同步下调（44 是当前实测值，保留余量以吸收后续端点增删）。
+    assert checked >= 42, f"巡检端点数过少（{checked}），枚举或跳过清单可能失效"
     assert skipped <= 32, f"跳过端点过多（{skipped}），巡检覆盖面不足"
 
 

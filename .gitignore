@@ -19,8 +19,8 @@ backend/.env.*
 # ---------- 运行时数据 ----------
 # 仓库根的 data/ 是本地运行产物（向量索引 / 上传文档 / 元数据 / 会话）。
 # 用 `/data/` 而非 `data/`：后者会误伤 tests/data/（版本化的评测资产）。
-/data/
-backend/data/
+
+
 
 # Milvus / etcd 的本地卷与 nginx 运行日志（此前曾误入库，含 148MB etcd WAL）
 deploy/milvus/volumes/
@@ -69,3 +69,5 @@ tests/data/eval/runs.local.jsonl
 .vscode/
 .DS_Store
 *.log
+tests/data/upload_eval/runs/
+tests/data/upload_eval/report.json

@@ -58,25 +58,6 @@ services:
       start_period: 90s   # Milvus 冷启动要加载本地存储，30s 会一直判定 unhealthy
     restart: unless-stopped
 
-  # ---------------------------------------------------------------- 共享状态（Redis）
-  # 多副本部署时，限流/配额/语义缓存必须跨副本共享，
-  # 否则实际放行量 = 配置值 × 副本数（限流最常见的失效原因）。
-  # 后端对 Redis 是 Fail-Open：Redis 挂了就降级为进程内，服务不中断。
-  redis:
-    image: redis:7-alpine
-    container_name: kquery-redis
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6381:6379"      # 宿主 6381 → 容器 6379（6379/6380 均被本机其它容器占用）
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   # ---------------------------------------------------------------- 后端
   backend:
     build:
@@ -91,8 +72,6 @@ services:
       KQUERY_MILVUS_URI: http://milvus:19530
       VECTOR_STORE: milvus
       DATA_DIR: /data
-      REDIS_URL: redis://redis:6379/0
-      CACHE_BACKEND: auto
     volumes:
       - backend_data:/data       # 向量索引 / 图谱快照 / 审计日志 / 备份
     ports:
@@ -102,10 +81,6 @@ services:
       # 集合不存在会直接抛异常，容器进入 restart 循环
       init:
         condition: service_completed_successfully
-      # Redis 是可选依赖：healthcheck 只是避免启动瞬间连不上，
-      # 连不上时后端会自行降级为进程内（Fail-Open）
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
   # 一次性初始化：建 Milvus 集合与索引。独立成服务而不是放在后端启动流程里，
@@ -168,4 +143,3 @@ volumes:
   etcd_data:
   milvus_data:
   backend_data:
-  redis_data:

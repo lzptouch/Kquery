@@ -195,9 +195,9 @@ class RagPipeline:
         return cache_stage.cache_dims(self, config)
 
     def _cache_key(
-        self, question: str, tenant_id: str, config: RetrievalConfig, doc_id: str | None = None
+        self, question: str, tenant_id: str, config: RetrievalConfig
     ) -> str:
-        return cache_stage.cache_key(self, question, tenant_id, config, doc_id)
+        return cache_stage.cache_key(self, question, tenant_id, config)
 
     def _question_vector(self, question: str) -> list:
         return cache_stage.question_vector(self, question)
@@ -215,20 +215,12 @@ class RagPipeline:
             self, key, question, payload, ttl, tenant_id, scope, signature
         )
 
-    # ---- 预处理 / 过滤条件（实现见 `generation/retrieve_stage.py`）----
-    # `_degrade_level` / `_build_filters` 保留方法名：前者被单测直接定型（三档水位），
-    # 后者被子类与 `/ask` 快问路径按名调用。
-
-    def _degrade_level(self) -> int:
-        return retrieve_stage.degrade_level(self)
+    # ---- 预处理（实现见 `generation/retrieve_stage.py`）----
 
     def _preprocess(
         self, question: str, tenant_id: str
     ) -> tuple[dict | None, list[tuple[str, str]], bool]:
         return retrieve_stage.preprocess(self, question, tenant_id)
-
-    def _build_filters(self, tenant_id: str, doc_id: str | None = None):
-        return retrieve_stage.build_filters(self, tenant_id, doc_id)
 
     # ---- 请求级缓存（批次 2 / KQ-12）：同一请求内消除重复查询 ----
 
@@ -373,7 +365,7 @@ class RagPipeline:
 
     def _core_events(
         self, question: str, tenant_id: str, trace_id: str, config: RetrievalConfig,
-        doc_id: str | None = None, deadline: "Deadline | None" = None,
+        deadline: "Deadline | None" = None,
         stages: dict[str, int] | None = None,
         stream_tokens: bool = False, cancel: "threading.Event | None" = None,
     ) -> Iterator[tuple[str, dict]]:
@@ -383,7 +375,7 @@ class RagPipeline:
         事件流，是「阻塞答案与流式答案不会漂移」的结构性保证。
         """
         return core.core_events(
-            self, question, tenant_id, trace_id, config, doc_id, deadline,
+            self, question, tenant_id, trace_id, config, deadline,
             stages, stream_tokens, cancel,
         )
 
@@ -442,7 +434,7 @@ class RagPipeline:
 
     def ask(
         self, question: str, tenant_id: str, trace_id: str, top_k: int | None = None,
-        doc_id: str | None = None, deadline: "Deadline | None" = None,
+        deadline: "Deadline | None" = None,
         cancel: "threading.Event | None" = None,
     ) -> AskResult:
         """同步问答（实现见 `generation/core.ask`）。
@@ -451,7 +443,7 @@ class RagPipeline:
         由端点层静默收尾；半截结果**不写缓存**。
         """
         return core.ask(
-            self, question, tenant_id, trace_id, top_k, doc_id, deadline, cancel
+            self, question, tenant_id, trace_id, top_k, deadline, cancel
         )
 
     # ---- 流式问答 ----
@@ -465,7 +457,7 @@ class RagPipeline:
 
     def ask_stream(
         self, question: str, tenant_id: str, trace_id: str, top_k: int | None = None,
-        doc_id: str | None = None, deadline: "Deadline | None" = None,
+        deadline: "Deadline | None" = None,
         cancel: "threading.Event | None" = None,
     ) -> Iterator[tuple[str, dict]]:
         """流式问答（实现见 `generation/core.ask_stream`）。
@@ -474,7 +466,7 @@ class RagPipeline:
         **提前收尾**（不等模型把话说完）。
         """
         return core.ask_stream(
-            self, question, tenant_id, trace_id, top_k, doc_id, deadline, cancel
+            self, question, tenant_id, trace_id, top_k, deadline, cancel
         )
 
 

@@ -155,7 +155,6 @@ class TestToolContext:
     def test_defaults(self):
         ctx = ToolContext()
         assert ctx.tenant_id == "default"
-        assert ctx.approved_tools == {}
 
 
 class TestRegistryIntegration:

@@ -17,7 +17,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.envelope import ApiError
-from app.services.parsers.ocr import ALLOWED_OCR_PROVIDERS, MockOcrEngine, QwenVlOcr, build_ocr_engine
+from app.services.parsers.ocr import ALLOWED_OCR_PROVIDERS, MockOcrEngine, QwenVlOcr, ZhipuOcrEngine, build_ocr_engine
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2] / "backend"
 APP_DIR = BACKEND_ROOT / "app"
@@ -79,8 +79,12 @@ class TestOcrProviderOnly:
         assert "本地" in exc.value.message
 
     def test_allowed_providers_are_cloud_only(self):
-        assert set(ALLOWED_OCR_PROVIDERS) == {"dashscope", "mock"}
+        assert set(ALLOWED_OCR_PROVIDERS) == {"dashscope", "zhipu", "mock"}
         assert "local" not in ALLOWED_OCR_PROVIDERS
+
+    def test_zhipu_provider_builds_zhipu_engine(self):
+        engine = build_ocr_engine("zhipu", "key", base_url="https://open.bigmodel.cn/api/paas/v4")
+        assert isinstance(engine, ZhipuOcrEngine)
 
 
 class TestOcrConfig:
@@ -90,14 +94,16 @@ class TestOcrConfig:
         return Settings(_env_file=None, **base)
 
     def test_default_resolves_to_mock_without_key(self):
-        assert self._settings().resolved_ocr_provider == "mock"
+        # ocr_provider 显式给 auto：会话级环境钉了 mock（见 conftest），
+        # 不传的话测的就是 env 而非 auto 逻辑本身
+        assert self._settings(ocr_provider="auto").resolved_ocr_provider == "mock"
 
     def test_can_force_cloud(self):
         s = self._settings(ocr_provider="dashscope", dashscope_api_key="k")
         assert s.resolved_ocr_provider == "dashscope"
 
     def test_auto_follows_model_provider(self):
-        s = self._settings(model_provider="dashscope", dashscope_api_key="k")
+        s = self._settings(ocr_provider="auto", model_provider="dashscope", dashscope_api_key="k")
         assert s.resolved_ocr_provider == "dashscope"
 
     @pytest.mark.parametrize("provider", ["local", "onnx", "paddleocr", "offline"])
@@ -110,6 +116,11 @@ class TestOcrConfig:
         s = self._settings(ocr_provider="dashscope", dashscope_api_key="")
         fields = [i["field"] for i in s.validate_startup()]
         assert "dashscope_api_key" in fields
+
+    def test_zhipu_provider_without_key_is_rejected(self):
+        s = self._settings(ocr_provider="zhipu", zhipu_api_key="")
+        fields = [i["field"] for i in s.validate_startup()]
+        assert "zhipu_api_key" in fields
 
 
 class TestNoLocalModelDependency:

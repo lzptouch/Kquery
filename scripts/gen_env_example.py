@@ -39,10 +39,10 @@ BACKEND_DIR = REPO_ROOT / "backend"
 CONFIG_PY = BACKEND_DIR / "app" / "core" / "config.py"
 ENV_EXAMPLE = BACKEND_DIR / ".env.example"
 
-# 敏感字段判定：命中即留空。`dsn` / `redis_url` 单独列出——
-# 连接串与 Redis URL 都可能内嵌口令，但字面上不含 key/token 这类词。
+# 敏感字段判定：命中即留空。`dsn` 单独列出——
+# 连接串可能内嵌口令，但字面上不含 key/token 这类词。
 SECRET_PATTERNS = ("key", "token", "secret", "password", "passwd", "credential", "dsn")
-SECRET_FIELDS = {"redis_url"}
+SECRET_FIELDS: set[str] = set()  # 连接串形态（内嵌口令）字段的登记处，当前为空
 
 # 分节标题：`# ---- 名称 ----`
 SECTION_RE = r"^-{2,}\s*(.+?)\s*-{2,}$"

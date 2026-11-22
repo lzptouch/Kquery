@@ -38,6 +38,13 @@ Kquery 按问答次数计费，每次问答消耗一个额度。
 #: 在 import pymilvus **之前**读取，避免 pymilvus 的 `load_dotenv()` 把 backend/.env
 #: 里的地址悄悄注入进来——测试地址必须可复现。
 MILVUS_TEST_URI = os.environ.get("KQUERY_MILVUS_URI") or "http://localhost:19530"
+
+# 同一个泄漏通道的 OCR_PROVIDER 版本：pymilvus import 时 `load_dotenv()` 会把
+# backend/.env 整体注进 `os.environ`（find_dotenv 从 site-packages 向上命中
+# backend/.env，且不 override 已有键）。OCR_PROVIDER 是本地运行档配置（可能是
+# zhipu/dashscope 真云），必须在任何 pymilvus import 之前钉成 mock，
+# 否则 TestOcrConfig 这类直接构造 Settings 的单元用例会读到本地值。
+os.environ.setdefault("OCR_PROVIDER", "mock")
 #: 测试专用集合：所有用例共用一个集合，靠"用例开始前清空"做隔离。
 #: 不用"每个用例一个集合"是因为 Milvus 建带索引的集合要 1 秒以上（同步等索引构建），
 #: 2000 例就是半小时；共享集合 + delete 清空约 0.2 秒。

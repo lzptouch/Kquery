@@ -87,29 +87,3 @@ class TestMetricsAccess:
         metrics_settings.app_env = "prod"
 
         assert client.get("/metrics").status_code == 200
-
-
-class TestSharedStateSingleInstance:
-    """共享状态门面只能有一个实例。
-
-    早先 `create_app` 里建了两次 `SharedState`：第一次给会话/配置/入库任务/幂等/
-    缓存/限流，第二次覆盖 `app.state.shared_state` 给快问与健康检查。两个实例各自
-    持有一份 Redis 连接池与**一份进程内兜底字典**，也各自记录 degraded 次数——
-    于是「Redis 是否可用」在不同调用点可以是不同答案。
-    """
-
-    def test_consumers_share_the_same_state_object(self, client):
-        state = client.app.state.shared_state
-        # 幂等存储是启动早期用「同一个门面」构造的；若再新建一次门面，
-        # 这里就会拿到两个不同对象（这条断言就是那条缺陷的探针）。
-        assert client.app.state.idempotency._state is state
-
-    def test_health_reports_the_same_backend(self, client):
-        """/healthz 读的门面必须与业务侧一致（否则健康信息是另一个人格的）。"""
-        body = client.get("/healthz").json()
-        deps = {d["name"]: d for d in body["dependencies"]}
-        assert deps["shared_state"]["status"] == "up"
-        # 探针读的就是业务侧那个门面：真实 backend 必须能被它看见
-        assert client.app.state.shared_state.backend == "local"  # 测试未配 Redis
-        assert deps["shared_state"]["backend"] == "local"
-        assert deps["shared_state"]["redis_enabled"] is False

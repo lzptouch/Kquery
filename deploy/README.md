@@ -6,7 +6,7 @@
 
 | 路径 | 用途 |
 | --- | --- |
-| `docker/docker-compose.yml` | 全栈编排：etcd / milvus / redis / backend / init / frontend |
+| `docker/docker-compose.yml` | 全栈编排：etcd / milvus / backend / init / frontend |
 | `docker/backend.Dockerfile` | 后端镜像（多阶段，uv 装依赖 + 非 root 运行） |
 | `docker/frontend.Dockerfile` | 前端镜像（vite 构建 + nginx 托管） |
 | `docker/frontend.nginx.conf` | 前端容器内的 nginx 配置（SPA 回退 + 前缀反代） |

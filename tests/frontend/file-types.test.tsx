@@ -1,5 +1,4 @@
-/** F3 上传白名单与 F4 快问入口的单测。 */
-import { render, screen } from "@testing-library/react";
+/** F3 上传白名单的单测。 */
 import { describe, expect, it } from "vitest";
 import {
   ACCEPT_ATTRIBUTE,
@@ -48,33 +47,5 @@ describe("文件类型白名单（F3）", () => {
     // 上传向导依赖 react-router（useNavigate），这里只断言白名单常量本身
     expect(typeof UploadWizardPage).toBe("function");
     expect(ACCEPT_ATTRIBUTE).toContain(".xlsx");
-  });
-});
-
-describe("快问附件面板（F4）", () => {
-  it("renders_panel", async () => {
-    const { QuickAttachPanel } = await import("../../frontend/src/features/chat/components/QuickAttachPanel");
-    render(
-      <QuickAttachPanel
-        current={null}
-        onAttach={() => {}}
-        onDetach={() => {}}
-        onClose={() => {}}
-      />,
-    );
-    expect(screen.getByRole("dialog", { name: "附件提问" })).toBeTruthy();
-  });
-
-  it("shows_current_document", async () => {
-    const { QuickAttachPanel } = await import("../../frontend/src/features/chat/components/QuickAttachPanel");
-    render(
-      <QuickAttachPanel
-        current={{ docId: "quick_1", filename: "临时.md", chunks: 3 }}
-        onAttach={() => {}}
-        onDetach={() => {}}
-        onClose={() => {}}
-      />,
-    );
-    expect(screen.getByText(/临时\.md/)).toBeTruthy();
   });
 });

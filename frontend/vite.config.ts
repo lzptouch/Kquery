@@ -45,9 +45,6 @@ export default defineConfig({
       "/healthz": apiProxy,
       "/livez": apiProxy,
       "/readyz": apiProxy,
-      // F4 快问：必须与 deploy/docker/frontend.nginx.conf 的前缀正则保持一致，
-      // 否则 dev 能用、prod 404（曾漏过 /readyz，坑写在上面的注释里）。
-      "/quickask": apiProxy,
     },
   },
 });

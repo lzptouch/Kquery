@@ -439,10 +439,10 @@ class ImageIndex:
 
         条目移除后 `search()` 会跳过对应结果，图像即不可达。
 
-        **M2**：同时返回这些条目在向量库里占用的 chunk_id，
-        供上层做 **chunk 级删除**——此前存储层没有按 chunk_id 删除的接口，
-        图像描述块会残留在共享 doc_id（`__images__`）的统一向量库里，
-        **仍可能被通用向量检索召回**（用户已删的文档内容还能被搜出来）。
+        图像描述块住在共享 doc_id（`__images__`）下，`delete_doc` 碰不到它们，
+        所以调用方必须先用 `chunk_ids_of()` 取清单、再 `store.delete_chunks()`。
+        这两步由 `services/knowledge.py` 的删除流程串起来（M2），
+        已删文档的图像描述不会再被通用向量检索召回。
         """
         victims = [aid for aid, e in self._entries.items() if e.doc_id == doc_id]
         for asset_id in victims:

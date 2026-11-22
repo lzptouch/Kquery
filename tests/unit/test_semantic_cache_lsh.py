@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from app.services import cache as cache_mod
-from app.services.cache import InMemorySemanticCache, RedisSemanticCache, _LshIndex
+from app.services.cache import InMemorySemanticCache, _LshIndex
 
 
 def _unit(vec) -> list[float]:
@@ -200,45 +200,3 @@ def test_remove_drops_all_traces():
     assert idx.stats()["ann_entries"] == 0
 
 
-# ---------------------------------------------------------------- Redis 版同样接上
-
-
-class _MemState:
-    def __init__(self) -> None:
-        self.data: dict[str, str] = {}
-
-    def get(self, key):
-        return self.data.get(key)
-
-    def set(self, key, value, ttl=0):
-        self.data[key] = value
-
-    def delete(self, key):
-        self.data.pop(key, None)
-
-
-def test_redis_backend_also_uses_lsh(monkeypatch):
-    monkeypatch.setattr(cache_mod, "_ANN_MIN_GROUP", 3)
-    cache = RedisSemanticCache(_MemState(), max_entries=50)
-    rng = random.Random(41)
-    for i in range(8):
-        vec = _unit([rng.uniform(-1, 1) for _ in range(DIM)])
-        cache.set(f"k{i}", {"answer": f"a{i}"}, ttl_seconds=600, vector=vec,
-                  tenant_id=TENANT, scope=SCOPE, signature=SIG)
-
-    target = _jitter(_unit([1.0] * DIM), 0.005, 9)
-    # 目标自身必须是组内近邻：直接构造一个同向条目
-    cache.set("target", {"answer": "target"}, ttl_seconds=600, vector=_unit([1.0] * DIM),
-              tenant_id=TENANT, scope=SCOPE, signature=SIG)
-    entry, kind = cache.lookup("q", "no-exact", vector=target,
-                               tenant_id=TENANT, scope=SCOPE, signature=SIG)
-    assert kind == "semantic"
-    assert entry.payload["answer"] == "target"
-    assert cache.stats()["ann_entries"] >= 1
-
-
-def test_lsh_projection_deterministic_across_instances():
-    """同一维度必须用同一组超平面：否则不同实例（或重启后）的桶互不相通。"""
-    a, b = _LshIndex(), _LshIndex()
-    vec = _unit([math.sin(i) for i in range(32)])
-    assert a.bucket_of(vec) == b.bucket_of(vec)

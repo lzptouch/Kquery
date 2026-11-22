@@ -5,9 +5,7 @@
 
 1. **断点续跑**：同一 thread_id 二次调用能取到上一轮 state；
 2. **多轮状态继承**：跨轮携带的工具指纹/无进展计数不再靠 snapshots 手搓；
-3. **完整回放**：step 级快照让"为什么这么答"可事后追溯；
-4. **HITL 前提**：LangGraph 的 `interrupt()` 必须依赖 checkpointer 才能挂起与恢复
-   （见 ）。
+3. **完整回放**：step 级快照让"为什么这么答"可事后追溯。
 
 设计取舍：
 - **生产用 SqliteSaver**（单文件、事务安全、跨进程可读），**测试用 MemorySaver**
@@ -38,7 +36,7 @@ def build_checkpointer(settings, data_dir: Path | None = None):
     """
     kind = (getattr(settings, "agent_checkpointer", "sqlite") or "sqlite").lower()
     if kind == "none":
-        logger.info("Agent checkpointer 已显式禁用（不启用断点续跑与 HITL）")
+        logger.info("Agent checkpointer 已显式禁用（不启用断点续跑）")
         return None
 
     if kind == "memory":

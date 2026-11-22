@@ -175,10 +175,6 @@ class PromMetrics:
             "kquery_history_compaction_saved_tokens", "历史摘要压缩节省的 token（按方式）",
             ["method"], registry=self.registry,
         )
-        # 实际生效的降级级别（`C-10`）：0=正常 / 1=熔断 / 2=上游变慢
-        self.degrade_level = Gauge(
-            "kquery_degrade_level", "当前生效的降级级别（0=正常）", [], registry=self.registry,
-        )
         self.upstream_circuit_open = Gauge(
             "kquery_upstream_circuit_open", "上游熔断状态（1=open）", ["upstream"],
             registry=self.registry,

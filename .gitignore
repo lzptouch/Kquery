@@ -71,3 +71,4 @@ tests/data/eval/runs.local.jsonl
 *.log
 tests/data/upload_eval/runs/
 tests/data/upload_eval/report.json
+tests/data/upload_eval/.selfcheck_assets/

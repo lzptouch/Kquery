@@ -23,6 +23,34 @@
 | 可观测 | Prometheus 指标、阶段耗时、trace 级成本、检索诊断面板 |
 | 前端 | React + TypeScript 管理台与问答界面，流式增量渲染 |
 
+## 功能展示
+
+以下截图来自 **Kubernetes 部署实测**（2026-11-23，Docker Desktop K8s v1.36，`deploy/k8s/overlays/dev`，后端 1 副本 + 前端 2 副本，Milvus 清空后全链路验证）：先用浏览器在**空库**下提问，再经 UI 上传文档后问同一问题，对比两种场景。
+
+**首页** —— 对话界面与会话列表：
+
+![首页](./doc/screenshots/01-home.png)
+
+**场景一：空库提问（未上传任何文档）** —— 系统不硬答：明确标注「知识库未收录相关内容，以下回答来自大模型自身知识」，置信度条仅 30%（低可信）：
+
+![空库提问回答](./doc/screenshots/03-ask-no-docs-top.png)
+
+同一次提问的 Agent 检索轨迹 —— 证据评分 0.00 → 换角度重规划 → 双路召回候选均为 0 → 触发熔断，并判定 `INCORRECT（证据不足）`：
+
+![空库检索轨迹](./doc/screenshots/02-ask-no-docs.png)
+
+**上传文档** —— 知识库页支持拖拽/点选上传（PDF / Markdown / Word / Excel / PPT 等 50+ 格式）。上传前索引文档数为 0：
+
+![知识库空状态](./doc/screenshots/04-knowledge-empty.png)
+
+上传 `kquery_demo.md` 后即时完成索引（状态「已完成」，切块数、上传时间、文档标识可见）：
+
+![知识库已上传](./doc/screenshots/05-knowledge-uploaded.png)
+
+**场景二：上传后提问（同一问题）** —— 命中知识库：置信度 95%（高可信），每个结论带 `[#1]` 原文引用，可展开「查看引文」回溯来源文件：
+
+![带库提问回答](./doc/screenshots/06-ask-with-docs.png)
+
 ## 架构
 
 ```mermaid

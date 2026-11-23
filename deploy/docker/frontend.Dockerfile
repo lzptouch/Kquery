@@ -17,7 +17,7 @@ WORKDIR /app
 # 先只拷依赖清单，命中缓存后再拷源码：
 # 只改业务代码时不必重装依赖（node_modules 安装通常是构建里最慢的一步）
 COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund --ignore-scripts 2>/dev/null || npm install --no-audit --no-fund --ignore-scripts
 
 COPY frontend/ ./
 
